@@ -31,7 +31,6 @@ dmg-staging/
 .claude/
 
 # ── Private working docs (kept local, may contain personal info) ─
-CLAUDE.md
 COMMANDS.md
 MEMORY.md
 PLAN.md
