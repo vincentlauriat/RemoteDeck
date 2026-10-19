@@ -9,6 +9,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "RFBKit"),
-        .testTarget(name: "RFBKitTests", dependencies: ["RFBKit"]),
+        .testTarget(
+            name: "RFBKitTests",
+            dependencies: ["RFBKit"],
+            // Generator script for the test vectors and the placeholder for real captures.
+            exclude: ["Vectors", "Captures"]
+        ),
     ]
 )
