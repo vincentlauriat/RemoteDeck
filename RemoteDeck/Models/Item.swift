@@ -10,7 +10,7 @@ struct Item: Codable, Identifiable, Hashable {
     let createdAt: Date
     let body: String
 
-    var dateFormatted: String {
+    @MainActor var dateFormatted: String {
         let df = DateFormatter()
         df.dateStyle = .medium
         df.timeStyle = .short

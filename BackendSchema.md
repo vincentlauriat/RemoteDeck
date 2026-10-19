@@ -48,7 +48,7 @@ Indexes: `host`, `name` (SwiftData `#Index`).
 
 | Attribute | Value |
 |---|---|
-| service | `com.vincentlauriat.remotedeck` *(assumption: final bundle id)* |
+| service | `fr.vincentlauriat.remotedeck` |
 | account | `machine.<Machine.id>` or `anthropic.apiKey` |
 | data | UTF-8 secret |
 | synchronizable | `true` for machine passwords (iCloud Keychain), `false` for the API key |
