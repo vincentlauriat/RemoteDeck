@@ -40,6 +40,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 
 /// Identifiant de locale courant, lu par les modèles (formatage de dates)
 /// sans dépendance directe à l'environnement SwiftUI.
+@MainActor
 enum AppLocale {
     static var identifier: String = "en_US"
 }

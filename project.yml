@@ -1,11 +1,14 @@
 name: RemoteDeck
 options:
-  bundleIdPrefix: com.example
+  bundleIdPrefix: fr.vincentlauriat
   deploymentTarget:
-    macOS: "14.0"
-    iOS: "17.0"
+    macOS: "15.0"
 
-# Schemes explicites (sinon xcodegen n'en génère pas → schemes perdus à chaque régénération).
+packages:
+  RFBKit:
+    path: Packages/RFBKit
+
+# Explicit scheme (otherwise xcodegen generates none → scheme lost on every regeneration).
 schemes:
   RemoteDeck:
     build:
@@ -13,37 +16,34 @@ schemes:
         RemoteDeck: all
     run:
       config: Debug
-  RemoteDeckiOS:
-    build:
-      targets:
-        RemoteDeckiOS: all
-    run:
+    test:
       config: Debug
+      targets:
+        - package: RFBKit/RFBKitTests
 
 targets:
-  # ---------------------------------------------------------------------------
-  # macOS
-  # ---------------------------------------------------------------------------
   RemoteDeck:
     type: application
     platform: macOS
-    deploymentTarget: "14.0"
+    deploymentTarget: "15.0"
     sources:
       - path: RemoteDeck
         excludes:
           - "**/*.entitlements"
           - "Info.plist"
-          - "Info-iOS.plist"
+    dependencies:
+      - package: RFBKit
     settings:
       base:
         PRODUCT_NAME: RemoteDeck
         PRODUCT_BUNDLE_IDENTIFIER: fr.vincentlauriat.remotedeck
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        SWIFT_VERSION: "5.9"
-        MARKETING_VERSION: "1.0.0"
+        SWIFT_VERSION: "6.0"
+        MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
         CODE_SIGN_ENTITLEMENTS: RemoteDeck/RemoteDeck.entitlements
+        # Signing, sandbox and CloudKit are configured in T1.2.
         CODE_SIGN_IDENTITY: ""
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
@@ -55,50 +55,5 @@ targets:
         CFBundleIdentifier: fr.vincentlauriat.remotedeck
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        LSMinimumSystemVersion: "14.0"
+        LSMinimumSystemVersion: "15.0"
         NSHumanReadableCopyright: ""
-
-  # ---------------------------------------------------------------------------
-  # iOS / iPadOS — codebase partagé avec la cible macOS
-  # ---------------------------------------------------------------------------
-  RemoteDeckiOS:
-    type: application
-    platform: iOS
-    deploymentTarget: "17.0"
-    sources:
-      - path: RemoteDeck
-        excludes:
-          - "**/*.entitlements"
-          - "Info.plist"
-          - "Info-iOS.plist"
-    settings:
-      base:
-        PRODUCT_NAME: RemoteDeck
-        PRODUCT_BUNDLE_IDENTIFIER: fr.vincentlauriat.remotedeck
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        SWIFT_VERSION: "5.9"
-        MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "1"
-        IPHONEOS_DEPLOYMENT_TARGET: "17.0"
-        TARGETED_DEVICE_FAMILY: "1,2"
-        # Signature automatique gérée dans Xcode (ton Apple ID).
-        # Le build de vérification simulateur passe CODE_SIGNING_ALLOWED=NO en argument.
-        CODE_SIGN_STYLE: Automatic
-    info:
-      path: RemoteDeck/Info-iOS.plist
-      properties:
-        CFBundleName: RemoteDeck
-        CFBundleDisplayName: RemoteDeck
-        CFBundleIdentifier: fr.vincentlauriat.remotedeck
-        CFBundleShortVersionString: "$(MARKETING_VERSION)"
-        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
-        UILaunchScreen: {}
-        UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
-        UISupportedInterfaceOrientations~ipad:
-          - UIInterfaceOrientationPortrait
-          - UIInterfaceOrientationPortraitUpsideDown
-          - UIInterfaceOrientationLandscapeLeft
-          - UIInterfaceOrientationLandscapeRight
