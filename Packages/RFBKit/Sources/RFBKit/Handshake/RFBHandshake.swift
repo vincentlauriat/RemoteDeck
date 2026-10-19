@@ -207,13 +207,14 @@ public struct RFBHandshake: Sendable {
                 prime: Array(buffer[4..<(4 + keyLength)]),
                 serverPublicKey: Array(buffer[(4 + keyLength)..<(4 + 2 * keyLength)]))
             consume(4 + 2 * keyLength)
-            var privateKey = entropy.privateKey(keyLength)
+            let privateKeyLength = AppleDHAuth.privateKeyLength(forKeyLength: keyLength)
+            var privateKey = entropy.privateKey(privateKeyLength)
             var padding = entropy.credentialPadding(AppleDHAuth.credentialBlockLength)
             defer {
                 wipe(&privateKey)
                 wipe(&padding)
             }
-            guard privateKey.count == keyLength, padding.count == AppleDHAuth.credentialBlockLength else {
+            guard privateKey.count == privateKeyLength, padding.count == AppleDHAuth.credentialBlockLength else {
                 preconditionFailure("HandshakeEntropy returned the wrong number of bytes")
             }
             out += try AppleDHAuth.response(parameters: parameters,
@@ -279,7 +280,7 @@ public struct RFBHandshake: Sendable {
 
     /// Picks the security type by preference among those the credentials allow:
     /// 30 (Apple DH) when a user name and password are set, then 2 (VNC) when a password is set, then 1.
-    static func selectSecurityType(offered: [UInt8], credentials: RFBCredentials) throws(RFBError) -> UInt8 {
+    package static func selectSecurityType(offered: [UInt8], credentials: RFBCredentials) throws(RFBError) -> UInt8 {
         let hasUser = !(credentials.username ?? "").isEmpty
         let hasPassword = credentials.password != nil
         if offered.contains(SecurityType.appleDiffieHellman), hasUser, hasPassword {

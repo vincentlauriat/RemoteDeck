@@ -6,7 +6,8 @@ import Foundation
 /// Not in RFC 6143; the wire format below is the one implemented by libvncclient, noVNC and
 /// other open-source ARD clients:
 /// - server → client: generator (U16), key length k (U16), prime (k bytes), server public key (k bytes);
-/// - client: private key x, public key gˣ mod p, shared secret = serverPublicˣ mod p (left-padded to k),
+/// - client: private key x (512 bits, see `maxPrivateKeyLength`), public key gˣ mod p,
+///   shared secret = serverPublicˣ mod p (left-padded to k),
 ///   AES key = MD5(shared secret);
 /// - credentials: 128 bytes, user name in the first 64 and password in the last 64, each NUL-terminated,
 ///   the rest random; AES-128-ECB, no padding;
@@ -15,8 +16,21 @@ import Foundation
 /// The exchange is unauthenticated, so it protects against passive eavesdropping only; a MITM can
 /// substitute its own parameters. RFBKit does not enforce a minimum prime size for that reason.
 enum AppleDHAuth {
-    /// Largest key length accepted from a server: 256 bytes = 2048-bit prime.
-    static let maxKeyLength = 256
+    /// Largest key length accepted from a server: 512 bytes = 4096-bit prime. macOS 26 servers send
+    /// the RFC 3526 group 16 prime (4096 bits) with generator 5.
+    static let maxKeyLength = 512
+    /// Length of the random private exponent drawn per connection: 64 bytes = 512 bits.
+    ///
+    /// The exponent does not need to be as long as the prime. For DH over a safe prime (the MODP
+    /// groups are safe primes), an exponent of at least twice the target security strength is enough:
+    /// - RFC 3526 §8 estimates group 16 (4096-bit) at 150–240 bits of strength, with exponent sizes of
+    ///   300–480 bits;
+    /// - NIST SP 800-56A Rev. 3 §5.6.1.1.1 requires a private key bit length N with 2s ≤ N ≤ len(q)
+    ///   for the approved safe-prime groups, and Table 25 gives MODP-4096 at most s = 152 (N ≥ 304).
+    ///   NIST's groups use g = 2 while macOS sends g = 5 with the same prime, so this applies by analogy.
+    /// 512 bits covers every group up to 4096 bits, and keeps the two modPows of a 4096-bit exchange
+    /// fast: their cost is linear in the exponent length, so a full 4096-bit exponent is 8× slower.
+    static let maxPrivateKeyLength = 64
     /// Longest user name or password in UTF-8 bytes (64-byte field minus the NUL terminator).
     static let maxCredentialLength = 63
     static let credentialBlockLength = 128
@@ -67,6 +81,21 @@ enum AppleDHAuth {
         return block
     }
 
+    /// Number of random bytes the private exponent is drawn from for a `keyLength`-byte prime.
+    static func privateKeyLength(forKeyLength keyLength: Int) -> Int {
+        min(keyLength, maxPrivateKeyLength)
+    }
+
+    /// The private exponent actually used, x = 2 + (r mod (p − 3)), which keeps it in [2, p − 2] for
+    /// any random bytes r. For primes longer than 64 bytes r < p − 3, so this is just r + 2. Returned
+    /// big-endian on min(k, |r| + 1) bytes: `BigUInt.power` walks every byte it is given, so the
+    /// exponent must stay short (never padded to the key length k).
+    static func privateExponent(randomBytes: [UInt8], prime: BigUInt) -> [UInt8] {
+        let exponent = BigUInt(bigEndian: randomBytes).reduced(modulo: prime.subtracting(BigUInt(3)))
+            .adding(BigUInt(2))
+        return exponent.bigEndianBytes(count: min(prime.byteWidth, randomBytes.count + 1))
+    }
+
     /// The bytes the client sends: AES ciphertext of the credentials (128) followed by its public key (k).
     static func response(parameters: Parameters, username: String, password: String,
                          privateKey: [UInt8], padding: [UInt8]) throws(RFBError) -> [UInt8] {
@@ -76,8 +105,10 @@ enum AppleDHAuth {
         let generator = BigUInt(UInt64(parameters.generator))
         let serverPublic = BigUInt(bigEndian: parameters.serverPublicKey)
 
-        let clientPublic = generator.power(privateKey, modulo: prime).bigEndianBytes(count: keyLength)
-        var shared = serverPublic.power(privateKey, modulo: prime).bigEndianBytes(count: keyLength)
+        var exponent = privateExponent(randomBytes: privateKey, prime: prime)
+        let clientPublic = generator.power(exponent, modulo: prime).bigEndianBytes(count: keyLength)
+        var shared = serverPublic.power(exponent, modulo: prime).bigEndianBytes(count: keyLength)
+        wipe(&exponent)
         var aesKey = Array(Insecure.MD5.hash(data: shared))
         var block = try credentialBlock(username: username, password: password, padding: padding)
         defer {
