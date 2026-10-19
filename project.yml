@@ -7,6 +7,8 @@ options:
 packages:
   RFBKit:
     path: Packages/RFBKit
+  RemoteDeckCore:
+    path: Packages/RemoteDeckCore
 
 # Explicit scheme (otherwise xcodegen generates none → scheme lost on every regeneration).
 schemes:
@@ -19,7 +21,9 @@ schemes:
     test:
       config: Debug
       targets:
+        - RemoteDeckTests
         - package: RFBKit/RFBKitTests
+        - package: RemoteDeckCore/RemoteDeckCoreTests
 
 targets:
   RemoteDeck:
@@ -33,9 +37,13 @@ targets:
           - "Info.plist"
     dependencies:
       - package: RFBKit
+      - package: RemoteDeckCore
     settings:
       base:
         PRODUCT_NAME: RemoteDeck
+        # Same module name in every config (Debug's product is "RemoteDeck Dev"),
+        # so tests can `@testable import RemoteDeck`.
+        PRODUCT_MODULE_NAME: RemoteDeck
         PRODUCT_BUNDLE_IDENTIFIER: fr.vincentlauriat.remotedeck
         ENABLE_HARDENED_RUNTIME: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -62,3 +70,26 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "15.0"
         NSHumanReadableCopyright: ""
+
+  RemoteDeckTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: RemoteDeckTests
+    dependencies:
+      - target: RemoteDeck
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: fr.vincentlauriat.remotedeck.tests
+        SWIFT_VERSION: "6.0"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        BUNDLE_LOADER: $(TEST_HOST)
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/RemoteDeck.app/Contents/MacOS/RemoteDeck
+      configs:
+        # XcodeGen infers the host from the target name; Debug's product is "RemoteDeck Dev".
+        Debug:
+          TEST_HOST: $(BUILT_PRODUCTS_DIR)/RemoteDeck Dev.app/Contents/MacOS/RemoteDeck Dev

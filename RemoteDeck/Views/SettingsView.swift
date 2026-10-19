@@ -27,9 +27,9 @@ struct SettingsView: View {
                 .labelsHidden()
             }
 
-            // Exemple de secret stocké dans le Keychain. Adapte ou supprime.
+            // Clé API Anthropic, stockée dans le Keychain (compte `anthropic.apiKey`).
             Section(settings.t("settings_apikey")) {
-                SecureField(settings.t("apikey_placeholder"), text: $settings.apiKey)
+                SecureField(settings.t("apikey_placeholder"), text: $settings.anthropicAPIKey)
                 Text(settings.apiKeyConfigured
                      ? settings.t("apikey_present")
                      : settings.t("apikey_absent"))
@@ -38,6 +38,11 @@ struct SettingsView: View {
                 Text(settings.t("apikey_help"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let error = settings.keychainError {
+                    Text(error.description)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
 
             Section(settings.t("settings_about")) {

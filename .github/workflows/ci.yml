@@ -28,6 +28,11 @@ jobs:
         working-directory: Packages/RFBKit
         run: swift test
 
+      # Also run by the app scheme below; kept as a fast, focused failure signal.
+      - name: RemoteDeckCore tests
+        working-directory: Packages/RemoteDeckCore
+        run: swift test
+
       - name: Generate Xcode project
         run: xcodegen generate
 
