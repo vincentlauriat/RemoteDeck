@@ -17,9 +17,9 @@ Owner/agent column: **Vincent** (decisions, Apple accounts, physical test machin
 
 | Task | Owner or agent | Inputs | Deliverable | Done criterion | Depends on |
 |---|---|---|---|---|---|
-| T2.1 SwiftData models Machine, MachineGroup, SessionRecord, AssistantAction; two `ModelConfiguration`s (synced / local) | executor | BackendSchema | `Models/` | Unit tests create, fetch and delete each model | T1.1 |
-| T2.2 `KeychainStore` for KeychainCredential (sync and local items) | executor | BackendSchema | `KeychainStore.swift` | Tests: save/read/delete; the synchronizable flag is honored | T1.2 |
-| T2.3 AppSettings wrapper over `UserDefaults` | executor | BackendSchema | `AppSettings.swift` | Defaults match BackendSchema | T1.1 |
+| T2.1 SwiftData models Machine, MachineGroup, SessionRecord, AssistantAction; two `ModelConfiguration`s (synced / local) | executor | BackendSchema | `Packages/RemoteDeckCore` (`RemoteDeckSchemaV1`, `RemoteDeckSchema`) | Unit tests create, fetch and delete each model | T1.1 |
+| T2.2 `KeychainStore` for KeychainCredential (sync and local items) | executor | BackendSchema | `RemoteDeckCore/KeychainStore.swift` | Tests: save/read/delete; the synchronizable flag is honored | T1.2 |
+| T2.3 AppSettings wrapper over `UserDefaults` | executor | BackendSchema | `AppSettings` in `RemoteDeck/Localization/Localization.swift` | Defaults match BackendSchema | T1.1 |
 | T2.4 Validation rules (host, port, name, unique `host:port`) | executor + test-engineer | BackendSchema › Data validation | `MachineValidator` + tests | All the rules have passing and failing tests | T2.1 |
 | T2.5 RFB handshake: version, security negotiation, type 1, type 2 (VNC DES), type 30 (Apple DH: DH key exchange, MD5, AES-128-ECB credentials) | executor + test-engineer | RFC 6143, ARD auth notes | `RFBKit/Auth` | Authenticates against both T1.4 hosts; tests use recorded handshakes | T1.4 |
 

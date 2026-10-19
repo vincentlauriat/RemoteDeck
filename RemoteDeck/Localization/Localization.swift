@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import RemoteDeckCore
 
 // MARK: - Apparence
 
@@ -50,29 +51,97 @@ enum AppLocale {
 @Observable
 @MainActor
 final class AppSettings {
+    /// Clés `UserDefaults` (BackendSchema › AppSettings).
+    enum Key {
+        static let appearance = "appearance"
+        static let language = "language"
+        static let iCloudSyncEnabled = "iCloudSyncEnabled"
+        static let notificationsEnabled = "notificationsEnabled"
+        static let defaultSharedClipboard = "defaultSharedClipboard"
+        static let claudeModel = "claudeModel"
+        static let onboardingCompleted = "onboardingCompleted"
+        static let historyRetentionDays = "historyRetentionDays"
+    }
+
+    static let defaultClaudeModel = "claude-sonnet-5-5"
+    static let defaultHistoryRetentionDays = 365
+
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let keychain: KeychainStore
+
     var appearanceRaw: String {
-        didSet { UserDefaults.standard.set(appearanceRaw, forKey: "appearance") }
+        didSet { defaults.set(appearanceRaw, forKey: Key.appearance) }
     }
     var languageRaw: String {
         didSet {
-            UserDefaults.standard.set(languageRaw, forKey: "language")
+            defaults.set(languageRaw, forKey: Key.language)
             AppLocale.identifier = localeIdentifier
         }
     }
 
-    /// Exemple de secret stocké dans le Keychain (jamais en clair dans UserDefaults).
-    /// Remplace / supprime selon tes besoins — sert de patron pour tes propres clés API.
-    var apiKey: String {
-        didSet { Keychain.set(apiKey, account: "api-key") }
+    var iCloudSyncEnabled: Bool {
+        didSet { defaults.set(iCloudSyncEnabled, forKey: Key.iCloudSyncEnabled) }
+    }
+    var notificationsEnabled: Bool {
+        didSet { defaults.set(notificationsEnabled, forKey: Key.notificationsEnabled) }
+    }
+    var defaultSharedClipboard: Bool {
+        didSet { defaults.set(defaultSharedClipboard, forKey: Key.defaultSharedClipboard) }
+    }
+    var claudeModel: String {
+        didSet { defaults.set(claudeModel, forKey: Key.claudeModel) }
+    }
+    var onboardingCompleted: Bool {
+        didSet { defaults.set(onboardingCompleted, forKey: Key.onboardingCompleted) }
+    }
+    var historyRetentionDays: Int {
+        didSet { defaults.set(historyRetentionDays, forKey: Key.historyRetentionDays) }
     }
 
-    var apiKeyConfigured: Bool { !apiKey.isEmpty }
+    /// Clé API Anthropic, stockée dans le Keychain (compte `anthropic.apiKey`, non synchronisé),
+    /// jamais dans UserDefaults. Une chaîne vide supprime l'entrée.
+    var anthropicAPIKey: String {
+        didSet { persistAPIKey() }
+    }
 
-    init() {
-        appearanceRaw = UserDefaults.standard.string(forKey: "appearance") ?? AppearanceMode.system.rawValue
-        languageRaw = UserDefaults.standard.string(forKey: "language") ?? AppLanguage.system.rawValue
-        apiKey = Keychain.get(account: "api-key") ?? ""
+    /// Dernier échec Keychain (lecture ou écriture de la clé API), `nil` si tout va bien.
+    private(set) var keychainError: KeychainError? = nil
+
+    var apiKeyConfigured: Bool { !anthropicAPIKey.isEmpty }
+
+    init(defaults: UserDefaults = .standard, keychain: KeychainStore = KeychainStore()) {
+        self.defaults = defaults
+        self.keychain = keychain
+        appearanceRaw = defaults.string(forKey: Key.appearance) ?? AppearanceMode.system.rawValue
+        languageRaw = defaults.string(forKey: Key.language) ?? AppLanguage.system.rawValue
+        // `object(forKey:)`, pas `bool(forKey:)` : une clé absente doit donner le défaut, pas false/0.
+        iCloudSyncEnabled = defaults.object(forKey: Key.iCloudSyncEnabled) as? Bool ?? false
+        notificationsEnabled = defaults.object(forKey: Key.notificationsEnabled) as? Bool ?? true
+        defaultSharedClipboard = defaults.object(forKey: Key.defaultSharedClipboard) as? Bool ?? true
+        claudeModel = defaults.string(forKey: Key.claudeModel) ?? Self.defaultClaudeModel
+        onboardingCompleted = defaults.object(forKey: Key.onboardingCompleted) as? Bool ?? false
+        historyRetentionDays = defaults.object(forKey: Key.historyRetentionDays) as? Int
+            ?? Self.defaultHistoryRetentionDays
+        do {
+            anthropicAPIKey = try keychain.read(.anthropicAPIKey) ?? ""
+        } catch {
+            anthropicAPIKey = ""
+            keychainError = error
+        }
         AppLocale.identifier = localeIdentifier
+    }
+
+    private func persistAPIKey() {
+        do {
+            if anthropicAPIKey.isEmpty {
+                try keychain.delete(.anthropicAPIKey)
+            } else {
+                try keychain.save(anthropicAPIKey, for: .anthropicAPIKey)
+            }
+            keychainError = nil
+        } catch {
+            keychainError = error
+        }
     }
 
     var appearance: AppearanceMode { AppearanceMode(rawValue: appearanceRaw) ?? .system }

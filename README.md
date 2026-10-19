@@ -15,6 +15,7 @@ xcodegen generate                                   # regenerate RemoteDeck.xcod
 xcodebuild -project RemoteDeck.xcodeproj -scheme RemoteDeck build
 xcodebuild -project RemoteDeck.xcodeproj -scheme RemoteDeck test   # runs RFBKit tests
 cd Packages/RFBKit && swift test                    # RFBKit tests alone (faster)
+cd Packages/RemoteDeckCore && swift test            # models / Keychain / validation
 ```
 
 ## Project layout
@@ -22,6 +23,8 @@ cd Packages/RFBKit && swift test                    # RFBKit tests alone (faster
 ```
 RemoteDeck/            # app target (SwiftUI + AppKit)
 Packages/RFBKit/       # RFB/VNC protocol library, no UI dependency
+Packages/RemoteDeckCore/ # SwiftData models, Keychain store, validation
+RemoteDeckTests/       # hosted app tests
 Scripts/               # release.sh, icon and DMG background generators
 project.yml            # XcodeGen config
 PRD.md TRD.md AppFlow.md DesignBrief.md BackendSchema.md ImplementationPlan.md   # specs
@@ -31,7 +34,7 @@ PRD.md TRD.md AppFlow.md DesignBrief.md BackendSchema.md ImplementationPlan.md  
 
 - [x] Framing documents
 - [ ] Step 1 — project setup (T1.1 done; T1.2–T1.4 in progress)
-- [ ] Step 2 — data and authentication
+- [ ] Step 2 — data and authentication (T2.1–T2.4 done; T2.5 RFB auth pending)
 - [ ] Step 3 — main user path (P0)
 - [ ] Step 4 — secondary features (P1)
 - [ ] Step 5 — quality
