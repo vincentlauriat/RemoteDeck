@@ -37,22 +37,27 @@ targets:
       base:
         PRODUCT_NAME: RemoteDeck
         PRODUCT_BUNDLE_IDENTIFIER: fr.vincentlauriat.remotedeck
+        ENABLE_HARDENED_RUNTIME: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "6.0"
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         CODE_SIGN_ENTITLEMENTS: RemoteDeck/RemoteDeck.entitlements
-        # Signing, sandbox and CloudKit are configured in T1.2.
-        CODE_SIGN_IDENTITY: ""
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGNING_ALLOWED: NO
+        # Ad-hoc signing so sandbox entitlements apply in local builds.
+        # Release DMGs are signed with Developer ID by Scripts/release.sh.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: fr.vincentlauriat.remotedeck.dev
+          PRODUCT_NAME: RemoteDeck Dev
     info:
       path: RemoteDeck/Info.plist
       properties:
-        CFBundleName: RemoteDeck
-        CFBundleDisplayName: RemoteDeck
-        CFBundleIdentifier: fr.vincentlauriat.remotedeck
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleDisplayName: $(PRODUCT_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "15.0"

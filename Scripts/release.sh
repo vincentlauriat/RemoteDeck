@@ -65,7 +65,9 @@ ditto --norsrc --noextattr --noacl "$APP" "$STAGING"
 codesign_ts() {
   local target="$1" i
   for i in 1 2 3 4 5; do
-    if codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$target"; then
+    if codesign --force --options runtime --timestamp \
+         --entitlements "$ROOT/RemoteDeck/RemoteDeck.entitlements" \
+         --sign "$SIGNING_IDENTITY" "$target"; then
       return 0
     fi
     echo "  …codesign retry $i/5 (timestamp server) in 5s" >&2
@@ -77,6 +79,9 @@ codesign_ts() {
 echo "▶︎ codesign (Developer ID, Hardened Runtime)"
 codesign_ts "$STAGING"
 codesign --verify --strict --deep --verbose=1 "$STAGING"
+codesign -d --entitlements - --xml "$STAGING" 2>/dev/null \
+  | python3 -I -c 'import plistlib,sys; d=sys.stdin.buffer.read(); sys.exit(0 if d and plistlib.loads(d).get("com.apple.security.app-sandbox") is True else 1)' \
+  || { echo "✗ sandbox entitlement missing from signed app" >&2; exit 1; }
 
 # 5. Build the DMG with a custom Finder layout
 echo "▶︎ build DMG"

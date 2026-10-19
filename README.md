@@ -30,7 +30,7 @@ PRD.md TRD.md AppFlow.md DesignBrief.md BackendSchema.md ImplementationPlan.md  
 ## Roadmap
 
 - [x] Framing documents
-- [ ] Step 1 — project setup (T1.1 done; T1.2–T1.4 pending)
+- [ ] Step 1 — project setup (T1.1 done; T1.2–T1.4 in progress)
 - [ ] Step 2 — data and authentication
 - [ ] Step 3 — main user path (P0)
 - [ ] Step 4 — secondary features (P1)
