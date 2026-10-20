@@ -43,3 +43,11 @@ compare the server-side bytes and the parse results, not the client's ciphertext
 
 These files are excluded from the test target in `Package.swift`. Switch the folder to
 `resources: [.copy("Captures")]` when the first capture is added.
+
+## Decoding a real frame
+
+`--frame FILE.png` authenticates, starts a session, decodes updates until every pixel has been written once, and saves the framebuffer as a PNG. `--encodings` restricts the offered encodings (`tight`, `zrle`, `copyrect`, `raw`; pseudo-encodings are always added) so each decoder can be checked against a real server. With `--frame`, the capture also contains the screen contents: keep it local.
+
+```
+swift run rfb-probe <host> --user NAME --password-prompt --frame ~/Desktop/frame-tight.png --encodings tight,raw --capture DIR
+```

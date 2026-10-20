@@ -1,6 +1,8 @@
 import Foundation
+import ImageIO
 import os
 import RFBKit
+import UniformTypeIdentifiers
 
 // Live probe for a real RFB server: runs RFBConnection.open and prints the outcome.
 // Not part of the library or the app; build and run it from Packages/RFBKit with `swift run rfb-probe`.
@@ -8,12 +10,17 @@ import RFBKit
 let usage = """
     usage: rfb-probe <host> [--port N] [--user NAME]
                      [--password-prompt | --password-env VAR | --wrong-password] [--capture DIR]
+                     [--frame FILE.png [--encodings LIST]]
       --password-prompt  read the password from the terminal (no echo)
       --password-env VAR read the password from environment variable VAR
       --wrong-password   send a random password (checks the failure path without real credentials)
       --capture DIR      write the server -> client bytes to DIR/<timestamp>-server.bin and a summary
                          to DIR/<timestamp>-summary.json (client bytes, which carry the credentials,
                          are never recorded)
+      --frame FILE.png   after authenticating, decode the first full frame and write it as a PNG
+                         (the capture then also holds the screen contents)
+      --encodings LIST   comma-separated encodings offered with --frame: tight, zrle, copyrect, raw
+                         (default: the app's preferred list); pseudo-encodings are always added
     """
 
 func fail(_ message: String) -> Never {
@@ -28,6 +35,8 @@ var port: UInt16 = 5900
 var user: String?
 var password: String?
 var captureDirectory: URL?
+var framePath: URL?
+var encodings = Encoding.preferred
 
 @MainActor func value(for option: String) -> String {
     guard !args.isEmpty else { fail("\(option) needs a value\n\(usage)") }
@@ -52,6 +61,16 @@ while !args.isEmpty {
         password = String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         for index in buffer.indices { buffer[index] = 0 }
     case "--capture": captureDirectory = URL(fileURLWithPath: value(for: option), isDirectory: true)
+    case "--frame": framePath = URL(fileURLWithPath: value(for: option))
+    case "--encodings":
+        let names: [String: Int32] = ["tight": Encoding.tight, "zrle": Encoding.zrle,
+                                      "copyrect": Encoding.copyRect, "raw": Encoding.raw]
+        var chosen: [Int32] = []
+        for name in value(for: option).split(separator: ",") {
+            guard let encoding = names[name.lowercased()] else { fail("unknown encoding \(name)\n\(usage)") }
+            chosen.append(encoding)
+        }
+        encodings = chosen + [Encoding.extendedDesktopSize, Encoding.desktopSize, Encoding.cursor]
     default: fail("unknown argument \(option)\n\(usage)")
     }
 }
@@ -71,6 +90,64 @@ do throws(RFBError) {
     failure = error
 }
 let elapsed = ContinuousClock.now - start
+
+/// Decodes updates until every pixel of the desktop has been written once, then returns the framebuffer.
+func firstFullFrame(width: Int, height: Int) async throws -> (Framebuffer, Int, Duration) {
+    let frameStart = ContinuousClock.now
+    let stream = try await connection.startSession(encodings: encodings, requestUpdatesAutomatically: true)
+    var covered = [Bool](repeating: false, count: width * height)
+    var remaining = width * height
+    var updates = 0
+    for try await event in stream {
+        guard case .framebufferUpdate(let update) = event else { continue }
+        updates += 1
+        for region in update.regions where update.width == width && update.height == height {
+            let rect = region.rect
+            for y in rect.y..<(rect.y + rect.height) {
+                for x in rect.x..<(rect.x + rect.width) where !covered[y * width + x] {
+                    covered[y * width + x] = true
+                    remaining -= 1
+                }
+            }
+        }
+        if remaining == 0, let framebuffer = await connection.framebufferSnapshot() {
+            return (framebuffer, updates, ContinuousClock.now - frameStart)
+        }
+    }
+    throw RFBError.connectionClosed
+}
+
+func writePNG(_ framebuffer: Framebuffer, to url: URL) throws {
+    // Pixels are 0xAARRGGBB words, i.e. BGRA bytes in memory on little-endian hosts.
+    let data = framebuffer.pixels.withUnsafeBytes { Data($0) }
+    let info = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue)
+    guard let provider = CGDataProvider(data: data as CFData),
+          let image = CGImage(width: framebuffer.width, height: framebuffer.height, bitsPerComponent: 8,
+                              bitsPerPixel: 32, bytesPerRow: framebuffer.width * 4,
+                              space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: info, provider: provider,
+                              decode: nil, shouldInterpolate: false, intent: .defaultIntent),
+          let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)
+    else { throw RFBError.protocolViolation("cannot build PNG") }
+    CGImageDestinationAddImage(destination, image, nil)
+    guard CGImageDestinationFinalize(destination) else { throw RFBError.protocolViolation("cannot write PNG") }
+}
+
+var frameError: String?
+if let result, let framePath {
+    let width = Int(result.serverInit.width), height = Int(result.serverInit.height)
+    let frameTask = Task { try await firstFullFrame(width: width, height: height) }
+    let watchdog = Task { try await Task.sleep(for: .seconds(30)); frameTask.cancel() }
+    do {
+        let (framebuffer, updates, frameElapsed) = try await frameTask.value
+        watchdog.cancel()
+        try writePNG(framebuffer, to: framePath)
+        print("frame: \(framebuffer.width)x\(framebuffer.height) in \(updates) update(s), \(frameElapsed) -> \(framePath.path)")
+    } catch {
+        watchdog.cancel()
+        frameError = "\(error)"
+        print("FRAME FAILED: \(frameTask.isCancelled ? "no full frame within 30 s" : "\(error)")")
+    }
+}
 await connection.close()
 
 if let result {
@@ -139,4 +216,4 @@ if let captureDirectory {
     }
 }
 
-exit(result == nil ? 1 : 0)
+exit(result == nil || frameError != nil ? 1 : 0)
