@@ -218,17 +218,21 @@ struct SessionLoopbackTests {
 
         let connection = RFBConnection(host: "127.0.0.1", port: server.port)
         _ = try await connection.open(credentials: .none, timeout: Self.timeout)
-        async let first = Result { () async throws -> RFBSessionEvents in
-            try await connection.startSession(requestUpdatesAutomatically: false)
+        // `Result`'s async catching initializer needs Swift 6.4; CI runs 6.3.
+        @Sendable func attempt() async -> Result<RFBSessionEvents, RFBError> {
+            do throws(RFBError) {
+                return .success(try await connection.startSession(requestUpdatesAutomatically: false))
+            } catch {
+                return .failure(error)
+            }
         }
-        async let second = Result { () async throws -> RFBSessionEvents in
-            try await connection.startSession(requestUpdatesAutomatically: false)
-        }
+        async let first = attempt()
+        async let second = attempt()
         let results = await [first, second]
         let streams = results.compactMap { try? $0.get() }
         #expect(streams.count == 1)
         let errors = results.compactMap { result -> RFBError? in
-            if case .failure(let error) = result { return error as? RFBError }
+            if case .failure(let error) = result { return error }
             return nil
         }
         #expect(errors == [.protocolViolation("session already started")])
