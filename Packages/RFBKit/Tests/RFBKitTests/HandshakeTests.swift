@@ -10,6 +10,7 @@ struct HandshakeTests {
     static let vnc = AuthVectors.vnc[0]  // password "secret"
     static let dh1024 = AuthVectors.appleDH.first { $0.keyLength == 128 }!
     static let dhSmall = AuthVectors.appleDH.first { $0.keyLength == 2 }!
+    static let dh4096 = AuthVectors.appleDH.first { $0.keyLength == 512 }!
     static let bell: [UInt8] = [2]  // a Bell message right after ServerInit
 
     // MARK: Successful handshakes
@@ -49,6 +50,26 @@ struct HandshakeTests {
         #expect(result.securityType == 30)
         #expect(result.serverInit.name == "Mac mini")
         #expect(result.serverInit.width == 3024)
+    }
+
+    /// What a macOS 26 server sends: RFC 3526 group 16 (4096-bit prime), generator 5, key length 512.
+    @Test(arguments: Chunking.allCases)
+    func appleDH4096Success(chunking: Chunking) async throws {
+        let vector = Self.dh4096
+        #expect(vector.generator == 5)
+        let server = ServerMessage.banner("RFB 003.889\n") + [5, 30, 33, 36, 2, 35] + vector.serverParametersMessage
+            + ServerMessage.securityResult(0) + ServerMessage.serverInit(name: "minim6")
+        let outcome = try await offCooperativePool {
+            var handshake = RFBHandshake(credentials: vector.credentials, entropy: vector.entropy)
+            return drive(&handshake, server: server, chunking: chunking)
+        }
+
+        #expect(outcome.error == nil)
+        #expect(outcome.clientBytes == Array("RFB 003.008\n".utf8) + [30] + vector.expectedClientResponse + [1])
+        #expect(vector.expectedClientResponse.count == 128 + 512)
+        let result = try #require(outcome.result)
+        #expect(result.securityType == 30)
+        #expect(result.serverInit.name == "minim6")
     }
 
     @Test(arguments: Chunking.allCases)
@@ -272,7 +293,7 @@ struct HandshakeTests {
         }
     }
 
-    @Test(arguments: [0, 257, 0xFFFF])
+    @Test(arguments: [0, 513, 0xFFFF])
     func dhKeyLengthOutOfRange(keyLength: Int) {
         let server = ServerMessage.banner("RFB 003.008\n") + [1, 30] + UInt16(2).bigEndianBytes
             + UInt16(keyLength).bigEndianBytes

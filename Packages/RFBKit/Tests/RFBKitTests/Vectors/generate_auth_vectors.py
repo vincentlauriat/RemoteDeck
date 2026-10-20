@@ -41,6 +41,29 @@ MODP_2048 = int(
     "E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF695581718"
     "3995497CEA956AE515D2261898FA051015728E5A8AACAA68FFFFFFFFFFFFFFFF", 16)
 
+# RFC 3526 §5, group 16 (4096-bit MODP). macOS 26 servers send this prime with generator 5.
+MODP_4096 = int(
+    "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74"
+    "020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F1437"
+    "4FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7ED"
+    "EE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF05"
+    "98DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB"
+    "9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3B"
+    "E39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF695581718"
+    "3995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33"
+    "A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7"
+    "ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864"
+    "D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E2"
+    "08E24FA074E5AB3143DB5BFCE0FD108E4B82D120A92108011A723C12A787E6D7"
+    "88719A10BDBA5B2699C327186AF4E23C1A946834B6150BDA2583E9CA2AD44CE8"
+    "DBBBC2DB04DE8EF92E8EFC141FBECAA6287C59474E6BC05D99B2964FA090C3A2"
+    "233BA186515BE7ED1F612970CEE2D7AFB81BDD762170481CD0069127D5B05AA9"
+    "93B4EA988D8FDDC186FFB7DC90A6C08F4DF435C934063199FFFFFFFFFFFFFFFF", 16)
+
+# Same rule as AppleDHAuth: the private exponent is drawn from min(key length, 64) random bytes r,
+# then x = 2 + (r mod (p - 3)), written on min(key length, len(r) + 1) bytes.
+MAX_PRIVATE_KEY_LENGTH = 64
+
 
 def det(label, n):
     """n deterministic bytes from SHA-256(label || counter)."""
@@ -124,8 +147,10 @@ def dh_vector(name, generator, prime, key_len, username, password, label, condit
     server_public = pow(generator, server_private, prime)
     attempt = 0
     while True:
-        private_key = det(f"{label}-client-{attempt}", key_len)
-        x = int.from_bytes(private_key, "big")
+        private_key = det(f"{label}-client-{attempt}", min(key_len, MAX_PRIVATE_KEY_LENGTH))
+        x = 2 + int.from_bytes(private_key, "big") % (prime - 3)
+        assert 2 <= x <= prime - 2
+        exponent = to_bytes(x, min(key_len, len(private_key) + 1))
         client_public = to_bytes(pow(generator, x, prime), key_len)
         shared = to_bytes(pow(server_public, x, prime), key_len)
         if condition is None or condition(client_public, shared):
@@ -145,7 +170,8 @@ def dh_vector(name, generator, prime, key_len, username, password, label, condit
     ciphertext = openssl("-aes-128-ecb", aes_key, bytes(block))
     assert len(ciphertext) == 128
     return dict(name=name, generator=generator, prime=to_bytes(prime, key_len),
-                server_public=to_bytes(server_public, key_len), private_key=private_key, padding=padding,
+                server_public=to_bytes(server_public, key_len), private_key=private_key, exponent=exponent,
+                padding=padding,
                 username=username, password=password, client_public=client_public, shared=shared,
                 aes_key=aes_key, plaintext=bytes(block), ciphertext=ciphertext)
 
@@ -163,6 +189,8 @@ def dh_vectors():
                   "admin", "hunter2", "dh-1024-pub0", lambda pub, shared: pub[0] == 0),
         dh_vector("2048-bit MODP group 14, 63-byte credentials", 2, MODP_2048, 256,
                   "u" * 63, "p" * 63, "dh-2048"),
+        dh_vector("4096-bit MODP group 16, generator 5 (macOS 26)", 5, MODP_4096, 512,
+                  "vincent", "s3cret", "dh-4096"),
     ]
 
 
@@ -194,6 +222,7 @@ def main():
                   f"            prime: \"{v['prime'].hex()}\",\n"
                   f"            serverPublicKey: \"{v['server_public'].hex()}\",\n"
                   f"            privateKey: \"{v['private_key'].hex()}\",\n"
+                  f"            exponent: \"{v['exponent'].hex()}\",\n"
                   f"            padding: \"{v['padding'].hex()}\",\n"
                   f"            username: {swift_string(v['username'])},\n"
                   f"            password: {swift_string(v['password'])},\n"

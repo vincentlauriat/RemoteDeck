@@ -23,7 +23,10 @@ struct AppleDHVector: Sendable, CustomTestStringConvertible {
     let generator: UInt16
     let prime: String
     let serverPublicKey: String
+    /// Random bytes handed out by the entropy (min(key length, 64) bytes).
     let privateKey: String
+    /// Private exponent derived from them: 2 + (privateKey mod (p − 3)).
+    let exponent: String
     let padding: String
     let username: String
     let password: String

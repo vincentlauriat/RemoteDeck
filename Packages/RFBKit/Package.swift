@@ -9,6 +9,9 @@ let package = Package(
     ],
     targets: [
         .target(name: "RFBKit"),
+        // Live probe against a real server (`swift run rfb-probe <host>`); not a product, and the
+        // library does not depend on it.
+        .executableTarget(name: "rfb-probe", dependencies: ["RFBKit"]),
         .testTarget(
             name: "RFBKitTests",
             dependencies: ["RFBKit"],

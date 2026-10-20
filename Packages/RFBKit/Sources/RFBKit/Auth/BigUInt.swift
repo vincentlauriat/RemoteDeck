@@ -1,18 +1,22 @@
 import Foundation
 
 /// Minimal unsigned big integer for Apple DH authentication (type 30): byte conversion, comparison,
-/// subtraction, reduction and modular exponentiation for odd moduli up to a few thousand bits.
+/// addition, subtraction, reduction and modular exponentiation for odd moduli up to a few thousand bits.
 /// It is internal and fixed-purpose, not a general arbitrary-precision library.
 ///
 /// Limbs are 64-bit, least significant first.
 ///
-/// Timing: `power(_:modulo:)` uses Montgomery multiplication with a data-independent sequence of
-/// operations — every exponent bit costs one squaring and one multiplication, the result is picked
-/// with a mask, and the final Montgomery subtraction is masked too — so its timing does not depend
-/// on the exponent's bits (best effort: the compiler is not audited). This matters little here: the
+/// Timing: `power(_:modulo:)` uses Montgomery multiplication with a fixed 4-bit window and a
+/// data-independent sequence of operations — every 4 exponent bits cost four squarings and one
+/// multiplication by a table entry that is selected by scanning all 16 entries with a mask (the
+/// multiplication by base⁰ included), and the final Montgomery subtraction is masked too — so its
+/// timing does not depend on the exponent's bits (best effort: the compiler is not audited). This matters little here: the
 /// exponent is a client-side ephemeral key used once per connection, so a network observer gets a
-/// single timing sample. `reduced(modulo:)` and the Montgomery setup are not constant-time; they
-/// only handle public values (generator, prime, server public key).
+/// single timing sample. The Montgomery setup is not constant-time; it only handles the public
+/// prime. `reduced(modulo:)` is not constant-time either: it handles public values (generator, server
+/// public key) and the Apple DH private key bytes in `AppleDHAuth.privateExponent`. For primes above
+/// 512 bits those bytes are below the modulus, so the call is one comparison and returns at once; for
+/// smaller primes (insecure anyway) the reduction time depends on the secret.
 struct BigUInt: Equatable, Sendable, CustomStringConvertible {
     private(set) var limbs: [UInt64]
 
@@ -92,6 +96,20 @@ struct BigUInt: Equatable, Sendable, CustomStringConvertible {
         return BigUInt(limbs: result)
     }
 
+    /// `self + other`.
+    func adding(_ other: BigUInt) -> BigUInt {
+        var result = limbs + [UInt64](repeating: 0, count: max(0, other.limbs.count - limbs.count) + 1)
+        var carry: UInt64 = 0
+        for index in result.indices {
+            let rhs = index < other.limbs.count ? other.limbs[index] : 0
+            let (partial, overflow1) = result[index].addingReportingOverflow(rhs)
+            let (sum, overflow2) = partial.addingReportingOverflow(carry)
+            result[index] = sum
+            carry = (overflow1 || overflow2) ? 1 : 0
+        }
+        return BigUInt(limbs: result)
+    }
+
     // MARK: Modular arithmetic
 
     /// `self mod modulus`, by binary long division (shift and subtract). Not constant-time.
@@ -115,8 +133,8 @@ struct BigUInt: Equatable, Sendable, CustomStringConvertible {
         let base = reduced(modulo: modulus).limbs
 
         // One scratch allocation for the whole exponentiation (keeps debug builds fast too):
-        // m | R² | base·R | result | candidate | one | t (n + 2 limbs).
-        let capacity = 7 * n + 2
+        // m | R² | result | candidate | one | t (n + 2 limbs) | table (16 · n).
+        let capacity = 5 * n + (n + 2) + 16 * n
         let scratch = UnsafeMutablePointer<UInt64>.allocate(capacity: capacity)
         scratch.initialize(repeating: 0, count: capacity)
         defer {
@@ -125,8 +143,8 @@ struct BigUInt: Equatable, Sendable, CustomStringConvertible {
             _ = memset_s(scratch, byteCount, 0, byteCount)
             scratch.deallocate()
         }
-        let m = scratch, r2 = scratch + n, baseM = scratch + 2 * n, result = scratch + 3 * n
-        let candidate = scratch + 4 * n, one = scratch + 5 * n, t = scratch + 6 * n
+        let m = scratch, r2 = scratch + n, result = scratch + 2 * n
+        let candidate = scratch + 3 * n, one = scratch + 4 * n, t = scratch + 5 * n, table = scratch + 6 * n + 2
         for index in 0..<n {
             m[index] = context.modulus[index]
             r2[index] = context.rSquared[index]
@@ -134,18 +152,30 @@ struct BigUInt: Equatable, Sendable, CustomStringConvertible {
         for (index, limb) in base.enumerated() { candidate[index] = limb }
         one[0] = 1
         let inverse = context.inverse
-        Montgomery.multiply(candidate, r2, into: baseM, modulus: m, count: n, inverse: inverse, scratch: t)  // base·R
-        Montgomery.multiply(one, r2, into: result, modulus: m, count: n, inverse: inverse, scratch: t)       // 1·R
+        // Fixed 4-bit window: table[k] = base^k · R for k in 0..<16.
+        Montgomery.multiply(one, r2, into: table, modulus: m, count: n, inverse: inverse, scratch: t)            // 1·R
+        Montgomery.multiply(candidate, r2, into: table + n, modulus: m, count: n, inverse: inverse, scratch: t)  // base·R
+        for k in 2..<16 {
+            Montgomery.multiply(table + (k - 1) * n, table + n, into: table + k * n, modulus: m, count: n,
+                                inverse: inverse, scratch: t)
+        }
+        for index in 0..<n { result[index] = table[index] }
 
         for byte in exponent {
-            for shift in stride(from: 7, through: 0, by: -1) {
-                let bit = UInt64((byte >> UInt8(shift)) & 1)
-                Montgomery.multiply(result, result, into: result, modulus: m, count: n, inverse: inverse, scratch: t)
-                Montgomery.multiply(result, baseM, into: candidate, modulus: m, count: n, inverse: inverse, scratch: t)
-                let mask = 0 &- bit
-                for index in 0..<n {
-                    result[index] = (candidate[index] & mask) | (result[index] & ~mask)
+            for nibble in [byte >> 4, byte & 0x0F] {
+                for _ in 0..<4 {
+                    Montgomery.multiply(result, result, into: result, modulus: m, count: n, inverse: inverse, scratch: t)
                 }
+                // Read every table entry and keep the one at `nibble` with a mask, so the memory access
+                // pattern does not depend on the exponent.
+                for index in 0..<n { candidate[index] = 0 }
+                for k in 0..<16 {
+                    let difference = UInt64(UInt8(k) ^ nibble)
+                    let mask = ((difference | (0 &- difference)) >> 63) &- 1  // all ones iff k == nibble
+                    let entry = table + k * n
+                    for index in 0..<n { candidate[index] |= entry[index] & mask }
+                }
+                Montgomery.multiply(result, candidate, into: result, modulus: m, count: n, inverse: inverse, scratch: t)
             }
         }
         Montgomery.multiply(result, one, into: result, modulus: m, count: n, inverse: inverse, scratch: t)  // leave Montgomery form

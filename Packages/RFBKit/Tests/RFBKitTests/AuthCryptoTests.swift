@@ -61,24 +61,48 @@ struct BigUIntTests {
         #expect(value.reduced(modulo: modulus) == BigUInt(bigEndian: [UInt8](hex: "8f5c28da")))
     }
 
-    /// Timing of one exponentiation per key size (the client does two per connection); only 1024-bit
-    /// is asserted. Measured on an Apple Silicon dev Mac, best of 5 — see the T2.5 report:
-    /// release (`swift test -c release -Xswiftc -enable-testing`) ≈ 8.5 ms at 1024 bits; debug ≈ 140 ms.
+    @Test func addsWithCarry() {
+        let value = BigUInt(bigEndian: [UInt8](hex: "ffffffffffffffffff"))
+        #expect(value.adding(BigUInt(2)) == BigUInt(bigEndian: [UInt8](hex: "01000000000000000001")))  // Python: hex(0xff…ff + 2)
+        #expect(BigUInt(0).adding(BigUInt(0)).isZero)
+    }
+
+    /// Timing of the client side of one Apple DH exchange (`AppleDHAuth.response`: two modPows with the
+    /// 64-byte private key, plus MD5/AES) per key size, and, for comparison, of one modPow with a
+    /// full-length exponent (what the client did before the exponent was capped at 512 bits).
+    /// Best of 5 on an Apple Silicon dev Mac (4096-bit fix, 4-bit window modPow):
+    /// - release (`swift test -c release -Xswiftc -enable-testing`): 4096-bit exchange ≈ 88 ms
+    ///   (one modPow with a full 512-byte exponent: ≈ 0.35 s; ≈ 0.55 s before the window);
+    /// - debug: 4096-bit exchange ≈ 1.5 s (full-length exponent: ≈ 5 s per modPow; ≈ 7.9 s before).
+    /// Asserted at 4096 bits: < 150 ms in release, < 3 s in debug (the default connect timeout is 10 s).
     /// Gated behind `RFBKIT_PERF=1`: `RFBKIT_PERF=1 swift test --filter modPowTiming`.
-    @Test(.enabled(if: perfTestsEnabled, "set RFBKIT_PERF=1 to run timing tests"), arguments: [128, 256])
+    @Test(.enabled(if: perfTestsEnabled, "set RFBKIT_PERF=1 to run timing tests"), arguments: [128, 256, 512])
     func modPowTiming(keyLength: Int) throws {
         let vector = try #require(AuthVectors.appleDH.first { $0.keyLength == keyLength })
         let prime = BigUInt(bigEndian: [UInt8](hex: vector.prime))
-        let exponent = [UInt8](hex: vector.privateKey)
+        let privateKey = [UInt8](hex: vector.privateKey)
+        let padding = [UInt8](hex: vector.padding)
+        let fullExponent = [UInt8](repeating: 0xA5, count: keyLength)
         let clock = ContinuousClock()
-        var best = Duration.seconds(600)
+        var exchange = Duration.seconds(600)
+        var fullModPow = Duration.seconds(600)
         for _ in 0..<5 {
-            let elapsed = clock.measure { _ = BigUInt(2).power(exponent, modulo: prime) }
-            best = min(best, elapsed)
+            exchange = min(exchange, try clock.measure {
+                _ = try AppleDHAuth.response(parameters: vector.parameters, username: vector.username,
+                                             password: vector.password, privateKey: privateKey, padding: padding)
+            })
         }
-        print("modPow \(keyLength * 8)-bit: best of 5 = \(best)")
-        if keyLength == 128 {
-            #expect(best < .seconds(2))
+        for _ in 0..<(keyLength == 512 ? 2 : 5) {
+            fullModPow = min(fullModPow, clock.measure { _ = BigUInt(2).power(fullExponent, modulo: prime) })
+        }
+        print("Apple DH \(keyLength * 8)-bit: exchange (2 modPows, \(privateKey.count)-byte key) best = \(exchange); "
+              + "one modPow with a \(keyLength)-byte exponent best = \(fullModPow)")
+        if keyLength == 512 {
+            #if DEBUG
+            #expect(exchange < .seconds(3))
+            #else
+            #expect(exchange < .milliseconds(150))
+            #endif
         }
     }
 }
@@ -99,9 +123,13 @@ struct AppleDHAuthTests {
 
     @Test(arguments: AuthVectors.appleDH)
     func intermediateValuesMatch(vector: AppleDHVector) async throws {
+        let prime = BigUInt(bigEndian: [UInt8](hex: vector.prime))
+        #expect([UInt8](hex: vector.privateKey).count == AppleDHAuth.privateKeyLength(forKeyLength: vector.keyLength))
+        let exponent = AppleDHAuth.privateExponent(randomBytes: [UInt8](hex: vector.privateKey), prime: prime)
+        #expect(exponent.hex == vector.exponent)
         let shared = try await offCooperativePool {
             BigUInt(bigEndian: [UInt8](hex: vector.serverPublicKey))
-                .power([UInt8](hex: vector.privateKey), modulo: BigUInt(bigEndian: [UInt8](hex: vector.prime)))
+                .power(exponent, modulo: prime)
                 .bigEndianBytes(count: vector.keyLength)
         }
         #expect(shared.hex == vector.sharedSecret)

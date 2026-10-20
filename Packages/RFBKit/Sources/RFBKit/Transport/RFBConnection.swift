@@ -8,7 +8,7 @@ import os
 ///   the connection and then stays silent cannot hang the caller.
 /// - Cancelling the calling task closes the connection at once and throws `RFBError.cancelled`.
 /// - `RFBHandshake.receive` runs on a dedicated dispatch queue, not on the actor: Apple DH does
-///   two modular exponentiations (up to ~1 s each for 2048 bits in a debug build) that would
+///   two modular exponentiations (≈ 1.5 s for both at 4096 bits in a debug build, ≈ 90 ms in release) that would
 ///   otherwise block a thread of Swift's small cooperative pool.
 public actor RFBConnection {
     public nonisolated let host: String
@@ -22,9 +22,19 @@ public actor RFBConnection {
     /// Whether a connection is currently held (open or being opened).
     var isOpen: Bool { connection != nil }
 
+    /// Called with every chunk received from the server during `open`, before it is parsed. Only
+    /// server → client bytes pass through it (never the encrypted credentials the client sends).
+    /// Package-visible for the `rfb-probe` capture tool; the app does not use it.
+    private let receiveObserver: (@Sendable (Data) -> Void)?
+
     public init(host: String, port: UInt16 = 5900) {
+        self.init(host: host, port: port, receiveObserver: nil)
+    }
+
+    package init(host: String, port: UInt16 = 5900, receiveObserver: (@Sendable (Data) -> Void)?) {
         self.host = host
         self.port = port
+        self.receiveObserver = receiveObserver
     }
 
     /// Connects and authenticates. On failure the connection is closed and a typed error thrown.
@@ -49,6 +59,7 @@ public actor RFBConnection {
                     guard let chunk = try await connection.receiveChunk() else {
                         throw handshake.errorForClosedConnection()
                     }
+                    receiveObserver?(chunk)
                     let step: HandshakeStep
                     (handshake, step) = try await Self.receive(chunk, into: handshake, on: handshakeQueue)
                     guard !Task.isCancelled else { throw RFBError.cancelled }

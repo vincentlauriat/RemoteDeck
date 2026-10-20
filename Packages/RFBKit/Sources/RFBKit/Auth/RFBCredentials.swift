@@ -30,7 +30,8 @@ public struct RFBCredentials: Sendable, CustomStringConvertible, CustomDebugStri
 /// The private key and the credential padding come from two separate providers, so a test vector
 /// can pin each one without depending on the order in which they are consumed.
 public struct HandshakeEntropy: Sendable {
-    /// Returns `count` bytes used as the big-endian DH private exponent.
+    /// Returns `count` random bytes the DH private exponent is derived from (`count` = min(key length, 64),
+    /// see `AppleDHAuth.maxPrivateKeyLength` and `AppleDHAuth.privateExponent`).
     public var privateKey: @Sendable (_ count: Int) -> [UInt8]
     /// Returns 128 bytes that fill the credential block before the user name and password are copied in.
     public var credentialPadding: @Sendable (_ count: Int) -> [UInt8]
