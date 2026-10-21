@@ -1,6 +1,7 @@
 import AppKit
 import QuartzCore
 import RemoteDeckCore
+import RFBKit
 import SwiftUI
 
 /// The remote screen: an NSView backed by a `CAMetalLayer`, drawn by the view's display link.
@@ -9,7 +10,13 @@ import SwiftUI
 /// scroll or backing-scale change) and pauses itself after the frame, so a static desktop costs no
 /// frame and no wake-up at all. The coordinate system is flipped (origin top-left) to match the
 /// framebuffer and `FramebufferGeometry`.
+///
+/// Input: keys, clicks, drags, moves and scrolls are handed to `input` (`SessionInputController`),
+/// which captures the keyboard while the view is focused. The local arrow cursor stays visible (the
+/// remote cursor shape is not drawn yet).
 final class FramebufferView: NSView {
+    let input = SessionInputController()
+
     var renderer: FramebufferRenderer? {
         didSet {
             guard renderer !== oldValue else { return }
@@ -37,6 +44,8 @@ final class FramebufferView: NSView {
 
     private let metalLayer = CAMetalLayer()
     private var displayLink: CADisplayLink?
+    private var keyMonitor: Any?
+    private var windowObservers: [any NSObjectProtocol] = []
     private var redraw = FramebufferRedrawState() {
         didSet { displayLink?.isPaused = redraw.isPaused }
     }
@@ -87,6 +96,7 @@ final class FramebufferView: NSView {
         // Invalidated when leaving the window: the link retains the view.
         displayLink?.invalidate()
         displayLink = nil
+        updateInputObservers()
         guard window != nil else { return }
         let link = displayLink(target: self, selector: #selector(displayLinkFired(_:)))
         // Up to ProMotion's 120 Hz; the system clamps it to the display the window is on.
@@ -138,23 +148,129 @@ final class FramebufferView: NSView {
     }
 }
 
+// MARK: - Input
+
+extension FramebufferView {
+    override var acceptsFirstResponder: Bool { true }
+
+    override func becomeFirstResponder() -> Bool {
+        guard super.becomeFirstResponder() else { return false }
+        input.setFocus(window?.isKeyWindow ?? false)
+        return true
+    }
+
+    override func resignFirstResponder() -> Bool {
+        guard super.resignFirstResponder() else { return false }
+        input.setFocus(false)
+        return true
+    }
+
+    /// While capturing, key events never get here (the local monitor takes them). With the keyboard
+    /// released they do; dropping them avoids a beep per key. Menu shortcuts still work: AppKit
+    /// offers them to `performKeyEquivalent` and the menus first.
+    override func keyDown(with event: NSEvent) {}
+    override func keyUp(with event: NSEvent) {}
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil { tearDownInput() }
+    }
+
+    /// Removes the key monitor and window observers and releases everything held on the remote. Runs
+    /// when the view leaves its window and when SwiftUI dismantles it, so a closed session leaves no
+    /// monitor behind.
+    func tearDownInput() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+        windowObservers = []
+        input.setFocus(false)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas where area.owner === self { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+                                       owner: self))
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        // A click takes the keyboard back (after ⌘⌥Esc or when another view had focus).
+        input.requestCapture()
+        if window?.firstResponder !== self { window?.makeFirstResponder(self) }
+        forwardPointer(event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) { forwardPointer(event) }
+    override func otherMouseDown(with event: NSEvent) { forwardPointer(event) }
+    override func mouseUp(with event: NSEvent) { forwardPointer(event) }
+    override func rightMouseUp(with event: NSEvent) { forwardPointer(event) }
+    override func otherMouseUp(with event: NSEvent) { forwardPointer(event) }
+    override func mouseMoved(with event: NSEvent) { forwardPointer(event) }
+    override func mouseDragged(with event: NSEvent) { forwardPointer(event) }
+    override func rightMouseDragged(with event: NSEvent) { forwardPointer(event) }
+    override func otherMouseDragged(with event: NSEvent) { forwardPointer(event) }
+    override func scrollWheel(with event: NSEvent) { forwardPointer(event) }
+
+    private func forwardPointer(_ event: NSEvent) {
+        input.handlePointer(event, at: convert(event.locationInWindow, from: nil), geometry: geometry)
+    }
+
+    /// Installs, for the current window, the key monitor and the key-window observers.
+    fileprivate func updateInputObservers() {
+        tearDownInput()
+        guard let window else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) { [weak self] event in
+            let consumed = MainActor.assumeIsolated { self?.handleMonitoredKey(event) ?? false }
+            return consumed ? nil : event
+        }
+        for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
+            windowObservers.append(NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) {
+                [weak self] _ in
+                MainActor.assumeIsolated { self?.updateFocus() }
+            })
+        }
+        updateFocus()
+    }
+
+    private func updateFocus() {
+        input.setFocus(window?.isKeyWindow == true && window?.firstResponder === self)
+    }
+
+    /// Only events for this view's key window while it is first responder; the rest go on as usual.
+    private func handleMonitoredKey(_ event: NSEvent) -> Bool {
+        guard let window, event.window === window, window.isKeyWindow, window.firstResponder === self else {
+            return false
+        }
+        return input.handleKey(event)
+    }
+}
+
 /// SwiftUI wrapper for `FramebufferView`.
 struct FramebufferViewRepresentable: NSViewRepresentable {
     let renderer: FramebufferRenderer?
     var scalingMode: ScalingMode
+    var modifierProfile: ModifierProfile = .appleRemoteDesktop
+    /// Receives the input messages, in order (e.g. `InputSender.enqueue`).
+    var onInput: (([ClientMessage]) -> Void)?
     /// Called once with the created view (e.g. to read its counters).
     var onCreate: ((FramebufferView) -> Void)?
 
     func makeNSView(context: Context) -> FramebufferView {
         let view = FramebufferView(frame: .zero)
-        view.renderer = renderer
-        view.scalingMode = scalingMode
+        updateNSView(view, context: context)
         onCreate?(view)
         return view
+    }
+
+    static func dismantleNSView(_ view: FramebufferView, coordinator: ()) {
+        view.tearDownInput()
     }
 
     func updateNSView(_ view: FramebufferView, context: Context) {
         view.renderer = renderer
         view.scalingMode = scalingMode
+        view.input.profile = modifierProfile
+        view.input.onInput = onInput
     }
 }

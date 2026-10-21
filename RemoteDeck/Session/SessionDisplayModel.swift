@@ -27,7 +27,7 @@ final class SessionDisplayModel {
         case .desktopResized(let width, let height):
             renderer.resize(width: width, height: height)
         case .bell, .serverCutText, .cursor:
-            break   // cursor: T3.3 input; clipboard: T3.4
+            break   // cursor shape: not drawn yet (the local arrow stays); clipboard: T4.1
         }
     }
 }

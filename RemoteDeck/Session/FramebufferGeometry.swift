@@ -69,6 +69,22 @@ struct FramebufferGeometry: Equatable {
         return (x, y)
     }
 
+    /// The remote pixel the pointer is on. The content rectangle is taken as closed, so its right and
+    /// bottom edges (a point exactly at `contentRect.maxX/maxY`, reachable at the view's edge) map to
+    /// the last column/row instead of falling outside. Outside it: `nil` (letterbox), or with
+    /// `clampingOutside` (a drag that leaves the content) the nearest edge pixel.
+    func pointerPixel(forViewPoint point: CGPoint, clampingOutside: Bool) -> (x: Int, y: Int)? {
+        guard scale > 0, remoteWidth > 0, remoteHeight > 0 else { return nil }
+        let inside = point.x >= contentRect.minX && point.x <= contentRect.maxX
+            && point.y >= contentRect.minY && point.y <= contentRect.maxY
+        guard inside || clampingOutside else { return nil }
+        let remote = remotePoint(forViewPoint: point)
+        func clamp(_ value: CGFloat, _ count: Int) -> Int {
+            min(max(Int(value.rounded(.down)), 0), count - 1)
+        }
+        return (clamp(remote.x, remoteWidth), clamp(remote.y, remoteHeight))
+    }
+
     /// The view point of a remote position (integer coordinates are a pixel's top-left corner).
     func viewPoint(forRemotePoint remote: CGPoint) -> CGPoint {
         CGPoint(x: contentRect.minX + remote.x * scale, y: contentRect.minY + remote.y * scale)
