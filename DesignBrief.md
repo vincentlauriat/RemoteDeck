@@ -56,6 +56,7 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 - Spacing scale: 4, 8, 12, 16, 20 pt (macOS standard). Sheet padding 20 pt.
 - Library Window: sidebar 220–320 pt (resizable), detail pane with machine info and a large "Connect" button. Minimum window size 720 × 480.
 - Session Window: the framebuffer fills the content area. Letterbox in black when the aspect ratios differ. Minimum 640 × 400.
+- Scaling (⌘⌥S): **Fit** scales the framebuffer up or down to the content area, aspect ratio kept, centered (linear filtering). **Actual size** shows one remote pixel per device pixel of the local display, so it is pixel-exact (nearest filtering): a 2880 × 1800 Retina remote takes 1440 × 900 pt on a Retina Mac, a 1920 × 1080 remote 960 × 540 pt. Smaller than the content area → centered on black; larger → clipped, the visible part set by a scroll offset (panning UI: Session Window).
 - Machine Editor sheet: 460 pt wide.
 - No breakpoints (desktop only). In full screen, the toolbar reveals on hover at the top edge.
 

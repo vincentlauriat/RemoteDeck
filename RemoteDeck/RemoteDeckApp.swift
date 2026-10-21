@@ -27,5 +27,13 @@ struct RemoteDeckApp: App {
                 .environment(settings)
         }
         #endif
+
+        #if DEBUG
+        Window("Framebuffer Debug", id: "framebuffer-debug") {
+            FramebufferDebugView()
+        }
+        .defaultSize(width: 1280, height: 760)
+        .defaultLaunchBehavior(FramebufferDebug.mode == nil ? .suppressed : .presented)
+        #endif
     }
 }

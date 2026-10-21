@@ -30,7 +30,7 @@ Owner/agent column: **Vincent** (decisions, Apple accounts, physical test machin
 | Task | Owner or agent | Inputs | Deliverable | Done criterion | Depends on |
 |---|---|---|---|---|---|
 | T3.1 RFB framebuffer protocol: SetPixelFormat, SetEncodings, update requests; decoders Raw, CopyRect, ZRLE, Tight; DesktopSize pseudo-encoding | executor | RFC 6143 | `RFBKit/Decoding` | Decoder tests on recorded frames pass; a 1080p full update decodes in < 30 ms | T2.5 |
-| T3.2 Metal framebuffer view (AppKit) with dirty-rect texture upload and fit/actual scaling | executor | TRD, DesignBrief | `FramebufferView` | 120 Hz on a static desktop with CPU < 25 % | T3.1 |
+| T3.2 Metal framebuffer view (AppKit) with dirty-rect texture upload and fit/actual scaling | executor | TRD, DesignBrief | `FramebufferView` | 120 Hz on a static desktop with CPU < 25 % (see the note below the table) | T3.1 |
 | T3.3 Input: key mapping (keysyms, modifiers, keyboard capture, ⌘⌥Esc release), pointer, scroll | executor | AppFlow › Navigation rules | `InputTranslator` | Typing, clicks and scrolling work on both hosts; ≤ 50 ms added latency | T3.2 |
 | T3.4 Library Window + Machine Editor (create, edit, delete, search, test connection) | executor | AppFlow, DesignBrief | SwiftUI views | Acceptance criterion 1 passes | T2.1, T2.2, T2.4 |
 | T3.5 Session Window: connecting overlay, error banners, reconnect, SessionRecord writing | executor | AppFlow › Session Window | `SessionWindow` | Acceptance criteria 2 and 2b pass; connect time recorded | T3.3, T3.4 |
@@ -39,6 +39,13 @@ Owner/agent column: **Vincent** (decisions, Apple accounts, physical test machin
 | T3.8 Onboarding Sheet + empty and blocked states | executor | AppFlow › First use | Views | Each blocked state in AppFlow can be reproduced and shows its message | T3.6 |
 
 **Checkpoint:** run the main path end to end on both hosts; criteria 1–4 pass; record the p90 connect time over 10 connections.
+
+**T3.2 done criterion, measurable form.** "120 Hz on a static desktop with CPU < 25 %" means:
+(1) static desktop, no updates: **0 draws** (the display link is paused) and process CPU well under 25 % of one core;
+(2) `-FramebufferDebug stream` (a 200 × 200 region repainted 120 times per second): draws at the display's maximum
+rate (120 Hz on ProMotion, 60 Hz elsewhere) with CPU < 25 % of one core. Measured from `ps -o cputime=` deltas
+over 5 s and the debug window's `draws/s` lines. Still to be measured live on an unlocked session (the first
+measurement ran with the screen locked, so no frame could be drawn); 120 Hz needs a ProMotion display.
 
 ## Step 4 — secondary features
 

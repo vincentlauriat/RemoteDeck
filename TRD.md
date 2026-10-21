@@ -59,6 +59,7 @@ flowchart LR
 
 - **RFBClient** is a Swift package target (`RFBKit`) with no UI dependency, so it can be unit-tested against recorded byte streams.
 - Each session runs its socket and decoding on its own actor; frames go to the main actor only as dirty rectangles for the Metal texture.
+- **FramebufferView** (`RemoteDeck/Session/`): each update's regions are copied into a staging `MTLBuffer` and blitted into a private `bgra8Unorm` texture (RFBKit's pixel layout), ordered on the GPU so an upload never tears a frame in flight nor waits on the GPU. A display link draws only when something changed and pauses otherwise, so a static desktop costs no frames. The shader is compiled from source at run time, so the build does not depend on Xcode's optional Metal toolchain component.
 - **ClaudeAssistant** turns API `tool_use` actions (click, type, key, scroll) into RFB pointer and key events, but only after the user confirms each one.
 
 ## Security and privacy
@@ -73,7 +74,7 @@ flowchart LR
 
 - Time from click to first frame: ≤ 5 s on LAN (p90), ≤ 1.5 s typical.
 - Added local input latency (event → bytes sent): ≤ 50 ms.
-- Render at the display refresh rate (up to 120 Hz) for dirty regions; CPU ≤ 25 % of one core for a 1080p static desktop.
+- Render at the display refresh rate (up to 120 Hz) for dirty regions; CPU ≤ 25 % of one core for a 1080p static desktop. Concretely: a static desktop costs 0 draws (paused display link); a continuously changing region draws at the display's maximum rate (120 Hz on ProMotion) with CPU < 25 % of one core. Measured with the Debug `-FramebufferDebug static | stream` window; a live measurement on an unlocked session is still pending (see ImplementationPlan › T3.2).
 - Bonjour results within 3 s.
 - Reachability probe: TCP connect to port 5900 every 60 s per watched machine; offline after 2 consecutive failures.
 - Backups: the SwiftData store is covered by Time Machine; CloudKit acts as a second copy of the Machine Library.

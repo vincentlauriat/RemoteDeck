@@ -19,6 +19,7 @@ cd Packages/RemoteDeckCore && swift test                           # models, Key
 cd Packages/RFBKit && swift test --filter ProtocolVersionTests/parsesStandardBanner   # single test
 RFBKIT_PERF=1 swift test --filter modPowTiming                    # opt-in timing tests (run from Packages/RFBKit)
 open "build/DerivedData/Build/Products/Debug/RemoteDeck Dev.app"   # Debug = bundle id …remotedeck.dev
+"build/DerivedData/Build/Products/Debug/RemoteDeck Dev.app/Contents/MacOS/RemoteDeck Dev" -FramebufferDebug stream 2> fb.log &   # Debug-only synthetic framebuffer window (static | stream); draws/s, uploads/s, CPU time on stderr
 ```
 
 The project targets Swift 6 language mode, so strict concurrency errors are build failures. Fix them with actor isolation (`@MainActor`, actors, `Sendable`), never by downgrading the language mode. Local builds are ad-hoc signed so the App Sandbox applies (`RemoteDeck/RemoteDeck.entitlements`). `Scripts/release.sh` re-signs with Developer ID, passes the same entitlements, and aborts if the sandbox entitlement is missing. iCloud/CloudKit is not configured yet: it needs a Developer ID provisioning profile from Vincent's Apple account.
