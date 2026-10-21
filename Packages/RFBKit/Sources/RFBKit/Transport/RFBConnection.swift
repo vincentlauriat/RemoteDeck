@@ -217,9 +217,14 @@ public actor RFBConnection {
 
     /// Sends one client message (key and pointer events, update requests…).
     public func send(_ message: ClientMessage) async throws(RFBError) {
+        try await send([message])
+    }
+
+    /// Sends several client messages in one write, in order (see `InputSender`).
+    public func send(_ messages: [ClientMessage]) async throws(RFBError) {
         guard let connection else { throw .protocolViolation("not connected") }
         do {
-            try await connection.sendAll(Data(message.wireBytes))
+            try await connection.sendAll(Data(messages.flatMap(\.wireBytes)))
         } catch {
             throw (error as? RFBError) ?? .network(String(describing: error))
         }

@@ -11,8 +11,44 @@ import SwiftUI
 /// (plus a 200 × 200 region repainted at 120 updates/s). Counters go to stderr once a second.
 /// The stream's frames are computed up front and paced off the main actor, so the measured CPU is
 /// the display path's, not the generator's.
+///
+/// Input (T3.3): keys, clicks and scrolls in the window are translated as for a session and logged to
+/// stderr as RFB events instead of being sent. `-InputDebug x11` uses the X11 modifier profile
+/// (⌘ = Super), anything else the Apple Remote Desktop one (⌘ = Alt).
 enum FramebufferDebug {
     static var mode: String? { UserDefaults.standard.string(forKey: "FramebufferDebug") }
+    static var modifierProfile: ModifierProfile {
+        UserDefaults.standard.string(forKey: "InputDebug") == "x11" ? .x11 : .appleRemoteDesktop
+    }
+
+    /// One line per message, e.g. `input key down 0xffe9 Alt_L` or `input pointer mask=1 x=10 y=20`.
+    static func log(_ messages: [ClientMessage]) {
+        let lines = messages.map { message -> String in
+            switch message {
+            case .keyEvent(let down, let key):
+                "input key \(down ? "down" : "up  ") 0x\(String(key, radix: 16)) \(keyName(key))"
+            case .pointerEvent(let mask, let x, let y):
+                "input pointer mask=\(mask) x=\(x) y=\(y)"
+            default:
+                "input \(message)"
+            }
+        }
+        FileHandle.standardError.write(Data((lines.joined(separator: "\n") + "\n").utf8))
+    }
+
+    private static func keyName(_ key: UInt32) -> String {
+        let names: [UInt32: String] = [
+            Keysym.shiftL: "Shift_L", Keysym.shiftR: "Shift_R", Keysym.controlL: "Control_L",
+            Keysym.controlR: "Control_R", Keysym.metaL: "Meta_L", Keysym.metaR: "Meta_R", Keysym.altL: "Alt_L",
+            Keysym.altR: "Alt_R", Keysym.superL: "Super_L", Keysym.superR: "Super_R", Keysym.capsLock: "Caps_Lock",
+            Keysym.return: "Return", Keysym.tab: "Tab", Keysym.escape: "Escape", Keysym.backSpace: "BackSpace",
+            Keysym.delete: "Delete", Keysym.kpEnter: "KP_Enter",
+        ]
+        if let name = names[key] { return name }
+        let code = key >= 0x0100_0000 ? key - 0x0100_0000 : key
+        guard key < 0xFF00 || key >= 0x0100_0000, let scalar = Unicode.Scalar(code) else { return "" }
+        return "'\(Character(scalar))'"
+    }
 }
 
 struct FramebufferDebugView: View {
@@ -21,7 +57,9 @@ struct FramebufferDebugView: View {
     @State private var view: FramebufferView?
 
     var body: some View {
-        FramebufferViewRepresentable(renderer: model?.renderer, scalingMode: scalingMode) { created in
+        FramebufferViewRepresentable(renderer: model?.renderer, scalingMode: scalingMode,
+                                     modifierProfile: FramebufferDebug.modifierProfile,
+                                     onInput: FramebufferDebug.log) { created in
             Task { @MainActor in view = created }   // not during the view update
         }
             .frame(minWidth: 640, minHeight: 400)

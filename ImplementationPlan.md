@@ -47,6 +47,8 @@ rate (120 Hz on ProMotion, 60 Hz elsewhere) with CPU < 25 % of one core. Measure
 over 5 s and the debug window's `draws/s` lines. Still to be measured live on an unlocked session (the first
 measurement ran with the screen locked, so no frame could be drawn); 120 Hz needs a ProMotion display.
 
+**T3.3 status.** Code-complete and unit-tested (`InputTranslator`, `InputSender`, `SessionInputController`; local latency measured in tests: NSEvent → messages ≈ 2–11 µs, enqueue → write on loopback p50 < 0.2 ms). The host verification (typing, clicks, scrolling, ⌘C/⌘V per modifier profile, on the test Mac and the Anthropic container) and the live ≤ 50 ms measurement move to T3.5 (test Mac) and T3.7 (container), once a Session Window wires `InputSender`. Open product decisions: the release shortcut (macOS reserves ⌘⌥Esc), the local shortcut allow-list, and a `CGEventTap` for system combos (AppFlow › Navigation rules).
+
 ## Step 4 — secondary features
 
 | Task | Owner or agent | Inputs | Deliverable | Done criterion | Depends on |

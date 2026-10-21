@@ -103,6 +103,7 @@ First-time variant: `Onboarding Sheet -> Discovery Panel -> Add -> Machine Edito
 - One Library Window, one Session Window containing native macOS window tabs, and one Settings Window (⌘,).
 - ⌘0 Library, ⌘1…⌘9 session tabs, ⌘K Claude Assistant Panel, ⌘Y Session History View.
 - While a session has focus, all key combos are sent to the remote machine, except ⌘⌥Esc "release keyboard" (shown in the toolbar). *(assumption)*
+  - Open item: macOS reserves ⌘⌥Esc for Force Quit, so the app is not expected to receive it without a `CGEventTap` (Accessibility permission). Until that is decided, the capture pauses whenever the session view loses focus (another window or view) and resumes when it gets focus back; after ⌘⌥Esc, a click in the session takes it again. Also open: while captured, the Session Window's own shortcuts (⌘W, ⌘K, ⌘⌥S, ⌘1…⌘9, ⌘V) go to the remote too; T3.5/T4.2 need an allow-list decision. System combos (⌘Tab, ⌘Space, Mission Control) stay local for the same reason (TRD › Input).
 - Deep links open in a new tab of the existing Session Window.
 
 ## Empty and blocked states
