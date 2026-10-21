@@ -21,6 +21,12 @@ public struct FramebufferUpdate: Equatable, Sendable {
         public var rect: RFBRect
         /// `rect.width × rect.height` pixels, row-major, in the `Framebuffer.pixels` format.
         public var pixels: [UInt32]
+
+        /// `pixels` must hold `rect.width × rect.height` values (consumers skip regions that don't).
+        public init(rect: RFBRect, pixels: [UInt32]) {
+            self.rect = rect
+            self.pixels = pixels
+        }
     }
 
     /// Framebuffer size the regions refer to.
@@ -32,6 +38,14 @@ public struct FramebufferUpdate: Equatable, Sendable {
     /// `false` for the regions handed out just before a resize in the middle of a FramebufferUpdate
     /// (they refer to the old size); the rest of that message follows in another update.
     public var completesMessage: Bool = true
+
+    /// Public so that consumers can build synthetic updates (tests, debug sources).
+    public init(width: Int, height: Int, regions: [Region], completesMessage: Bool = true) {
+        self.width = width
+        self.height = height
+        self.regions = regions
+        self.completesMessage = completesMessage
+    }
 }
 
 /// A cursor image from the Cursor pseudo-encoding. Pixels use the `Framebuffer.pixels` format with
