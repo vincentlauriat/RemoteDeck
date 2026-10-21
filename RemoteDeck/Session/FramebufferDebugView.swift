@@ -14,7 +14,8 @@ import SwiftUI
 ///
 /// Input (T3.3): keys, clicks and scrolls in the window are translated as for a session and logged to
 /// stderr as RFB events instead of being sent. `-InputDebug x11` uses the X11 modifier profile
-/// (⌘ = Super), anything else the Apple Remote Desktop one (⌘ = Alt).
+/// (⌘ = Super), anything else the Apple Remote Desktop one (⌘ = Alt). The once-a-second line also
+/// gives the system-shortcut tap state: `tap=none|enabled|disabled trusted=… system-shortcuts=…`.
 enum FramebufferDebug {
     static var mode: String? { UserDefaults.standard.string(forKey: "FramebufferDebug") }
     static var modifierProfile: ModifierProfile {
@@ -113,8 +114,9 @@ struct FramebufferDebugView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 let now = (draws: view?.drawCount ?? 0, uploads: model.renderer.uploadCount)
-                FileHandle.standardError.write(Data(
-                    "framebuffer-debug draws/s=\(now.draws - last.draws) uploads/s=\(now.uploads - last.uploads) \(Self.cpuLine())\n".utf8))
+                FileHandle.standardError.write(Data((
+                    "framebuffer-debug draws/s=\(now.draws - last.draws) uploads/s=\(now.uploads - last.uploads) \(Self.cpuLine()) "
+                    + "\(view?.systemShortcuts.debugDescription ?? "tap=none")\n").utf8))
                 last = now
             }
         }

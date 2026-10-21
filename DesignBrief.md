@@ -66,7 +66,7 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 - **Library Window:** groups as collapsible sidebar sections. Favorites section pinned at the top. The detail pane shows name, host:port (mono), kind, last connected, and a status line.
 - **Machine Editor:** the kind picker comes first, because it changes the fields (Anthropic VM hides the user field; Mac ARD requires it). The "Test" button sits next to "Save".
 - **Discovery Panel:** popover-sized sheet 420 × 360 pt. Each row shows name, host and service type; machines already added are greyed with "Added".
-- **Session Window:** the remote screen is the hero. Connecting overlay centered. Keyboard-capture state shown as a toolbar pill: "Keyboard captured — ⌘⌥Esc to release". The shortcut is an open item: macOS reserves ⌘⌥Esc for Force Quit (AppFlow › Navigation rules).
+- **Session Window:** the remote screen is the hero. Connecting overlay centered. Keyboard-capture state shown as a toolbar pill: "Keyboard captured — ⌃⌥⌘R to release" (AppFlow › Keyboard capture). Without Accessibility access, a secondary line or popover in the pill reads "System shortcuts need Accessibility access — Open Settings"; the button opens System Settings › Privacy & Security › Accessibility.
 - **Claude Assistant Panel:** prompt field at the bottom, history above, and a token counter for the session at the top-right in 11 pt secondary.
 - **Session History View:** `Table` with columns Machine, Started, Connect time (ms), Duration, Outcome. Summary strip above: sessions in the last 30 days, p90 connect time, ARD/Screen Sharing usage note.
 - **Settings Window:** standard tabbed settings (General, Sync, Claude, Notifications).

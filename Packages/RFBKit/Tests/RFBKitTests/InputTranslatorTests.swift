@@ -168,11 +168,11 @@ struct InputTranslatorKeyTests {
         #expect(release == [up(Keysym.shiftL), up(0x41)])
     }
 
-    @Test func releaseShortcutIsCommandOptionEscapeOnly() {
-        #expect(InputTranslator.isReleaseShortcut(KeyInput(keyCode: VK.escape, modifierFlags: [.command, .option])))
-        #expect(!InputTranslator.isReleaseShortcut(KeyInput(keyCode: VK.escape, modifierFlags: [.command])))
-        #expect(!InputTranslator.isReleaseShortcut(KeyInput(keyCode: VK.escape, modifierFlags: [.command, .option, .shift])))
-        #expect(!InputTranslator.isReleaseShortcut(KeyInput(keyCode: VK.ansiA, modifierFlags: [.command, .option])))
+    @Test func releaseShortcutIsControlOptionCommandROnly() {
+        let r: UInt16 = 0x0F
+        #expect(InputTranslator.isReleaseShortcut(KeyInput(keyCode: r, characters: "r", modifierFlags: [.control, .option, .command])))
+        // Option-Command-Escape (Force Quit, the former choice) is not the release shortcut any more.
+        #expect(!InputTranslator.isReleaseShortcut(KeyInput(keyCode: VK.escape, modifierFlags: [.command, .option])))
     }
 }
 

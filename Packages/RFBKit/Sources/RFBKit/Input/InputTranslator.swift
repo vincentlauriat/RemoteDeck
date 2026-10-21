@@ -162,11 +162,10 @@ public struct InputTranslator: Sendable {
 
     // MARK: Keys
 
-    /// ⌘⌥Esc: release the keyboard capture (AppFlow › Navigation rules). Never sent to the remote.
+    /// ⌃⌥⌘R (`ReleaseShortcut`): release the keyboard capture (AppFlow › Navigation rules). Never sent
+    /// to the remote.
     public static func isReleaseShortcut(_ key: KeyInput) -> Bool {
-        key.keyCode == KeyCode.escape
-            && key.modifierFlags.isSuperset(of: [.command, .option])
-            && key.modifierFlags.isDisjoint(with: [.control, .shift])
+        ReleaseShortcut.matches(keyCode: key.keyCode, flags: key.modifierFlags)
     }
 
     public mutating func keyDown(_ key: KeyInput) -> [ClientMessage] {
@@ -353,7 +352,6 @@ public struct InputTranslator: Sendable {
 
 /// macOS virtual key codes (`kVK_*`, Carbon `HIToolbox/Events.h`) with a fixed keysym.
 enum KeyCode {
-    static let escape: UInt16 = 0x35
     static let capsLock: UInt16 = 0x39
 
     struct Modifier: Sendable {

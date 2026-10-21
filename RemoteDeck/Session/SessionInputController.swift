@@ -8,18 +8,23 @@ import RFBKit
 /// Keyboard capture (AppFlow › Navigation rules): while the view is first responder of the key window
 /// and the user has not released it, every key event, ⌘ shortcuts included, goes to the remote. The
 /// view takes them in a local event monitor, before AppKit dispatches them, so menu shortcuts never
-/// fire and key-ups that AppKit would drop while ⌘ is down still arrive. ⌘⌥Esc releases the capture; a
-/// click in the view takes it again. Losing focus or releasing the capture releases everything held
-/// on the remote. System shortcuts (⌘Tab, ⌘Space, Mission Control, and ⌘⌥Esc itself, which opens
-/// Force Quit) never reach the app without a `CGEventTap` and the Accessibility permission: open
-/// item, see TRD › Input.
+/// fire and key-ups that AppKit would drop while ⌘ is down still arrive. Exceptions:
+/// - ⌃⌥⌘R (`ReleaseShortcut`) releases the capture and is never sent; a click in the view takes it again.
+/// - ⌘1…⌘9 (`LocalShortcut`) stay local: the key and its key-up go back to AppKit (menus).
+/// Losing focus or releasing the capture releases everything held on the remote.
+///
+/// System combos (`SystemShortcut`: ⌘Tab, ⌘Space, Mission Control, screenshots…) never reach the app;
+/// with the Accessibility permission the view's `SystemShortcutTap` takes them first and hands them to
+/// `handleSystemKey`, which sends them like any other key. Each event goes through exactly one of the
+/// two paths: what the tap swallows never reaches the local monitor.
 ///
 /// The pointer is forwarded whether or not the keyboard is captured.
 @MainActor
 final class SessionInputController {
     /// Messages to send, in order.
     var onInput: (([ClientMessage]) -> Void)?
-    /// Called when `isCapturing` changes (for the toolbar's "Keyboard captured" pill).
+    /// Called when `isCapturing` changes. Owned by `FramebufferView`, which starts and stops its
+    /// system-shortcut tap from it: the toolbar uses `FramebufferView.onCaptureChange` instead.
     var onCaptureChange: ((Bool) -> Void)?
 
     /// Which keysyms ⌘ and ⌥ are sent as; set from the machine kind. Changing it releases what is
@@ -38,12 +43,18 @@ final class SessionInputController {
     var currentModifierFlags: () -> MacModifierFlags = { MacModifierFlags(rawValue: NSEvent.modifierFlags.rawValue) }
 
     private(set) var translator: InputTranslator
-    /// The user wants the keyboard captured; ⌘⌥Esc clears it, a click sets it again.
+    /// The user wants the keyboard captured; ⌃⌥⌘R clears it, a click sets it again.
     private(set) var captureRequested = true
     /// The view is first responder of the key window.
     private(set) var hasFocus = false
 
     var isCapturing: Bool { captureRequested && hasFocus }
+
+    /// Keys whose key-down was left to AppKit (local shortcuts): their key-up is too.
+    private var localKeys: Set<UInt16> = []
+    /// Keys whose key-down came from the system-shortcut tap: their key-up and repeats are taken there
+    /// too, whatever the modifiers are by then (⌘ may be up before Tab).
+    private var systemKeys: Set<UInt16> = []
 
     init(profile: ModifierProfile = .appleRemoteDesktop) {
         translator = InputTranslator(profile: profile)
@@ -65,7 +76,11 @@ final class SessionInputController {
         let was = isCapturing
         change()
         guard isCapturing != was else { return }
-        if !isCapturing { emit(translator.releaseAll()) }
+        if !isCapturing {
+            emit(translator.releaseAll())
+            localKeys = []
+            systemKeys = []
+        }
         onCaptureChange?(isCapturing)
     }
 
@@ -77,16 +92,43 @@ final class SessionInputController {
         switch event.type {
         case .keyDown:
             if InputTranslator.isReleaseShortcut(key) {
+                // Releases the modifiers already sent down (⌃, ⌥, ⌘): nothing stays held remotely.
                 releaseCapture()
+            } else if localKeys.contains(key.keyCode)
+                        || LocalShortcut.matching(keyCode: key.keyCode, flags: key.modifierFlags) != nil {
+                localKeys.insert(key.keyCode)
+                return false
             } else {
                 emit(translator.keyDown(key))
             }
         case .keyUp:
+            if localKeys.remove(key.keyCode) != nil { return false }
+            systemKeys.remove(key.keyCode)   // the tap was turned off while it was down
             emit(translator.keyUp(key))
         case .flagsChanged:
             emit(translator.flagsChanged(key))
         default:
             return false
+        }
+        return true
+    }
+
+    /// A key event from the system-shortcut tap, before macOS acts on it. `true` takes it (sent to the
+    /// remote, swallowed locally): a `SystemShortcut` key-down, or the repeat or key-up of a key taken
+    /// that way. Anything else returns `false` and goes on to the local monitor (`handleKey`).
+    func handleSystemKey(_ key: KeyInput, down: Bool) -> Bool {
+        guard isCapturing else { return false }
+        if down {
+            // A key already left to AppKit (⌘3 held, then ⇧ added: ⌘⇧3) stays local until its key-up.
+            guard !localKeys.contains(key.keyCode),
+                  systemKeys.contains(key.keyCode)
+                    || SystemShortcut.matches(keyCode: key.keyCode, flags: key.modifierFlags) else { return false }
+            systemKeys.insert(key.keyCode)
+            emit(translator.keyDown(key))
+        } else {
+            guard systemKeys.remove(key.keyCode) != nil else { return false }
+            localKeys.remove(key.keyCode)
+            emit(translator.keyUp(key))
         }
         return true
     }

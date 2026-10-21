@@ -68,6 +68,8 @@ First-time variant: `Onboarding Sheet -> Discovery Panel -> Add -> Machine Edito
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
 | Connect | Tab opens | — | "Connecting to <name>…" overlay with Cancel | Framebuffer shown, overlay fades | Banner: "Unreachable" / "Authentication failed" (Edit credentials) / "Connection lost" (Reconnect) | — |
+| Release keyboard | ⌃⌥⌘R while captured | — | — | Capture off: every key, modifier and button held on the remote is released; the pill disappears | — | — |
+| Capture keyboard | Click in the remote screen | — | — | Capture on; the first time in an app run without Accessibility access, the system prompt (see Keyboard capture) | — | — |
 | Toggle scaling | ⌘⌥S | — | — | Fit-to-window ↔ 1:1 | — | — |
 | Send clipboard | ⌘V while focused (Shared Clipboard on) | Text ≤ 1 MB | — | Text pasted remotely | Toast: "Clipboard too large" | — |
 | Switch tab | ⌘1…⌘9 / click tab | — | — | Tab shown | — | — |
@@ -102,10 +104,35 @@ First-time variant: `Onboarding Sheet -> Discovery Panel -> Add -> Machine Edito
 
 - One Library Window, one Session Window containing native macOS window tabs, and one Settings Window (⌘,).
 - ⌘0 Library, ⌘1…⌘9 session tabs, ⌘K Claude Assistant Panel, ⌘Y Session History View.
-- While a session has focus, all key combos are sent to the remote machine, except ⌘⌥Esc "release keyboard" (shown in the toolbar). *(assumption)*
-  - Open item: macOS reserves ⌘⌥Esc for Force Quit, so the app is not expected to receive it without a `CGEventTap` (Accessibility permission). Until that is decided, the capture pauses whenever the session view loses focus (another window or view) and resumes when it gets focus back; after ⌘⌥Esc, a click in the session takes it again. Also open: while captured, the Session Window's own shortcuts (⌘W, ⌘K, ⌘⌥S, ⌘1…⌘9, ⌘V) go to the remote too; T3.5/T4.2 need an allow-list decision. System combos (⌘Tab, ⌘Space, Mission Control) stay local for the same reason (TRD › Input).
+- While a session has the keyboard captured, key combos go to the remote machine, with the exceptions in Keyboard capture below.
 - Deep links open in a new tab of the existing Session Window.
 
+### Keyboard capture
+
+Shortcuts match the physical key (key code) and the exact set of ⇧⌃⌥⌘, so they work with any layout (AZERTY included); Caps Lock does not matter.
+
+| While captured | What happens | Why |
+|---|---|---|
+| ⌃⌥⌘R | Releases the capture; never sent to the remote | Not used by macOS or common apps. (The Force Quit combo, which macOS never hands to apps, was the first choice.) |
+| ⌘1…⌘9 (top-row digit keys) | Stay local: switch session tab | The only local allow-list (`LocalShortcut`); the remote sees ⌘ go down and up, nothing else |
+| ⌘Tab, ⌘⇧Tab, ⌘Space, ⌥⌘Space, ⌃Space, ⌃⌥Space, ⌃↑ ⌃↓ ⌃← ⌃→ (and with ⇧), ⌘⇧3/4/5, ⌃⌘⇧3/4, ⌥⌘D | Sent to the remote, swallowed locally, **only with Accessibility access** (`SystemShortcut`). Without it, macOS acts on them locally as usual | macOS takes them before the app (app switcher, Spotlight, input sources, Mission Control and Spaces, screenshots, Dock hiding) |
+| Force Quit, F-key hotkeys (F11, ⌃F1…⌃F8, brightness) | Stay local | Force Quit is the way out if the app hangs; the top row sends media keys by default |
+| Everything else (⌘W, ⌘Q, ⌘K, ⌘V, ⌘⌥S…) | Sent to the remote | The Session Window's own shortcuts work after ⌃⌥⌘R, or from the toolbar and menus |
+
+Capture states:
+
+| State | Enters when | Keys | Leaves when |
+|---|---|---|---|
+| Captured | The session view is first responder of the key window and the user has not released it (a new session starts captured) | To the remote, as above | ⌃⌥⌘R → Released; another window, view or app takes focus → Paused |
+| Paused | Focus left while captured | Local | Focus comes back → Captured |
+| Released | ⌃⌥⌘R | Local (menus work) | Click in the remote screen → Captured |
+
+Leaving Captured always releases, on the remote, every key, modifier (including the ⌃⌥⌘ of ⌃⌥⌘R) and mouse button still held.
+
+Accessibility prompt flow (system combos):
+1. Never at launch. The first time a capture starts in an app run without Accessibility access, the app shows the system prompt once ("RemoteDeck would like to control this computer using accessibility features"), then keeps working with the local shortcuts only.
+2. While access is missing, the toolbar shows "System shortcuts need Accessibility access — Open Settings" (T3.5); the button opens System Settings › Privacy & Security › Accessibility. No further prompt in that run.
+3. Once granted, the next capture (click, or focus coming back) takes the system combos, without a restart *(expected; not yet verified live)*. If access is revoked while captured, the app drops the tap as soon as macOS announces the change; revoking with a tap active is a known macOS risk (system input can become unresponsive, Apple bug FB24619068, TRD › Input), so releasing the capture (⌃⌥⌘R) first is safer.
 ## Empty and blocked states
 
 - **Empty library:** illustration-free message "No machines yet", with two buttons: "Discover on network" and "Add manually".
