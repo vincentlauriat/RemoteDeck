@@ -2,22 +2,30 @@ import Foundation
 import Network
 import os
 
-/// Opens an RFB session over TCP: runs `RFBHandshake` on an `NWConnection` until ServerInit.
+/// Opens an RFB session over TCP: runs `RFBHandshake` on an `NWConnection` until ServerInit, then
+/// (`startSession`) streams the decoded framebuffer protocol.
 ///
 /// - The `timeout` covers the TCP connection *and* the whole handshake, so a server that accepts
 ///   the connection and then stays silent cannot hang the caller.
 /// - Cancelling the calling task closes the connection at once and throws `RFBError.cancelled`.
 /// - `RFBHandshake.receive` runs on a dedicated dispatch queue, not on the actor: Apple DH does
 ///   two modular exponentiations (≈ 1.5 s for both at 4096 bits in a debug build, ≈ 90 ms in release) that would
-///   otherwise block a thread of Swift's small cooperative pool.
+///   otherwise block a thread of Swift's small cooperative pool. Framebuffer decoding likewise runs
+///   on its own queue (`FramebufferPump`).
 public actor RFBConnection {
     public nonisolated let host: String
     public nonisolated let port: UInt16
     private let networkQueue = DispatchQueue(label: "RFBKit.RFBConnection.network")
     private let handshakeQueue = DispatchQueue(label: "RFBKit.RFBConnection.handshake", qos: .userInitiated)
     private var connection: NWConnection?
-    /// Bytes received after ServerInit, kept for the framebuffer protocol (T3.1).
+    /// Bytes received after ServerInit, handed to the decoder by `startSession`.
     private(set) var pendingBytes = Data()
+    private var serverInit: ServerInit?
+    private var pump: FramebufferPump?
+    private var sessionTask: Task<Void, Never>?
+    /// Identity of the current session, set as soon as `startSession` begins.
+    private var sessionID: SessionID?
+    private var sessionContinuation: AsyncThrowingStream<RFBEvent, any Error>.Continuation?
 
     /// Whether a connection is currently held (open or being opened).
     var isOpen: Bool { connection != nil }
@@ -83,6 +91,7 @@ public actor RFBConnection {
         switch outcome {
         case .success(let result) where !expired && !cancelled:
             pendingBytes = result.remainder
+            serverInit = result.serverInit
             return result
         case .success:
             release(connection)
@@ -93,8 +102,144 @@ public actor RFBConnection {
         }
     }
 
-    /// Closes the connection.
+    /// Starts the framebuffer protocol after a successful `open`: sends SetPixelFormat
+    /// (`PixelFormat.bgra32`), SetEncodings and a full FramebufferUpdateRequest, then decodes every
+    /// server message off the cooperative pool and delivers the events in order.
+    ///
+    /// - With `requestUpdatesAutomatically`, one update is in flight at a time: the incremental
+    ///   FramebufferUpdateRequest for the next one is sent when the consumer *takes* an update from
+    ///   the sequence, not when it is decoded, so a slow consumer slows the server down instead of
+    ///   piling up updates. After a resize, a full (non-incremental) request at the new size is sent
+    ///   at once. Without it, call `requestUpdate`; events then queue until consumed.
+    /// - The sequence throws an `RFBError`: `.connectionClosed` when the server hangs up,
+    ///   `.protocolViolation` for malformed data, `.network` for a transport error. Either way the
+    ///   connection is closed.
+    /// - `close()`, dropping the sequence or cancelling the task iterating it ends the iteration with
+    ///   `nil` (an async stream does not throw on cancellation) and closes the connection at once.
+    /// - Throws `.cancelled` if `close()` runs, or the calling task is cancelled, while the opening
+    ///   messages are being sent.
+    public func startSession(encodings: [Int32] = Encoding.preferred,
+                             requestUpdatesAutomatically: Bool = true) async throws(RFBError) -> RFBSessionEvents {
+        guard let connection, let serverInit else { throw .protocolViolation("not connected") }
+        guard sessionID == nil else { throw .protocolViolation("session already started") }
+        // Claimed before the first suspension so a concurrent call sees it (actor reentrancy).
+        let id = SessionID()
+        sessionID = id
+        let pump = try FramebufferPump(width: Int(serverInit.width), height: Int(serverInit.height))
+        self.pump = pump
+        let initial = pendingBytes
+        pendingBytes = Data()
+        let opening = ClientMessage.setPixelFormat(.bgra32).wireBytes + ClientMessage.setEncodings(encodings).wireBytes
+            + ClientMessage.framebufferUpdateRequest(incremental: false, x: 0, y: 0,
+                                                     width: serverInit.width, height: serverInit.height).wireBytes
+        var failure: RFBError?
+        do {
+            try await withTaskCancellationHandler {
+                try await connection.sendAll(Data(opening))
+            } onCancel: {
+                connection.cancel()
+            }
+        } catch {
+            failure = Task.isCancelled ? .cancelled : (error as? RFBError) ?? .network(String(describing: error))
+        }
+        // `close()` (and maybe a newer `open()`) may have run while the opening was being sent.
+        guard sessionID === id, self.connection === connection else {
+            connection.cancel()
+            throw .cancelled
+        }
+        if let failure {
+            sessionID = nil
+            self.pump = nil
+            release(connection)
+            throw failure
+        }
+
+        let (stream, continuation) = AsyncThrowingStream.makeStream(of: RFBEvent.self)
+        // Untyped task closure: a typed-throws `Task` closure crashes the Swift 6.4 compiler (IRGen).
+        let task = Task {
+            do {
+                var chunk: Data? = initial
+                while let received = chunk {
+                    if !received.isEmpty {
+                        for event in try await pump.receive(received) {
+                            continuation.yield(event)
+                            guard requestUpdatesAutomatically, case .desktopResized(let width, let height) = event else {
+                                continue
+                            }
+                            let request = ClientMessage.framebufferUpdateRequest(
+                                incremental: false, x: 0, y: 0, width: UInt16(width), height: UInt16(height))
+                            try await connection.sendAll(Data(request.wireBytes))
+                        }
+                    }
+                    guard !Task.isCancelled else { break }
+                    chunk = try await connection.receiveChunk()
+                }
+                // After `close()` or the consumer's cancellation the stream is already finished: no-op.
+                continuation.finish(throwing: Task.isCancelled ? nil : RFBError.connectionClosed)
+            } catch {
+                continuation.finish(throwing: Task.isCancelled ? nil : (error as? RFBError) ?? .network(String(describing: error)))
+            }
+            self.sessionDidEnd(id)
+        }
+        continuation.onTermination = { _ in
+            task.cancel()
+            connection.cancel()
+        }
+        sessionTask = task
+        sessionContinuation = continuation
+        guard requestUpdatesAutomatically else { return RFBSessionEvents(stream: stream, onUpdateConsumed: nil) }
+        return RFBSessionEvents(stream: stream) { @Sendable (update: FramebufferUpdate) in
+            let request = ClientMessage.framebufferUpdateRequest(
+                incremental: true, x: 0, y: 0, width: UInt16(update.width), height: UInt16(update.height))
+            // Fire and forget: a send failure also fails the receive loop, which reports it.
+            connection.send(content: Data(request.wireBytes), completion: .contentProcessed { _ in })
+        }
+    }
+
+    /// Forgets a session whose stream ended, unless `close()` (and maybe a newer session) replaced it.
+    private func sessionDidEnd(_ id: SessionID) {
+        guard sessionID === id else { return }
+        connection?.cancel()
+        sessionID = nil
+        sessionContinuation = nil
+        sessionTask = nil
+        serverInit = nil
+        connection = nil   // the pump stays: `framebufferSnapshot()` still returns the last frame
+    }
+
+    /// Asks for an update of the whole framebuffer (incremental: only what changed).
+    public func requestUpdate(incremental: Bool = true) async throws(RFBError) {
+        guard let pump else { throw .protocolViolation("session not started") }
+        let size = await pump.framebufferSize
+        try await send(.framebufferUpdateRequest(incremental: incremental, x: 0, y: 0,
+                                                 width: UInt16(size.width), height: UInt16(size.height)))
+    }
+
+    /// Sends one client message (key and pointer events, update requests…).
+    public func send(_ message: ClientMessage) async throws(RFBError) {
+        guard let connection else { throw .protocolViolation("not connected") }
+        do {
+            try await connection.sendAll(Data(message.wireBytes))
+        } catch {
+            throw (error as? RFBError) ?? .network(String(describing: error))
+        }
+    }
+
+    /// A copy of the current framebuffer once the session has started (still the last frame after
+    /// the server hung up, until `close()`).
+    public func framebufferSnapshot() async -> Framebuffer? {
+        await pump?.framebuffer
+    }
+
+    /// Closes the connection. A running session stream finishes without error.
     public func close() {
+        sessionID = nil
+        sessionContinuation?.finish()
+        sessionContinuation = nil
+        sessionTask?.cancel()
+        sessionTask = nil
+        pump = nil
+        serverInit = nil
         connection?.cancel()
         connection = nil
     }
@@ -136,6 +281,36 @@ public actor RFBConnection {
             }
         }
         return (advanced, try result.get())
+    }
+}
+
+/// Identity token of one `startSession` call.
+private final class SessionID: Sendable {}
+
+/// The events of a session (see `RFBConnection.startSession`). With automatic update requests, taking
+/// a complete `.framebufferUpdate` from the iterator is what asks the server for the next one.
+public struct RFBSessionEvents: AsyncSequence, Sendable {
+    public typealias Element = RFBEvent
+
+    let stream: AsyncThrowingStream<RFBEvent, any Error>
+    let onUpdateConsumed: (@Sendable (FramebufferUpdate) -> Void)?
+
+    public func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(base: stream.makeAsyncIterator(), onUpdateConsumed: onUpdateConsumed)
+    }
+
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        var base: AsyncThrowingStream<RFBEvent, any Error>.AsyncIterator
+        let onUpdateConsumed: (@Sendable (FramebufferUpdate) -> Void)?
+
+        public mutating func next() async throws -> RFBEvent? {
+            let event = try await base.next()
+            // A partial update (before a mid-message resize) is followed by the rest of its message.
+            if case .framebufferUpdate(let update)? = event, update.completesMessage {
+                onUpdateConsumed?(update)
+            }
+            return event
+        }
     }
 }
 
