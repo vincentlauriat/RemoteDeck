@@ -173,6 +173,15 @@ final class AppSettings {
             ?? key
     }
 
+    /// Traduction avec un argument : remplace le seul marqueur présent dans la chaîne (`%@`, sinon
+    /// `%d`), une seule fois, pour ne jamais retoucher un `%d`/`%@` du texte inséré.
+    func t(_ key: String, _ argument: some CustomStringConvertible) -> String {
+        let template = t(key)
+        let placeholder = template.contains("%@") ? "%@" : "%d"
+        guard let range = template.range(of: placeholder) else { return template }
+        return template.replacingCharacters(in: range, with: argument.description)
+    }
+
     /// Compteur avec unité pluralisée : « 3 items », « 1 item »…
     func count(_ n: Int, _ oneKey: String, _ manyKey: String) -> String {
         let unit = t(n <= 1 ? oneKey : manyKey)

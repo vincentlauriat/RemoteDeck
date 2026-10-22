@@ -15,9 +15,9 @@
 ## Backend and database
 
 - **No server.**
-- **Local store:** SwiftData (SQLite) in the app container.
+- **Local store:** SwiftData (SQLite) in the app container, two files under `Application Support/<bundle id>/`: `RemoteDeckLibrary.store` (Machine, MachineGroup; the store CloudKit will sync) and `RemoteDeckHistory.store` (SessionRecord, AssistantAction). The bundle-id folder keeps the Debug (`….dev`) and Release stores apart even when the app runs unsandboxed (CI builds with `CODE_SIGNING_ALLOWED=NO`). Under XCTest (`XCTestConfigurationFilePath` / `XCTestSessionIdentifier` / `XCTestBundlePath` in the environment) the app opens an in-memory container, so the hosted tests never touch the user's store. If the on-disk store cannot be opened, the Library Window runs on an empty in-memory store and says that changes will not be saved.
 - **Sync:** SwiftData's CloudKit integration, private database of Vincent's iCloud account (container `iCloud.<bundle-id>`). Only the Machine Library is synced: Machine and MachineGroup. Session History, Assistant Actions and settings stay local.
-- **Secrets:** macOS Keychain. Machine passwords are synchronizable items (iCloud Keychain); the Anthropic API key is a local-only item.
+- **Secrets:** macOS Keychain. Machine passwords are synchronizable items (iCloud Keychain); the Anthropic API key is a local-only item. Until the build has the iCloud Keychain entitlement (T1.2/T4.3), a machine password refused with -34018 is stored as a local item instead (BackendSchema › KeychainCredential), and T4.3 migrates those to synced.
 
 ## Authentication and roles
 
@@ -83,6 +83,7 @@ flowchart LR
 ## Security and privacy
 
 - **Sensitive data:** machine passwords, the Anthropic API key, and remote screen contents. Passwords and the API key stay in the Keychain only; they are never stored in SwiftData, logs or CloudKit.
+- **Machine-password scope:** iCloud Keychain (synchronizable) by default. Without the iCloud Keychain entitlement (-34018, unsigned/ad-hoc builds), the password is kept in a local item on this Mac (same service and account), which is weaker only in that it does not follow the library to other Macs; T4.3 migrates local items to synced. An in-memory library (store fallback, `-LibraryDemo`) keeps passwords in memory, never in the Keychain. A test checks that a saved password never appears in the SwiftData files (`.store`, `-wal`, `-shm`).
 - **Transport:** RFB is not encrypted beyond the ARD credential exchange, so connections are restricted to LAN or VPN. Show a warning badge when the host is a public IP. *(assumption)*
 - **Screenshots** are sent to Anthropic only on explicit Claude Assistant requests; a header indicator shows when a request is in flight.
 - **Retention:** Session History is kept 365 days, then purged *(assumption)*. Assistant Actions are kept 30 days *(assumption)*. Screenshots are never written to disk.

@@ -63,7 +63,7 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 ## Per-screen notes
 
 - **Onboarding Sheet:** 3 pages, 520 × 400 pt, a large SF Symbol, one sentence and one primary button per page.
-- **Library Window:** groups as collapsible sidebar sections. Favorites section pinned at the top. The detail pane shows name, host:port (mono), kind, last connected, and a status line.
+- **Library Window:** groups as collapsible sidebar sections. Favorites section pinned at the top. The detail pane shows name, host:port (mono), kind, last connected, and a status line. The sidebar status dot and the status line come with reachability monitoring (T4.5); until then rows show no dot.
 - **Machine Editor:** the kind picker comes first, because it changes the fields (Anthropic VM hides the user field; Mac ARD requires it). The "Test" button sits next to "Save".
 - **Discovery Panel:** popover-sized sheet 420 × 360 pt. Each row shows name, host and service type; machines already added are greyed with "Added".
 - **Session Window:** the remote screen is the hero. Connecting overlay centered. Keyboard-capture state shown as a toolbar pill: "Keyboard captured — ⌃⌥⌘R to release" (AppFlow › Keyboard capture). Without Accessibility access, a secondary line or popover in the pill reads "System shortcuts need Accessibility access — Open Settings"; the button opens System Settings › Privacy & Security › Accessibility.

@@ -13,8 +13,8 @@
 | Screen | Purpose | Data needed |
 |---|---|---|
 | Onboarding Sheet | Explain the app, ask for local network and notification permissions, offer to enable iCloud Sync | AppSettings |
-| Library Window | Sidebar with groups and machines, search, toolbar (add, discover, connect) | Machine, MachineGroup |
-| Machine Editor | Create or edit a machine: name, kind (Mac ARD / VNC / Anthropic VM), host, port, user, password, group, watch, favorite | Machine, MachineGroup, KeychainCredential |
+| Library Window | Sidebar with Favorites (pinned; a favorite is listed there only, so each machine has one row), groups (by sort order, then name; empty groups shown unless searching) and ungrouped Machines; search; toolbar (add, discover, connect) | Machine, MachineGroup |
+| Machine Editor | Create or edit a machine: name, kind (Mac ARD / VNC / Anthropic VM), host, port, user, password, group (or "New Group…"), watch, favorite, scaling, shared clipboard (new machines default to AppSettings `defaultSharedClipboard`) | Machine, MachineGroup, KeychainCredential, AppSettings |
 | Discovery Panel | List of Bonjour services found on the LAN, with "Add" per row | Live Bonjour results |
 | Session Window | Remote framebuffer with tabs, toolbar (scaling, clipboard, Ctrl-Alt-Del equivalents, Claude, disconnect) | Machine, KeychainCredential, SessionRecord |
 | Claude Assistant Panel | Inspector beside the Session Window: prompt field, answers, proposed actions with Confirm/Skip, token counter | AssistantAction, KeychainCredential |
@@ -45,16 +45,19 @@ First-time variant: `Onboarding Sheet -> Discovery Panel -> Add -> Machine Edito
 | Connect | Double-click / Return / toolbar "Connect" | Machine has host and port | Row spinner | Session Window tab opens | — (errors are shown in the session) | Session Window |
 | Add machine | ⌘N / "+" | — | — | Empty editor | — | Machine Editor |
 | Discover | ⌘D / toolbar | — | — | Panel opens | Local network permission denied → blocked state | Discovery Panel |
-| Search | ⌘F, type | — | — | List filtered live on name/host | — | — |
-| Delete | ⌫ on selection | Confirm dialog naming the machine | — | Row removed, Keychain item removed | — | — |
+| Search | ⌘F, type | — | — | List filtered live on name/host (case- and accent-insensitive); empty sections hidden | "No results" | — |
+| Delete | ⌫ on selection, or Delete… in the row's context menu | Confirm dialog naming the machine | — | Row removed, Keychain item removed | Keychain delete failed → alert with the status (the machine stays deleted) | — |
+| Delete group | Delete Group… in the section header's context menu | Confirm dialog naming the group | — | Section removed; its machines move to Machines (ungrouped) | — | — |
 
 ### Machine Editor
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
-| Save | ⌘S / "Save" | Name 1–64 chars; host is a valid hostname/IPv4/IPv6; port 1–65535; no duplicate `host:port` | — | Sheet closes, row selected | Inline field error in red under the field | Library Window |
-| Test connection | "Test" button | Same as Save | "Testing…" spinner (timeout 5 s) | Green check: "Reachable, auth OK" | "Unreachable" / "Authentication failed" / "Unsupported security type" | — |
-| Cancel | Esc | — | — | Sheet closes without changes | — | Library Window |
+| Save | ⌘S / "Save" | Name 1–64 chars; host is a valid hostname/IPv4/IPv6; port 1–65535; user required for Mac ARD; no duplicate `host:port`; new group name 1–40 chars, unique | — | Sheet closes, row selected | Inline field error in red under the field. Keychain refusal → error under the password field, nothing saved; -34018 is not a refusal: saved to a local item, and the editor then notes "Password stored on this Mac only until iCloud Keychain is available" (BackendSchema › KeychainCredential) | Library Window |
+| Test connection | "Test" button | Same as Save | "Testing…" spinner (timeout 5 s) | Green check: "Reachable, auth OK"; the connection is closed at once | "Unreachable — check VPN or network" (network error) / "Unreachable — no answer within 5 s" / "The server closed the connection" / "Connection refused by the server" (RFB-level, with its reason) / "Authentication failed" / "Unsupported security type (n, …)" / "This Mac needs a user name and password" / "This server needs a password" / "User name or password too long (63 bytes max)" / "Not a VNC / Screen Sharing server" / "Unexpected response from the server" | — |
+| Cancel | Esc | — | — | Sheet closes without changes; a running test is cancelled | — | Library Window |
+
+Changing kind, host, port, user or password clears a Test result (and cancels a running test): it no longer applies to the fields.
 
 ### Discovery Panel
 
@@ -135,7 +138,8 @@ Accessibility prompt flow (system combos):
 3. Once granted, the next capture (click, or focus coming back) takes the system combos, without a restart *(expected; not yet verified live)*. If access is revoked while captured, the app drops the tap as soon as macOS announces the change; revoking with a tap active is a known macOS risk (system input can become unresponsive, Apple bug FB24619068, TRD › Input), so releasing the capture (⌃⌥⌘R) first is safer.
 ## Empty and blocked states
 
-- **Empty library:** illustration-free message "No machines yet", with two buttons: "Discover on network" and "Add manually".
+- **Library in memory** (the on-disk store could not be opened): persistent orange banner at the top of the Library Window, "The library could not be opened — The library runs in memory: nothing you do now is saved, passwords included."
+- **Empty library:** illustration-free message "No machines yet", with two buttons: "Discover on network" (disabled until T3.6) and "Add manually".
 - **Discovery found nothing:** "No Mac with Screen Sharing found. Enable it in System Settings › General › Sharing on the remote Mac.", with a Retry button.
 - **Local network permission denied:** explanation plus a button that opens System Settings › Privacy & Security › Local Network.
 - **Offline / host unreachable:** session banner "Unreachable — check VPN or network", with a Retry button. Watched machines show a grey dot in the sidebar.

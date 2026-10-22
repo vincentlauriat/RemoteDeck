@@ -35,6 +35,10 @@ SwiftData + CloudKit rule: every synced property is optional or has a default, a
 
 Indexes: `host`, `name` (SwiftData `#Index`).
 
+When the library runs in memory (on-disk store unusable, `-LibraryDemo`, test host), machine passwords are kept in memory too, so no Keychain item outlives its machine.
+
+Store files (TRD › Backend and database): Machine and MachineGroup in `Application Support/<bundle id>/RemoteDeckLibrary.store`, SessionRecord and AssistantAction in `RemoteDeckHistory.store` next to it.
+
 ### MachineGroup (SwiftData, synced)
 
 | Field | Type | Required | Default | Notes |
@@ -51,7 +55,7 @@ Indexes: `host`, `name` (SwiftData `#Index`).
 | service | `fr.vincentlauriat.remotedeck` |
 | account | `machine.<Machine.id>` or `anthropic.apiKey` |
 | data | UTF-8 secret |
-| synchronizable | `true` for machine passwords (iCloud Keychain), `false` for the API key |
+| synchronizable | `true` for machine passwords (iCloud Keychain), `false` for the API key. **Local fallback** (Vincent, 2026-10-22): when the synchronizable save of `machine.<id>` fails with -34018 (`errSecMissingEntitlement`, unsigned and ad-hoc builds until T1.2/T4.3), the password is saved as a non-synchronizable item with the same service and account. Reads try the synced item, then the local one; deletes match either flag (`kSecAttrSynchronizableAny`). A synced save removes a stale local copy. T4.3 calls `migrateLocalPasswordsToSynced(machineIDs:)` once the entitlement exists (local → synced, local deleted). |
 | accessible | `kSecAttrAccessibleAfterFirstUnlock` |
 
 ### SessionRecord (SwiftData, local store only)
@@ -132,7 +136,8 @@ No accounts and no roles: the single local user has full read/create/update/dele
 
 ## Retention and deletion
 
-- Deleting a Machine also deletes its KeychainCredential. Its SessionRecords are kept (name snapshot).
+- Deleting a Machine also deletes its KeychainCredential. Its SessionRecords are kept (name snapshot). The Machine is deleted first; if the Keychain delete then fails, the Machine stays deleted and the Library Window shows a warning with the Keychain status (never silent).
+- Saving a Machine writes its password to the Keychain **before** SwiftData. -34018 is not a refusal: the password goes to the local fallback item (see KeychainCredential) and the editor notes "Password stored on this Mac only until iCloud Keychain is available". Any other Keychain error saves nothing and shows the error under the password field ("could not be saved", or "could not be removed" when a cleared password fails to delete). If SwiftData then fails, the previous password state is restored (set back or deleted). An unchanged password makes no Keychain call; a cleared one deletes the item, except when the stored password could not be read (then an empty field means "unchanged").
 - SessionRecord older than `historyRetentionDays` (365) is purged at launch. AssistantAction older than 30 days is purged. *(assumption)*
 - Screenshots and framebuffer contents are never persisted.
 - Export: Session History as CSV. The Machine Library is exported/imported as JSON, without passwords. *(assumption)*
