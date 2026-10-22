@@ -39,11 +39,17 @@ public struct KeychainStore: Sendable {
 
     /// Saves `secret` as UTF-8, replacing any existing value.
     public func save(_ secret: String, for account: KeychainAccount) throws(KeychainError) {
+        try save(secret, for: account, synchronizable: account.isSynchronizable)
+    }
+
+    /// Saves with an explicit sync flag. A machine password falls back to a local item
+    /// (`synchronizable: false`) when the synced one is refused with -34018 (missing entitlement).
+    public func save(_ secret: String, for account: KeychainAccount, synchronizable: Bool) throws(KeychainError) {
         let data = Data(secret.utf8)
-        let status = SecItemAdd(addAttributes(for: account, data: data) as CFDictionary, nil)
+        let status = SecItemAdd(addAttributes(for: account, synchronizable: synchronizable, data: data) as CFDictionary, nil)
         if status == errSecDuplicateItem {
             try check(SecItemUpdate(
-                query(for: account) as CFDictionary,
+                query(for: account, synchronizable: synchronizable) as CFDictionary,
                 updateAttributes(data: data) as CFDictionary
             ))
         } else {
@@ -53,7 +59,12 @@ public struct KeychainStore: Sendable {
 
     /// The stored secret, or `nil` when there is none.
     public func read(_ account: KeychainAccount) throws(KeychainError) -> String? {
-        var lookup = query(for: account)
+        try read(account, synchronizable: account.isSynchronizable)
+    }
+
+    /// Reads the item carrying exactly this sync flag.
+    public func read(_ account: KeychainAccount, synchronizable: Bool) throws(KeychainError) -> String? {
+        var lookup = query(for: account, synchronizable: synchronizable)
         lookup[kSecReturnData as String] = true
         lookup[kSecMatchLimit as String] = kSecMatchLimitOne
 
@@ -67,9 +78,18 @@ public struct KeychainStore: Sendable {
         return secret
     }
 
-    /// Deletes the secret; deleting a missing item succeeds.
+    /// Deletes the secret, synced and local copies alike; deleting a missing item succeeds.
     public func delete(_ account: KeychainAccount) throws(KeychainError) {
-        let status = SecItemDelete(deleteQuery(for: account) as CFDictionary)
+        try delete(query: deleteQuery(for: account))
+    }
+
+    /// Deletes only the item carrying this sync flag (e.g. the local copy once migrated to synced).
+    public func delete(_ account: KeychainAccount, synchronizable: Bool) throws(KeychainError) {
+        try delete(query: query(for: account, synchronizable: synchronizable))
+    }
+
+    private func delete(query: [String: Any]) throws(KeychainError) {
+        let status = SecItemDelete(query as CFDictionary)
         if status == errSecItemNotFound { return }
         try check(status)
     }
@@ -77,11 +97,15 @@ public struct KeychainStore: Sendable {
     /// Attributes identifying an item. Carries `kSecAttrSynchronizable` on every call:
     /// without it, lookups and deletes never match synchronizable items.
     func query(for account: KeychainAccount) -> [String: Any] {
+        query(for: account, synchronizable: account.isSynchronizable)
+    }
+
+    func query(for account: KeychainAccount, synchronizable: Bool) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account.name,
-            kSecAttrSynchronizable as String: account.isSynchronizable ? kCFBooleanTrue! : kCFBooleanFalse!,
+            kSecAttrSynchronizable as String: synchronizable ? kCFBooleanTrue! : kCFBooleanFalse!,
         ]
     }
 
@@ -94,7 +118,11 @@ public struct KeychainStore: Sendable {
 
     /// Attributes for `SecItemAdd`: identity, secret and accessibility.
     func addAttributes(for account: KeychainAccount, data: Data) -> [String: Any] {
-        var attributes = query(for: account)
+        addAttributes(for: account, synchronizable: account.isSynchronizable, data: data)
+    }
+
+    func addAttributes(for account: KeychainAccount, synchronizable: Bool, data: Data) -> [String: Any] {
+        var attributes = query(for: account, synchronizable: synchronizable)
         attributes.merge(updateAttributes(data: data)) { _, new in new }
         return attributes
     }

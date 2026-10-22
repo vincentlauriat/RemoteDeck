@@ -1,0 +1,292 @@
+import SwiftUI
+import SwiftData
+import RemoteDeckCore
+
+/// A request to open the Machine Editor; the model is built once, when the request is made.
+struct EditorRequest: Identifiable {
+    let id = UUID()
+    let model: MachineEditorModel
+}
+
+/// Library Window (AppFlow › Library Window): sidebar with Favorites, groups and ungrouped
+/// machines, live search, detail pane, Machine Editor sheet.
+struct LibraryView: View {
+    @Environment(AppSettings.self) private var settings
+    @Query private var machines: [Machine]
+    @Query private var groups: [MachineGroup]
+    @Bindable var model: MachineLibraryModel
+    let tester: any ConnectionTester
+    /// Set when the on-disk store could not be opened (the library then runs in memory, and a
+    /// persistent banner says so).
+    let storeError: String?
+
+    @State private var editorRequest: EditorRequest?
+    @State private var pendingDelete: Machine?
+    @State private var pendingGroupDelete: MachineGroup?
+    @FocusState private var searchFocused: Bool
+
+    var body: some View {
+        NavigationSplitView {
+            sidebar
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
+        } detail: {
+            detail
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let storeError { storeBanner(storeError) }
+        }
+        .searchable(text: $model.searchText, placement: .sidebar, prompt: settings.t("search_placeholder"))
+        .searchFocused($searchFocused)
+        .toolbar { toolbar }
+        .navigationTitle(settings.t("app_name"))
+        .frame(minWidth: 720, minHeight: 480)
+        .sheet(item: $editorRequest) { request in
+            MachineEditorView(model: request.model) { saved in
+                model.selection = saved.id
+            }
+        }
+        .confirmationDialog(
+            settings.t("delete_confirm_title", pendingDelete?.name ?? ""),
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            presenting: pendingDelete
+        ) { machine in
+            Button(settings.t("delete_button"), role: .destructive) { model.delete(machine) }
+            Button(settings.t("cancel"), role: .cancel) {}
+        } message: { _ in
+            Text(settings.t("delete_confirm_message"))
+        }
+        .confirmationDialog(
+            settings.t("delete_group_confirm_title", pendingGroupDelete?.name ?? ""),
+            isPresented: Binding(get: { pendingGroupDelete != nil }, set: { if !$0 { pendingGroupDelete = nil } }),
+            presenting: pendingGroupDelete
+        ) { group in
+            Button(settings.t("delete_button"), role: .destructive) { model.delete(group) }
+            Button(settings.t("cancel"), role: .cancel) {}
+        } message: { _ in
+            Text(settings.t("delete_group_confirm_message"))
+        }
+        .alert(settings.t("error_title"), isPresented: alertBinding) {
+            Button(settings.t("ok")) { dismissAlerts() }
+        } message: {
+            Text(alertMessage)
+        }
+        .focusedSceneValue(\.libraryActions, LibraryActions(
+            newMachine: { openEditor(for: nil) },
+            find: { searchFocused = true }
+        ))
+        .onAppear {
+            #if DEBUG
+            if LibraryDemo.opensEditor { openEditor(for: machines.sorted { $0.name < $1.name }.first) }
+            #endif
+        }
+    }
+
+    // MARK: Sidebar
+
+    private var sections: [LibrarySection] {
+        MachineLibraryModel.sections(machines: machines, groups: groups, query: model.searchText, t: settings.t)
+    }
+
+    private var sidebar: some View {
+        List(selection: $model.selection) {
+            ForEach(sections) { section in
+                Section {
+                    ForEach(section.machines) { machine in
+                        MachineRowView(machine: machine)
+                            .tag(machine.id)
+                    }
+                } header: {
+                    Text(section.title)
+                        // The whole header row opens the menu, not just the title's glyphs.
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .contextMenu {
+                            if let group = section.group {
+                                Button(settings.t("delete_group")) { pendingGroupDelete = group }
+                            }
+                        }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .contextMenu(forSelectionType: UUID.self) { ids in
+            if let machine = machine(ids.first), ids.count == 1 {
+                Button(settings.t("edit")) { openEditor(for: machine) }
+                Button(settings.t("delete"), role: .destructive) { pendingDelete = machine }
+            }
+        } primaryAction: { ids in
+            // Double-click / Return: Connect (AppFlow). The Session Window arrives in T3.5.
+            connect(machine(ids.first))
+        }
+        .onDeleteCommand {
+            if let machine = machine(model.selection) { pendingDelete = machine }
+        }
+        .overlay {
+            if !machines.isEmpty && sections.allSatisfy(\.machines.isEmpty) && !model.searchText.isEmpty {
+                ContentUnavailableView(
+                    settings.t("no_results_title"),
+                    systemImage: "magnifyingglass",
+                    description: Text(settings.t("no_results_desc", model.searchText))
+                )
+            }
+        }
+    }
+
+    // MARK: Detail
+
+    @ViewBuilder
+    private var detail: some View {
+        if machines.isEmpty {
+            ContentUnavailableView {
+                Label(settings.t("empty_library_title"), systemImage: "desktopcomputer")
+            } actions: {
+                HStack {
+                    Button(settings.t("empty_library_discover")) {}
+                        .disabled(true)
+                        .help(settings.t("discover_unavailable_help"))
+                    Button(settings.t("empty_library_add")) { openEditor(for: nil) }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+        } else if let machine = machine(model.selection) {
+            MachineDetailView(machine: machine, onEdit: { openEditor(for: machine) })
+        } else {
+            ContentUnavailableView(
+                settings.t("no_selection_title"),
+                systemImage: "sidebar.left",
+                description: Text(settings.t("no_selection_desc"))
+            )
+        }
+    }
+
+    // MARK: Toolbar
+
+    @ToolbarContentBuilder
+    private var toolbar: some ToolbarContent {
+        ToolbarItemGroup {
+            Button { openEditor(for: nil) } label: {
+                Label(settings.t("add_machine"), systemImage: "plus")
+            }
+            .help(settings.t("add_machine"))
+            Button {} label: {
+                Label(settings.t("discover"), systemImage: "antenna.radiowaves.left.and.right")
+            }
+            .disabled(true)
+            .help(settings.t("discover_unavailable_help"))
+            Button { connect(machine(model.selection)) } label: {
+                Label(settings.t("connect"), systemImage: "play.fill")
+            }
+            .disabled(true)
+            .help(settings.t("connect_unavailable_help"))
+        }
+    }
+
+    // MARK: Actions
+
+    private func machine(_ id: UUID?) -> Machine? {
+        guard let id else { return nil }
+        return machines.first { $0.id == id }
+    }
+
+    private func openEditor(for machine: Machine?) {
+        editorRequest = EditorRequest(model: MachineEditorModel(
+            machine: machine, context: model.context, passwords: model.passwords,
+            tester: tester, defaultSharedClipboard: settings.defaultSharedClipboard
+        ))
+    }
+
+    /// Single entry point for Connect (double-click, Return, toolbar). Inert until the Session
+    /// Window exists (T3.5).
+    private func connect(_ machine: Machine?) {}
+
+    // MARK: Banner and alerts
+
+    /// DesignBrief › Banners: 32 pt, colored left bar. Stays as long as the library is in memory.
+    private func storeBanner(_ error: String) -> some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(.orange).frame(width: 3)
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(settings.t("store_error_title")).font(.system(size: 12, weight: .semibold))
+                Text(settings.t("store_banner")).font(.system(size: 11))
+            }
+            .help(error)
+            Spacer()
+        }
+        .frame(minHeight: 32)
+        .background(.orange.opacity(0.12))
+    }
+
+    private var alertBinding: Binding<Bool> {
+        Binding(
+            get: { model.deleteWarning != nil || model.deleteError != nil },
+            set: { if !$0 { dismissAlerts() } }
+        )
+    }
+
+    private var alertMessage: String {
+        if let warning = model.deleteWarning {
+            return settings.t("delete_keychain_warning", warning.description)
+        }
+        if let error = model.deleteError {
+            return settings.t("delete_failed", error)
+        }
+        return ""
+    }
+
+    private func dismissAlerts() {
+        model.deleteWarning = nil
+        model.deleteError = nil
+    }
+}
+
+// MARK: - Commands
+
+/// Library actions exposed to the menu bar (⌘N, ⌘F) by the focused Library Window.
+struct LibraryActions {
+    let newMachine: () -> Void
+    let find: () -> Void
+}
+
+private struct LibraryActionsKey: FocusedValueKey {
+    typealias Value = LibraryActions
+}
+
+extension FocusedValues {
+    var libraryActions: LibraryActions? {
+        get { self[LibraryActionsKey.self] }
+        set { self[LibraryActionsKey.self] = newValue }
+    }
+}
+
+/// AppFlow shortcuts: ⌘N Add machine, ⌘F Search, ⌘D Discover (T3.6, disabled), ⌘0 Library.
+struct LibraryCommands: Commands {
+    let settings: AppSettings
+    @FocusedValue(\.libraryActions) private var actions
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button(settings.t("menu_new_machine")) { actions?.newMachine() }
+                .keyboardShortcut("n")
+                .disabled(actions == nil)
+            Button(settings.t("menu_discover")) {}
+                .keyboardShortcut("d")
+                .disabled(true)
+        }
+        CommandGroup(after: .textEditing) {
+            Button(settings.t("menu_find")) { actions?.find() }
+                .keyboardShortcut("f")
+                .disabled(actions == nil)
+        }
+        CommandGroup(before: .windowList) {
+            Button(settings.t("menu_library")) { openWindow(id: LibraryWindow.id) }
+                .keyboardShortcut("0")
+            Divider()
+        }
+    }
+}
+
+enum LibraryWindow {
+    static let id = "library"
+}

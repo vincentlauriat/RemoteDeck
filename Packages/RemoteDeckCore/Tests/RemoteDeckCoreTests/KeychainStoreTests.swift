@@ -87,4 +87,31 @@ struct KeychainStoreTests {
         // Deleting a missing item is not an error.
         try store.delete(.anthropicAPIKey)
     }
+
+    @Test func explicitSyncFlagQueriesCarryThatFlag() {
+        let id = UUID()
+        let local = KeychainStore().query(for: .machine(id), synchronizable: false)
+        #expect(local[kSecAttrSynchronizable as String] as? Bool == false)
+        #expect(local[kSecAttrAccount as String] as? String == "machine.\(id.uuidString)")
+        let add = KeychainStore().addAttributes(for: .machine(id), synchronizable: false, data: Data())
+        #expect(add[kSecAttrSynchronizable as String] as? Bool == false)
+    }
+
+    /// The local fallback of a machine password: same service and account, not synchronizable.
+    /// `delete(_:)` (any sync flag) removes it.
+    @Test func localMachinePasswordRoundTripAndAnyFlagDelete() throws {
+        let store = KeychainStore(service: "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)")
+        let account = KeychainAccount.machine(UUID())
+        defer { try? store.delete(account) }
+
+        try store.save("local-secret", for: account, synchronizable: false)
+        #expect(try store.read(account, synchronizable: false) == "local-secret")
+
+        try store.delete(account)
+        #expect(try store.read(account, synchronizable: false) == nil)
+
+        try store.save("again", for: account, synchronizable: false)
+        try store.delete(account, synchronizable: false)
+        #expect(try store.read(account, synchronizable: false) == nil)
+    }
 }
