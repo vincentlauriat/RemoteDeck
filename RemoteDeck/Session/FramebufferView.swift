@@ -12,10 +12,20 @@ import SwiftUI
 /// framebuffer and `FramebufferGeometry`.
 ///
 /// Input: keys, clicks, drags, moves and scrolls are handed to `input` (`SessionInputController`),
-/// which captures the keyboard while the view is focused. The local arrow cursor stays visible (the
-/// remote cursor shape is not drawn yet).
+/// which captures the keyboard while the view is focused. While capturing, `systemShortcuts` (an event
+/// tap, Accessibility permission) also takes the combos macOS keeps for itself. The local arrow cursor
+/// stays visible (the remote cursor shape is not drawn yet).
 final class FramebufferView: NSView {
     let input = SessionInputController()
+    let systemShortcuts = SystemShortcutTap()
+
+    /// Called when the keyboard capture starts or stops (for the toolbar's "Keyboard captured" pill).
+    var onCaptureChange: ((Bool) -> Void)?
+
+    /// `false` while the system-shortcut tap cannot run (no Accessibility permission): T3.5's toolbar
+    /// shows "System shortcuts need Accessibility access — Open Settings"
+    /// (`SystemShortcutTap.openAccessibilitySettings()`).
+    var systemShortcutsAvailable: Bool { systemShortcuts.systemShortcutsAvailable }
 
     var renderer: FramebufferRenderer? {
         didSet {
@@ -61,6 +71,11 @@ final class FramebufferView: NSView {
         metalLayer.contentsGravity = .topLeft
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
+        input.onCaptureChange = { [weak self] capturing in
+            self?.updateSystemShortcutTap()
+            self?.onCaptureChange?(capturing)
+        }
+        systemShortcuts.onKey = { [weak self] key, down in self?.handleTappedKey(key, down: down) ?? false }
     }
 
     @available(*, unavailable)
@@ -176,15 +191,16 @@ extension FramebufferView {
         if newWindow == nil { tearDownInput() }
     }
 
-    /// Removes the key monitor and window observers and releases everything held on the remote. Runs
-    /// when the view leaves its window and when SwiftUI dismantles it, so a closed session leaves no
-    /// monitor behind.
+    /// Removes the key monitor, the system-shortcut tap and the window observers, and releases
+    /// everything held on the remote. Runs when the view leaves its window and when SwiftUI dismantles
+    /// it, so a closed session leaves no monitor or tap behind.
     func tearDownInput() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
         windowObservers.forEach(NotificationCenter.default.removeObserver)
         windowObservers = []
         input.setFocus(false)
+        systemShortcuts.tearDown()
     }
 
     override func updateTrackingAreas() {
@@ -195,7 +211,7 @@ extension FramebufferView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        // A click takes the keyboard back (after ⌘⌥Esc or when another view had focus).
+        // A click takes the keyboard back (after ⌃⌥⌘R or when another view had focus).
         input.requestCapture()
         if window?.firstResponder !== self { window?.makeFirstResponder(self) }
         forwardPointer(event)
@@ -235,6 +251,19 @@ extension FramebufferView {
 
     private func updateFocus() {
         input.setFocus(window?.isKeyWindow == true && window?.firstResponder === self)
+        updateSystemShortcutTap()
+    }
+
+    /// The tap runs only while capturing in the key window; removed at once otherwise.
+    private func updateSystemShortcutTap() {
+        systemShortcuts.update(capturing: input.isCapturing, windowKey: window?.isKeyWindow == true)
+    }
+
+    /// A key event from the system-shortcut tap (any app's, but the tap only runs while this view's
+    /// window is key and captures). `true` swallows it.
+    private func handleTappedKey(_ key: KeyInput, down: Bool) -> Bool {
+        guard let window, window.isKeyWindow, window.firstResponder === self else { return false }
+        return input.handleSystemKey(key, down: down)
     }
 
     /// Only events for this view's key window while it is first responder; the rest go on as usual.

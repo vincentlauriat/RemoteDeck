@@ -93,23 +93,109 @@ struct SessionInputControllerTests {
                                  .keyEvent(down: false, key: 0x63), .keyEvent(down: false, key: Keysym.altL)])
     }
 
+    /// ⌃⌥⌘R: the three modifiers went to the remote through flagsChanged before the R; all of them
+    /// are released, the R is never sent, and the remote ends with nothing held.
     @Test func releaseShortcutReleasesEverythingAndStopsCapturing() throws {
         let harness = Harness()
         var changes: [Bool] = []
         harness.controller.onCaptureChange = { changes.append($0) }
-        let cmdOpt: CGEventFlags = [.maskCommand, .maskAlternate, CGEventFlags(rawValue: 0x28)]
-        _ = harness.controller.handleKey(try Self.flags(0x37, [.maskCommand, CGEventFlags(rawValue: 0x08)]))
-        _ = harness.controller.handleKey(try Self.flags(0x3A, cmdOpt))
-        #expect(harness.controller.handleKey(try Self.key(.keyDown, 0x35, "\u{1B}", flags: [.command, .option])))
+        let ctrl = CGEventFlags(rawValue: 0x01), opt = CGEventFlags(rawValue: 0x20), cmd = CGEventFlags(rawValue: 0x08)
+        _ = harness.controller.handleKey(try Self.flags(0x3B, [.maskControl, ctrl]))
+        _ = harness.controller.handleKey(try Self.flags(0x3A, [.maskControl, .maskAlternate, ctrl, opt]))
+        _ = harness.controller.handleKey(try Self.flags(0x37, [.maskControl, .maskAlternate, .maskCommand, ctrl, opt, cmd]))
+        // AZERTY or QWERTY, the R key types "®" with ⌥ here: only the key code counts.
+        #expect(harness.controller.handleKey(try Self.key(.keyDown, 0x0F, "®", flags: [.control, .option, .command, .capsLock])))
         #expect(!harness.controller.isCapturing)
         #expect(changes == [false])
-        #expect(harness.sent == [.keyEvent(down: true, key: Keysym.altL), .keyEvent(down: true, key: Keysym.metaL),
-                                 .keyEvent(down: false, key: Keysym.metaL), .keyEvent(down: false, key: Keysym.altL)])
-        // Released: keys are left to AppKit (local menus work again) until a click captures again.
+        #expect(harness.sent == [.keyEvent(down: true, key: Keysym.controlL), .keyEvent(down: true, key: Keysym.metaL),
+                                 .keyEvent(down: true, key: Keysym.altL),
+                                 .keyEvent(down: false, key: Keysym.altL), .keyEvent(down: false, key: Keysym.metaL),
+                                 .keyEvent(down: false, key: Keysym.controlL)])
+        #expect(harness.controller.translator.heldKeysyms.isEmpty)
+        // Released: the R's key-up, the modifier releases and other keys are left to AppKit (local
+        // menus work again) until a click captures again.
+        #expect(!harness.controller.handleKey(try Self.key(.keyUp, 0x0F, "r", flags: [.control, .option, .command])))
+        #expect(!harness.controller.handleKey(try Self.flags(0x37, [])))
         #expect(!harness.controller.handleKey(try Self.key(.keyDown, 0x00, "a")))
+        #expect(harness.sent.count == 6)
         harness.controller.requestCapture()
         #expect(harness.controller.isCapturing)
         #expect(changes == [false, true])
+    }
+
+    @Test func extraShiftIsNotTheReleaseShortcut() throws {
+        let harness = Harness()
+        #expect(harness.controller.handleKey(try Self.key(.keyDown, 0x0F, "R", flags: [.control, .option, .command, .shift])))
+        #expect(harness.controller.isCapturing)
+        #expect(harness.sent.last == .keyEvent(down: true, key: 0x52))   // R, after the modifiers, like any key
+    }
+
+    /// ⌘1…⌘9 go back to AppKit, key-up included; the remote only sees ⌘ go down and up. ⌘W still
+    /// goes to the remote.
+    @Test func commandDigitStaysLocal() throws {
+        let harness = Harness()
+        let cmd: CGEventFlags = [.maskCommand, CGEventFlags(rawValue: 0x08)]
+        #expect(harness.controller.handleKey(try Self.flags(0x37, cmd)))
+        // AZERTY: the 1 key types "&" without Shift.
+        #expect(!harness.controller.handleKey(try Self.key(.keyDown, 0x12, "&", flags: [.command])))
+        #expect(!harness.controller.handleKey(try Self.key(.keyUp, 0x12, "&", flags: [.command])))
+        #expect(harness.controller.handleKey(try Self.key(.keyDown, 0x0D, "w", flags: [.command])))
+        #expect(harness.controller.handleKey(try Self.key(.keyUp, 0x0D, "w", flags: [.command])))
+        #expect(harness.controller.handleKey(try Self.flags(0x37, [])))
+        #expect(harness.sent == [.keyEvent(down: true, key: Keysym.altL), .keyEvent(down: true, key: 0x77),
+                                 .keyEvent(down: false, key: 0x77), .keyEvent(down: false, key: Keysym.altL)])
+    }
+
+    /// The tap path takes ⌘Tab (down, repeat, and the key-up after ⌘ is already up) and nothing else;
+    /// what it leaves goes to the local path. Each event is handled by one path only.
+    @Test func systemComboGoesThroughTheTapPathOnly() throws {
+        let harness = Harness()
+        let cmd: CGEventFlags = [.maskCommand, CGEventFlags(rawValue: 0x08)]
+        #expect(harness.controller.handleKey(try Self.flags(0x37, cmd)))
+        #expect(harness.controller.handleSystemKey(KeyInput(event: try Self.key(.keyDown, 0x30, "\t", flags: [.command])), down: true))
+        #expect(harness.controller.handleSystemKey(KeyInput(event: try Self.key(.keyDown, 0x30, "\t", flags: [.command])), down: true))   // repeat
+        #expect(harness.controller.handleKey(try Self.flags(0x37, [])))
+        #expect(harness.controller.handleSystemKey(KeyInput(event: try Self.key(.keyUp, 0x30, "\t")), down: false))
+        // Not system combos: left to the local monitor.
+        #expect(!harness.controller.handleSystemKey(KeyInput(event: try Self.key(.keyDown, 0x00, "a")), down: true))
+        #expect(!harness.controller.handleSystemKey(KeyInput(event: try Self.key(.keyUp, 0x00, "a")), down: false))
+        #expect(!harness.controller.handleSystemKey(KeyInput(event: try Self.key(.keyDown, 0x30, "\t")), down: true))
+        #expect(harness.sent == [.keyEvent(down: true, key: Keysym.altL), .keyEvent(down: true, key: Keysym.tab),
+                                 .keyEvent(down: true, key: Keysym.tab), .keyEvent(down: false, key: Keysym.tab),
+                                 .keyEvent(down: false, key: Keysym.altL)])
+        #expect(harness.controller.translator.heldKeysyms.isEmpty)
+    }
+
+    /// ⌘3 held (local), ⇧ added during the repeat: ⌘⇧3 is a system combo, but the key stays local until
+    /// its key-up, so nothing is left behind and the next plain 3 goes to the remote.
+    @Test func localKeyTurningIntoASystemComboStaysLocal() throws {
+        let harness = Harness()
+        let cmd = CGEventFlags(rawValue: 0x08), shift = CGEventFlags(rawValue: 0x02)
+        let three: UInt16 = 0x14
+        #expect(harness.controller.handleKey(try Self.flags(0x37, [.maskCommand, cmd])))
+        #expect(!harness.controller.handleSystemKey(KeyInput(event: try Self.key(.keyDown, three, "3", flags: [.command])), down: true))
+        #expect(!harness.controller.handleKey(try Self.key(.keyDown, three, "3", flags: [.command])))
+        #expect(harness.controller.handleKey(try Self.flags(0x38, [.maskCommand, .maskShift, cmd, shift])))
+        let repeatWithShift = try Self.key(.keyDown, three, "#", flags: [.command, .shift])
+        #expect(!harness.controller.handleSystemKey(KeyInput(event: repeatWithShift), down: true))
+        #expect(!harness.controller.handleKey(repeatWithShift))
+        let up = try Self.key(.keyUp, three, "#", flags: [.command, .shift])
+        #expect(!harness.controller.handleSystemKey(KeyInput(event: up), down: false))
+        #expect(!harness.controller.handleKey(up))
+        #expect(harness.controller.handleKey(try Self.flags(0x38, [.maskCommand, cmd])))
+        #expect(harness.controller.handleKey(try Self.flags(0x37, [])))
+        harness.sent = []
+        let plain = try Self.key(.keyDown, three, "3")
+        #expect(!harness.controller.handleSystemKey(KeyInput(event: plain), down: true))
+        #expect(harness.controller.handleKey(plain))
+        #expect(harness.sent == [.keyEvent(down: true, key: 0x33)])
+    }
+
+    @Test func tapPathTakesNothingWhenNotCapturing() throws {
+        let harness = Harness()
+        harness.controller.releaseCapture()
+        #expect(!harness.controller.handleSystemKey(KeyInput(event: try Self.key(.keyDown, 0x30, "\t", flags: [.command])), down: true))
+        #expect(harness.sent.isEmpty)
     }
 
     /// Switching profile with ⌘ still down: released under the old keysym, pressed under the new one.
