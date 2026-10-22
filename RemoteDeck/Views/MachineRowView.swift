@@ -15,6 +15,11 @@ extension MachineKind {
 }
 
 extension Machine {
+    /// AppFlow › Connect validation, shared by every Connect control: a host and a port 1–65535.
+    var canConnect: Bool {
+        !host.trimmingCharacters(in: .whitespaces).isEmpty && (1...65535).contains(port)
+    }
+
     /// `host:port`, with IPv6 literals in brackets (`[fe80::1%en0]:5901`). With
     /// `omittingDefaultPort`, port 5900 is left out (sidebar rows).
     func displayAddress(omittingDefaultPort: Bool = false) -> String {
@@ -28,6 +33,8 @@ extension Machine {
 struct MachineRowView: View {
     @Environment(AppSettings.self) private var settings
     let machine: Machine
+    /// AppFlow › Connect: row spinner while its session connects.
+    var isConnecting = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -45,6 +52,9 @@ struct MachineRowView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
+            if isConnecting {
+                ProgressView().controlSize(.small)
+            }
             if machine.isFavorite {
                 Image(systemName: "star.fill")
                     .font(.system(size: 10))

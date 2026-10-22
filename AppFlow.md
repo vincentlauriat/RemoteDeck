@@ -2,7 +2,7 @@
 
 ## Entry points
 
-- Launching the app (Dock, Spotlight): opens the Library Window.
+- Launching the app (Dock, Spotlight): opens the Library Window, at every launch (also after a killed run). Session Windows are never restored at launch: reopening one would reconnect to a host without the user asking.
 - Menu Bar Extra: quick-connect list of favorite and recent machines.
 - URL scheme `remotedeck://connect?id=<machine-id>`, plus `vnc://host` URLs registered as a handler: opens a session directly. *(assumption)*
 - Status Notifications: clicking an "online again" notification opens a session on that machine.
@@ -42,7 +42,7 @@ First-time variant: `Onboarding Sheet -> Discovery Panel -> Add -> Machine Edito
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
-| Connect | Double-click / Return / toolbar "Connect" | Machine has host and port | Row spinner | Session Window tab opens | — (errors are shown in the session) | Session Window |
+| Connect | Double-click / Return / toolbar "Connect" / detail pane "Connect" | Machine has host and port | Row spinner | Session Window opens (one window per machine until Session Tabs, T4.2); a machine whose window is already open: that window comes forward, no second connection | — (errors are shown in the session) | Session Window |
 | Add machine | ⌘N / "+" | — | — | Empty editor | — | Machine Editor |
 | Discover | ⌘D / toolbar | — | — | Panel opens | Local network permission denied → blocked state | Discovery Panel |
 | Search | ⌘F, type | — | — | List filtered live on name/host (case- and accent-insensitive); empty sections hidden | "No results" | — |
@@ -70,14 +70,28 @@ Changing kind, host, port, user or password clears a Test result (and cancels a 
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
-| Connect | Tab opens | — | "Connecting to <name>…" overlay with Cancel | Framebuffer shown, overlay fades | Banner: "Unreachable" / "Authentication failed" (Edit credentials) / "Connection lost" (Reconnect) | — |
+| Connect | Tab opens | — | "Connecting to <name>…" overlay with Cancel (Esc), until the first framebuffer update; the screen behind it takes no click | Framebuffer shown, overlay goes, keyboard captured | Banner (see Session errors below): "Unreachable…" (Retry) / "Authentication failed" (Edit credentials) / "Connection lost" (Reconnect) | — |
 | Release keyboard | ⌃⌥⌘R while captured | — | — | Capture off: every key, modifier and button held on the remote is released; the pill disappears | — | — |
 | Capture keyboard | Click in the remote screen | — | — | Capture on; the first time in an app run without Accessibility access, the system prompt (see Keyboard capture) | — | — |
-| Toggle scaling | ⌘⌥S | — | — | Fit-to-window ↔ 1:1 | — | — |
+| Toggle scaling | ⌘⌥S (keyboard released) / toolbar button | — | — | Fit-to-window ↔ 1:1, for this session only (Machine.scalingMode is the starting mode and is not changed) | — | — |
 | Send clipboard | ⌘V while focused (Shared Clipboard on) | Text ≤ 1 MB | — | Text pasted remotely | Toast: "Clipboard too large" | — |
 | Switch tab | ⌘1…⌘9 / click tab | — | — | Tab shown | — | — |
 | Open Claude | ⌘K / toolbar sparkle icon | API key present | — | Claude Assistant Panel opens | No key → link to Settings Window › Claude | Claude Assistant Panel |
-| Disconnect | ⌘W | — | — | Tab closes, SessionRecord saved | — | Library Window if no tab is left |
+| Disconnect | ⌘W (keyboard released) / toolbar "Disconnect" / window close button | — | — | Tab closes, SessionRecord saved | — | Library Window if no tab is left |
+
+#### Session errors (T3.5)
+
+The banner sits at the top of the Session Window (32 pt, red bar, one button); the last frame stays dimmed behind it and takes no click. Copy for connection failures is the Machine Editor's Test copy, except the timeout.
+
+| Cause | Banner | Button | SessionRecord.outcome |
+|---|---|---|---|
+| Wrong credentials, missing user name or password, credential too long | "Authentication failed" (with the server's reason) / the Test copy for the missing or too-long credential | Edit credentials (Machine Editor sheet; Save retries) | `authFailed` |
+| Password unreadable from the Keychain (nothing is sent) | "The password could not be read from the Keychain (status)" | Edit credentials | `authFailed` |
+| Network error, refused, not an RFB server, unsupported security type, protocol error | Test copy ("Unreachable — check VPN or network"…) | Retry | `unreachable` |
+| No answer within 10 s (connect + handshake) | "Unreachable — no answer within 10 s" | Retry | `unreachable` |
+| The session ends after authentication without the user asking (server gone, network, malformed data) | "Connection lost" | Reconnect | `dropped` |
+| Cancel / Esc / window closed before the first frame | — (window closes) | — | `cancelled` |
+
 
 ### Claude Assistant Panel
 
@@ -105,7 +119,7 @@ Changing kind, host, port, user or password clears a Test result (and cancels a 
 
 ## Navigation rules
 
-- One Library Window, one Session Window containing native macOS window tabs, and one Settings Window (⌘,).
+- One Library Window, one Session Window containing native macOS window tabs, and one Settings Window (⌘,). Until Session Tabs (T4.2), each machine has its own Session Window.
 - ⌘0 Library, ⌘1…⌘9 session tabs, ⌘K Claude Assistant Panel, ⌘Y Session History View.
 - While a session has the keyboard captured, key combos go to the remote machine, with the exceptions in Keyboard capture below.
 - Deep links open in a new tab of the existing Session Window.
@@ -134,7 +148,7 @@ Leaving Captured always releases, on the remote, every key, modifier (including 
 
 Accessibility prompt flow (system combos):
 1. Never at launch. The first time a capture starts in an app run without Accessibility access, the app shows the system prompt once ("RemoteDeck would like to control this computer using accessibility features"), then keeps working with the local shortcuts only.
-2. While access is missing, the toolbar shows "System shortcuts need Accessibility access — Open Settings" (T3.5); the button opens System Settings › Privacy & Security › Accessibility. No further prompt in that run.
+2. While access is missing and the keyboard is captured, the toolbar shows a button "System shortcuts need Accessibility access — Open Settings" next to the capture pill (T3.5); it opens System Settings › Privacy & Security › Accessibility. No further prompt in that run.
 3. Once granted, the next capture (click, or focus coming back) takes the system combos, without a restart *(expected; not yet verified live)*. If access is revoked while captured, the app drops the tap as soon as macOS announces the change; revoking with a tap active is a known macOS risk (system input can become unresponsive, Apple bug FB24619068, TRD › Input), so releasing the capture (⌃⌥⌘R) first is safer.
 ## Empty and blocked states
 

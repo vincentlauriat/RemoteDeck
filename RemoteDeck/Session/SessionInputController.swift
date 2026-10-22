@@ -68,8 +68,17 @@ final class SessionInputController {
         updateCapture { captureRequested = true }
     }
 
+    /// Ends the capture and releases everything held on the remote, even if the capture had already
+    /// ended: pointer buttons are forwarded outside the capture too (a drag after ⌃⌥⌘R).
     func releaseCapture() {
         updateCapture { captureRequested = false }
+        releaseHeld()
+    }
+
+    /// Sends the release of every key, modifier and button still held on the remote. Idempotent
+    /// (`InputTranslator.releaseAll` forgets what it released).
+    func releaseHeld() {
+        emit(translator.releaseAll())
     }
 
     private func updateCapture(_ change: () -> Void) {

@@ -30,6 +30,10 @@ public actor RFBConnection {
     /// Whether a connection is currently held (open or being opened).
     var isOpen: Bool { connection != nil }
 
+    /// Bytes received from the server since this connection was created: the handshake (counted when
+    /// `open` returns or fails) plus every chunk read by the session (SessionRecord.bytesReceived).
+    public private(set) var bytesReceived: Int64 = 0
+
     /// Called with every chunk received from the server during `open`, before it is parsed. Only
     /// server → client bytes pass through it (never the encrypted credentials the client sends).
     /// Package-visible for the `rfb-probe` capture tool; the app does not use it.
@@ -59,6 +63,7 @@ public actor RFBConnection {
         }
 
         var handshake = RFBHandshake(credentials: credentials, shared: shared, entropy: entropy)
+        var handshakeBytes = 0
         let outcome: Result<HandshakeResult, any Error> = await withTaskCancellationHandler {
             do {
                 try await connection.startAndWaitUntilReady(queue: networkQueue)
@@ -68,6 +73,7 @@ public actor RFBConnection {
                         throw handshake.errorForClosedConnection()
                     }
                     receiveObserver?(chunk)
+                    handshakeBytes += chunk.count
                     let step: HandshakeStep
                     (handshake, step) = try await Self.receive(chunk, into: handshake, on: handshakeQueue)
                     guard !Task.isCancelled else { throw RFBError.cancelled }
@@ -85,6 +91,7 @@ public actor RFBConnection {
             connection.cancel()
         }
 
+        bytesReceived += Int64(handshakeBytes)
         // Freeze the race with the deadline once: whatever happens later cannot rewrite the outcome.
         let expired = !deadline.complete()
         let cancelled = Task.isCancelled
@@ -173,6 +180,8 @@ public actor RFBConnection {
                     }
                     guard !Task.isCancelled else { break }
                     chunk = try await connection.receiveChunk()
+                    // `initial` was counted by `open` (it is the tail of a handshake chunk).
+                    self.bytesReceived += Int64(chunk?.count ?? 0)
                 }
                 // After `close()` or the consumer's cancellation the stream is already finished: no-op.
                 continuation.finish(throwing: Task.isCancelled ? nil : RFBError.connectionClosed)

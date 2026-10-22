@@ -6,6 +6,7 @@ import RemoteDeckCore
 struct RemoteDeckApp: App {
     @State private var settings = AppSettings()
     @State private var library: MachineLibraryModel
+    @State private var sessions: SessionManager
     private let container: ModelContainer
     private let storeError: String?
     private let tester: any ConnectionTester
@@ -22,27 +23,53 @@ struct RemoteDeckApp: App {
         let passwords = LibraryStore.passwordStore(isInMemory: isInMemory)
         _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords))
         var tester: any ConnectionTester = RFBConnectionTester()
+        var makeConnection: @MainActor (SessionTarget) -> any SessionConnection = SessionManager.rfbConnection
         #if DEBUG
         if LibraryDemo.isEnabled {
             LibraryDemo.seed(container.mainContext)
             tester = LibraryDemo.Tester()
+            makeConnection = LibraryDemo.connection   // never the network: the sample hosts are not real
+            LibraryDemo.suppressAccessibilityPrompt()
         }
         #endif
         self.tester = tester
+        _sessions = State(initialValue: SessionManager(context: container.mainContext, passwords: passwords,
+                                                       tester: tester, makeConnection: makeConnection))
     }
 
     var body: some Scene {
         Window(settings.t("app_name"), id: LibraryWindow.id) {
             LibraryView(model: library, tester: tester, storeError: storeError)
                 .environment(settings)
+                .environment(sessions)
                 .preferredColorScheme(settings.appearance.colorScheme)
         }
         .modelContainer(container)
         .windowToolbarStyle(.unified)
         .defaultSize(width: 960, height: 640)
+        // At every launch, even when state restoration has no window to bring back (after a
+        // killed run, or when only session windows were open: those are never restored).
+        .defaultLaunchBehavior(.presented)
         .commands {
             LibraryCommands(settings: settings)
         }
+
+        // One Session Window per machine; opening a machine that has one brings it forward.
+        WindowGroup(id: SessionWindow.id, for: UUID.self) { $machineID in
+            if let machineID {
+                SessionWindowView(machineID: machineID)
+                    .environment(settings)
+                    .environment(sessions)
+                    .preferredColorScheme(settings.appearance.colorScheme)
+            }
+        }
+        .modelContainer(container)
+        .windowToolbarStyle(.unifiedCompact)
+        .defaultSize(width: 1280, height: 800)
+        // Never reopened at launch: that would reconnect to a host (and could show the
+        // Accessibility prompt) without the user asking.
+        .restorationBehavior(.disabled)
+        .defaultLaunchBehavior(.suppressed)
 
         // Réglages via la scène native macOS (⌘,).
         Settings {

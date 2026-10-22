@@ -200,6 +200,7 @@ extension FramebufferView {
         windowObservers.forEach(NotificationCenter.default.removeObserver)
         windowObservers = []
         input.setFocus(false)
+        input.releaseHeld()   // a button held with the keyboard already released
         systemShortcuts.tearDown()
     }
 
@@ -272,6 +273,23 @@ extension FramebufferView {
             return false
         }
         return input.handleKey(event)
+    }
+}
+
+extension FramebufferView: SessionSurface {
+    /// A new session starts captured (AppFlow › Keyboard capture): the view takes the focus. Not
+    /// before the first frame, so Esc reaches the overlay's Cancel while connecting.
+    func startCapture() {
+        input.requestCapture()
+        if window?.firstResponder !== self { window?.makeFirstResponder(self) }
+    }
+
+    /// The session stopped with the window kept (error banner, then a Reconnect overlay): the view
+    /// also gives up the focus, so keys go back to the window and Esc reaches the overlay's Cancel.
+    /// (While released, `keyDown` drops keys to avoid a beep per key, so a focused view would eat Esc.)
+    func releaseCapture() {
+        input.releaseCapture()
+        if window?.firstResponder === self { window?.makeFirstResponder(nil) }
     }
 }
 

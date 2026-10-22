@@ -243,7 +243,7 @@ final class MachineEditorModel {
     /// Credentials as typed. With an unreadable stored password and an empty field, the test runs
     /// without a password (the server then reports what it needs).
     var testCredentials: RFBCredentials {
-        RFBCredentials(username: effectiveUsername, password: password.isEmpty ? nil : password)
+        RFBCredentials(kind: kind, username: username, password: password)   // the session's rule too
     }
 
     /// Same validation as Save, then one RFB open/close with a 5 s timeout.
