@@ -15,7 +15,7 @@
 | Onboarding Sheet | Explain the app, ask for local network and notification permissions, offer to enable iCloud Sync | AppSettings |
 | Library Window | Sidebar with Favorites (pinned; a favorite is listed there only, so each machine has one row), groups (by sort order, then name; empty groups shown unless searching) and ungrouped Machines; search; toolbar (add, discover, connect) | Machine, MachineGroup |
 | Machine Editor | Create or edit a machine: name, kind (Mac ARD / VNC / Anthropic VM), host, port, user, password, group (or "New Group…"), watch, favorite, scaling, shared clipboard (new machines default to AppSettings `defaultSharedClipboard`) | Machine, MachineGroup, KeychainCredential, AppSettings |
-| Discovery Panel | List of Bonjour services found on the LAN, with "Add" per row | Live Bonjour results |
+| Discovery Panel | Sheet listing the hosts found on the LAN through Bonjour (`_rfb._tcp` and `_net-assistant._udp`, merged per host; this Mac is left out), with "Add" per row | Live Bonjour results, Machine (for "Already added") |
 | Session Window | Remote framebuffer with tabs, toolbar (scaling, clipboard, Ctrl-Alt-Del equivalents, Claude, disconnect) | Machine, KeychainCredential, SessionRecord |
 | Claude Assistant Panel | Inspector beside the Session Window: prompt field, answers, proposed actions with Confirm/Skip, token counter | AssistantAction, KeychainCredential |
 | Session History View | Table of past sessions and a 30-day summary | SessionRecord |
@@ -63,8 +63,9 @@ Changing kind, host, port, user or password clears a Test result (and cancels a 
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
-| Browse | Panel opens | — | "Searching…" for up to 3 s | Rows: name, host, service type | No result after 10 s → empty state | — |
-| Add | "Add" on a row | Not already in library (otherwise "Already added") | — | Machine Editor pre-filled | — | Machine Editor |
+| Browse | Panel opens (browsing stops when it closes) | — | "Searching…" until the first row | Rows: name, host (`:port` when not 5900), service types (Screen Sharing · Remote Management), kind symbol; rows come and go live | No result after 10 s → empty state (Retry). Local Network access denied → blocked state; it clears by itself once access is granted. A browser failure with nothing listed → "Bonjour discovery failed", a localized hint and the error code, with Retry. Rows always win: if one service type fails (or is denied) while the other lists hosts, the rows stay and a note under the list says some machines may be missing (with Retry, or Open System Settings) | — |
+| Add | "Add" on a row | Not already in library: same `host:port` as a machine (MachineValidator key); otherwise the row is greyed with "Already added" | — | Panel closes; Machine Editor (new machine) pre-filled: kind (Mac ARD when the host advertises Remote Management, else VNC), name (cut to 64 chars), host (`<name>.local`), port (the `_rfb._tcp` port, else 5900), user name empty | — | Machine Editor |
+| Close | Esc / "Close" | — | — | Sheet closes | — | Library Window |
 
 ### Session Window
 
@@ -153,9 +154,9 @@ Accessibility prompt flow (system combos):
 ## Empty and blocked states
 
 - **Library in memory** (the on-disk store could not be opened): persistent orange banner at the top of the Library Window, "The library could not be opened — The library runs in memory: nothing you do now is saved, passwords included."
-- **Empty library:** illustration-free message "No machines yet", with two buttons: "Discover on network" (disabled until T3.6) and "Add manually".
+- **Empty library:** illustration-free message "No machines yet", with two buttons: "Discover on network" (opens the Discovery Panel) and "Add manually".
 - **Discovery found nothing:** "No Mac with Screen Sharing found. Enable it in System Settings › General › Sharing on the remote Mac.", with a Retry button.
-- **Local network permission denied:** explanation plus a button that opens System Settings › Privacy & Security › Local Network.
+- **Local network permission denied:** "Local network access is off", explanation plus a button that opens System Settings › Privacy & Security › Local Network. Detected when a browser waits with kDNSServiceErr_PolicyDenied (TN3179); the browser keeps running, so granting access brings the rows without Retry.
 - **Offline / host unreachable:** session banner "Unreachable — check VPN or network", with a Retry button. Watched machines show a grey dot in the sidebar.
 - **No Anthropic API key:** the Claude Assistant Panel shows "Add your API key in Settings to use Claude", with a button.
 - **iCloud signed out:** the sync section shows "Sign in to iCloud to sync your library". The app keeps working locally.

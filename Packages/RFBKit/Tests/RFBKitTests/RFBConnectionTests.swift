@@ -5,7 +5,18 @@ import Testing
 
 /// In-process fake RFB server on 127.0.0.1 that plays a scripted handshake and records what the
 /// client sends, so the `NWConnection` driver can be checked end to end without a real Mac.
+///
+/// Read the transcript with `received(within:)`, never by awaiting `transcript` directly: if the
+/// client fails before it reaches the server (or stops talking), the script waits for bytes that
+/// never come, and only a bounded wait turns that into a failure instead of a hung test run.
 final class FakeRFBServer: Sendable {
+    enum Failure: Error, Equatable {
+        /// No client connected before the server was stopped.
+        case noClient
+        /// `received(within:)` gave up: the script was still waiting.
+        case timedOut(Duration)
+    }
+
     enum Step: Sendable {
         case send([UInt8])
         /// Read exactly this many bytes from the client and record them.
@@ -48,43 +59,78 @@ final class FakeRFBServer: Sendable {
 
         transcript = Task {
             var iterator = connections.makeAsyncIterator()
-            guard let connection = await iterator.next() else { return [] }
-            try await connection.startAndWaitUntilReady(queue: queue)
-            var received: [[UInt8]] = []
-            var pending: [UInt8] = []
-            for step in script {
-                switch step {
-                case .send(let bytes):
-                    try await connection.sendAll(Data(bytes))
-                case .receive(let count):
-                    while pending.count < count {
-                        guard let chunk = try await connection.receiveChunk() else { throw RFBError.connectionClosed }
-                        pending += chunk
-                    }
-                    received.append(Array(pending.prefix(count)))
-                    pending.removeFirst(count)
-                case .close:
-                    connection.cancel()
-                    return received
-                case .stall:
-                    try await Task.sleep(for: .seconds(5))
-                case .expectClose:
-                    while true {
-                        guard let chunk = try? await connection.receiveChunk() else { break }
-                        if chunk.isEmpty { continue }
-                    }
-                    received.append([])
-                    connection.cancel()
-                    return received
-                case .reset:
-                    connection.forceCancel()
-                    return received
-                }
+            // Ends with nil when the task is cancelled (`stop`).
+            guard let connection = await iterator.next() else { throw Failure.noClient }
+            // NWConnection callbacks ignore task cancellation: cancelling the connection is what
+            // completes a pending receive or send once `stop` cancels this task.
+            return try await withTaskCancellationHandler {
+                try await Self.play(script, on: connection, queue: queue)
+            } onCancel: {
+                connection.cancel()
             }
-            // Let the client read the last bytes before the socket goes away.
-            try await Task.sleep(for: .milliseconds(200))
-            connection.cancel()
+        }
+    }
+
+    private static func play(_ script: [Step], on connection: NWConnection,
+                             queue: DispatchQueue) async throws -> [[UInt8]] {
+        try await connection.startAndWaitUntilReady(queue: queue)
+        var received: [[UInt8]] = []
+        var pending: [UInt8] = []
+        for step in script {
+            switch step {
+            case .send(let bytes):
+                try await connection.sendAll(Data(bytes))
+            case .receive(let count):
+                while pending.count < count {
+                    guard let chunk = try await connection.receiveChunk() else { throw RFBError.connectionClosed }
+                    pending += chunk
+                }
+                received.append(Array(pending.prefix(count)))
+                pending.removeFirst(count)
+            case .close:
+                connection.cancel()
+                return received
+            case .stall:
+                try await Task.sleep(for: .seconds(5))
+            case .expectClose:
+                while true {
+                    guard let chunk = try? await connection.receiveChunk() else { break }
+                    if chunk.isEmpty { continue }
+                }
+                received.append([])
+                connection.cancel()
+                return received
+            case .reset:
+                connection.forceCancel()
+                return received
+            }
+        }
+        // Let the client read the last bytes before the socket goes away.
+        try await Task.sleep(for: .milliseconds(200))
+        connection.cancel()
+        return received
+    }
+
+    /// The bytes received for each `.receive` step, once the script has run. Stops the server and
+    /// throws `Failure.timedOut` if it has not finished within `timeout`. Cancelling the caller (the
+    /// suite's time limit) stops the server too: awaiting `transcript.value` alone would ignore it.
+    func received(within timeout: Duration = .seconds(20)) async throws -> [[UInt8]] {
+        let watchdog = Task {
+            try await Task.sleep(for: timeout)
+            stop()
+        }
+        do {
+            let received = try await withTaskCancellationHandler {
+                try await transcript.value
+            } onCancel: {
+                stop()
+            }
+            watchdog.cancel()
             return received
+        } catch {
+            watchdog.cancel()
+            if case .success = await watchdog.result { throw Failure.timedOut(timeout) }
+            throw error
         }
     }
 
@@ -94,7 +140,8 @@ final class FakeRFBServer: Sendable {
     }
 }
 
-@Suite(.serialized)
+/// Loopback suites carry a time limit: a hang becomes a failure instead of a stuck CI run.
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct RFBConnectionTests {
     static let vnc = AuthVectors.vnc[0]
     static let dh = AuthVectors.appleDH.first { $0.keyLength == 128 }!
@@ -116,7 +163,7 @@ struct RFBConnectionTests {
                                                timeout: Self.generousTimeout)
         #expect(result.serverInit.name == "loopback")
         #expect(result.securityType == 2)
-        let received = try await server.transcript.value
+        let received = try await server.received()
         #expect(received == [Array("RFB 003.008\n".utf8), [2], [UInt8](hex: Self.vnc.response), [1]])
         await connection.close()
     }
@@ -137,7 +184,7 @@ struct RFBConnectionTests {
                                                entropy: vector.entropy)
         #expect(result.securityType == 30)
         #expect(result.serverVersion == ProtocolVersion(major: 3, minor: 889))
-        let received = try await server.transcript.value
+        let received = try await server.received()
         #expect(received == [Array("RFB 003.008\n".utf8), [30], vector.expectedClientResponse, [1]])
         await connection.close()
     }
@@ -155,7 +202,7 @@ struct RFBConnectionTests {
         await #expect(throws: RFBError.authFailed(reason: "Authentication failure")) {
             try await connection.open(credentials: RFBCredentials(password: "wrong"), timeout: Self.generousTimeout)
         }
-        let received = try await server.transcript.value
+        let received = try await server.received()
         #expect(received[2] != [UInt8](hex: Self.vnc.response))  // the wrong password gave another response
     }
 
@@ -231,7 +278,7 @@ struct RFBConnectionTests {
         #expect(throws: RFBError.cancelled) { _ = try result.get() }
         #expect(latency < .seconds(2))
         #expect(await connection.isOpen == false)
-        let received = try await server.transcript.value
+        let received = try await server.received()
         #expect(received == [Array("RFB 003.008\n".utf8), []])  // [] = the server saw the socket close
     }
 

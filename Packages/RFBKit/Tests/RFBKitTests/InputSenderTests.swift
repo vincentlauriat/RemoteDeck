@@ -55,7 +55,7 @@ private final class SendLog: Sendable {
     var times: [ContinuousClock.Instant] { state.withLock { $0.times } }
 }
 
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct InputSenderTests {
     @Test func movesQueuedDuringASlowWriteCollapse() async throws {
         let log = SendLog()
@@ -124,7 +124,7 @@ struct InputSenderTests {
         sender.finish()
         await sender.stopped()
 
-        let received = try await server.transcript.value
+        let received = try await server.received()
         #expect(received.last == events.flatMap(\.wireBytes))   // after the handshake blobs, in order
         let sent = log.times
         try #require(sent.count == events.count)

@@ -70,6 +70,13 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSMinimumSystemVersion: "15.0"
         NSHumanReadableCopyright: ""
+        # Bonjour Discovery (T3.6): the types the Discovery Panel browses, and the Local Network
+        # prompt text (TN3179). Browsing needs no extra sandbox entitlement: network.client
+        # already lets the app reach mDNSResponder.
+        NSBonjourServices:
+          - _rfb._tcp
+          - _net-assistant._udp
+        NSLocalNetworkUsageDescription: "RemoteDeck looks for Macs with Screen Sharing or Remote Management on your local network, and connects to the machines you add."
 
   RemoteDeckTests:
     type: bundle.unit-test
