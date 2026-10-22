@@ -6,6 +6,7 @@ import RemoteDeckCore
 struct MachineDetailView: View {
     @Environment(AppSettings.self) private var settings
     let machine: Machine
+    let onConnect: () -> Void
     let onEdit: () -> Void
 
     var body: some View {
@@ -46,13 +47,12 @@ struct MachineDetailView: View {
             .font(.system(size: 13))
 
             HStack {
-                Button {} label: {
+                Button(action: onConnect) {
                     Text(settings.t("connect")).frame(minWidth: 120)
                 }
                 .controlSize(.large)
                 .buttonStyle(.borderedProminent)
-                .disabled(true)  // Session Window: T3.5
-                .help(settings.t("connect_unavailable_help"))
+                .disabled(!machine.canConnect)
                 Button(settings.t("edit"), action: onEdit)
                     .controlSize(.large)
             }

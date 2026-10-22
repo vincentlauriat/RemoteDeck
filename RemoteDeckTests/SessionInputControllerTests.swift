@@ -218,6 +218,32 @@ struct SessionInputControllerTests {
         #expect(!harness.controller.handleKey(try Self.key(.keyDown, 0x00, "a")))
     }
 
+    /// A button pressed after ⌃⌥⌘R (pointer events flow outside the capture) is released by the next
+    /// releaseCapture and by the view's teardown, not only on the capturing → released transition.
+    @Test func heldButtonIsReleasedWhenTheKeyboardWasAlreadyReleased() throws {
+        let harness = Harness()
+        let controller = harness.controller
+        controller.releaseCapture()
+        #expect(!controller.isCapturing)
+        controller.handlePointer(try Self.mouse(.leftMouseDown), at: CGPoint(x: 10.25, y: 215), geometry: Self.fit)
+        harness.sent = []
+        controller.releaseCapture()
+        #expect(harness.sent == [.pointerEvent(buttonMask: 0, x: 20, y: 10)])
+        controller.releaseCapture()
+        #expect(harness.sent.count == 1)   // idempotent
+
+        let view = FramebufferView(frame: .zero)
+        view.systemShortcuts.isTrusted = { false }
+        view.systemShortcuts.requestTrust = {}
+        var sent: [ClientMessage] = []
+        view.input.onInput = { sent += $0 }
+        view.input.releaseCapture()
+        view.input.handlePointer(try Self.mouse(.leftMouseDown), at: CGPoint(x: 10.25, y: 215), geometry: Self.fit)
+        sent = []
+        view.tearDownInput()
+        #expect(sent == [.pointerEvent(buttonMask: 0, x: 20, y: 10)])
+    }
+
     @Test func pointerInFitModeOnRetina() throws {
         let harness = Harness()
         let controller = harness.controller

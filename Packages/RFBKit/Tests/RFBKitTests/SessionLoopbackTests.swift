@@ -58,6 +58,34 @@ struct SessionLoopbackTests {
         await connection.close()
     }
 
+    /// Every byte the server sent is counted once: the handshake (ServerInit included) when `open`
+    /// returns, then each session chunk (SessionRecord.bytesReceived).
+    @Test func countsBytesReceived() async throws {
+        let handshakeBytes = ServerMessage.banner("RFB 003.008\n").count + 2 + ServerMessage.securityResult(0).count
+            + ServerMessage.serverInit(width: 4, height: 4, name: "count").count
+        let update = FramebufferMessage.update(FramebufferMessage.raw(0, 0, 2, 2, b: 9, g: 8, r: 7))
+        var script = Self.handshake(width: 4, height: 4)
+        script[script.count - 1] = .send(ServerMessage.serverInit(width: 4, height: 4, name: "count"))
+        let server = try await FakeRFBServer(script: script + [
+            .receive(Self.openingLength), .send(update + [2]), .close,
+        ])
+        defer { server.stop() }
+
+        let connection = RFBConnection(host: "127.0.0.1", port: server.port)
+        #expect(await connection.bytesReceived == 0)
+        _ = try await connection.open(credentials: .none, timeout: Self.timeout)
+        #expect(await connection.bytesReceived == Int64(handshakeBytes))
+        let stream = try await connection.startSession(requestUpdatesAutomatically: false)
+        do {
+            for try await _ in stream {}
+        } catch {
+            #expect(error as? RFBError == .connectionClosed)
+        }
+        #expect(await connection.bytesReceived == Int64(handshakeBytes + update.count + 1))
+        await connection.close()
+        _ = try await server.transcript.value
+    }
+
     @Test func bytesAfterServerInitAreDecodedFirst() async throws {
         // The first update arrives in the same packet as ServerInit, before the client's opening.
         let update = FramebufferMessage.update(FramebufferMessage.raw(0, 0, 2, 2, b: 9, g: 8, r: 7))

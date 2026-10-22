@@ -148,12 +148,14 @@ struct SystemShortcutTapLifecycleTests {
         var fakes: [FakeEventTap] = []
 
         init() {
-            tap.isTrusted = { [unowned self] in trusted }
+            // Weak: the tap can outlive the harness (its delayed trust re-check runs 0.5 s later, after
+            // the test; with `unowned` that crashed the test host once the run lasted long enough).
+            tap.isTrusted = { [weak self] in self?.trusted ?? false }
             tap.requestTrust = {}
             tap.trustNotificationCenter = center
-            tap.makeTap = { [unowned self] _ in
+            tap.makeTap = { [weak self] _ in
                 let fake = FakeEventTap()
-                fakes.append(fake)
+                self?.fakes.append(fake)
                 return fake
             }
         }

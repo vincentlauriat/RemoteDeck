@@ -12,6 +12,8 @@ struct EditorRequest: Identifiable {
 /// machines, live search, detail pane, Machine Editor sheet.
 struct LibraryView: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(SessionManager.self) private var sessions
+    @Environment(\.openWindow) private var openWindow
     @Query private var machines: [Machine]
     @Query private var groups: [MachineGroup]
     @Bindable var model: MachineLibraryModel
@@ -77,6 +79,9 @@ struct LibraryView: View {
         .onAppear {
             #if DEBUG
             if LibraryDemo.opensEditor { openEditor(for: machines.sorted { $0.name < $1.name }.first) }
+            if LibraryDemo.opensSessions {
+                LibraryDemo.sessionMachineNames.forEach { name in connect(machines.first { $0.name == name }) }
+            }
             #endif
         }
     }
@@ -92,7 +97,7 @@ struct LibraryView: View {
             ForEach(sections) { section in
                 Section {
                     ForEach(section.machines) { machine in
-                        MachineRowView(machine: machine)
+                        MachineRowView(machine: machine, isConnecting: sessions.isConnecting(machine.id))
                             .tag(machine.id)
                     }
                 } header: {
@@ -115,7 +120,7 @@ struct LibraryView: View {
                 Button(settings.t("delete"), role: .destructive) { pendingDelete = machine }
             }
         } primaryAction: { ids in
-            // Double-click / Return: Connect (AppFlow). The Session Window arrives in T3.5.
+            // Double-click / Return: Connect (AppFlow).
             connect(machine(ids.first))
         }
         .onDeleteCommand {
@@ -149,7 +154,7 @@ struct LibraryView: View {
                 }
             }
         } else if let machine = machine(model.selection) {
-            MachineDetailView(machine: machine, onEdit: { openEditor(for: machine) })
+            MachineDetailView(machine: machine, onConnect: { connect(machine) }, onEdit: { openEditor(for: machine) })
         } else {
             ContentUnavailableView(
                 settings.t("no_selection_title"),
@@ -176,8 +181,8 @@ struct LibraryView: View {
             Button { connect(machine(model.selection)) } label: {
                 Label(settings.t("connect"), systemImage: "play.fill")
             }
-            .disabled(true)
-            .help(settings.t("connect_unavailable_help"))
+            .disabled(!canConnect(machine(model.selection)))
+            .help(settings.t("connect"))
         }
     }
 
@@ -195,9 +200,16 @@ struct LibraryView: View {
         ))
     }
 
-    /// Single entry point for Connect (double-click, Return, toolbar). Inert until the Session
-    /// Window exists (T3.5).
-    private func connect(_ machine: Machine?) {}
+    /// Single entry point for Connect (double-click, Return, toolbar, detail pane): opens the
+    /// machine's Session Window, or brings it forward if it is already open (AppFlow › Connect).
+    private func connect(_ machine: Machine?) {
+        guard let machine, canConnect(machine), sessions.requestWindow(for: machine.id) else { return }
+        openWindow(id: SessionWindow.id, value: machine.id)
+    }
+
+    private func canConnect(_ machine: Machine?) -> Bool {
+        machine?.canConnect ?? false
+    }
 
     // MARK: Banner and alerts
 
