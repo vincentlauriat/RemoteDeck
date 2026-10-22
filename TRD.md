@@ -34,7 +34,7 @@ No app accounts and no roles: single local user (see PRD). Remote authentication
 | Anthropic computer use environments (VNC, TCP 5900 by default) | Anthropic VM Connect | Reachable endpoint required (local Docker or tunnel) | Vincent |
 | Anthropic Messages API (computer use tool) | Claude Assistant | Per-account rate limits and token billing; screenshots ≈ 1–2k tokens each *(assumption)* | Vincent (API key) |
 | Apple CloudKit (private DB) | iCloud Sync | Free private-database quota, counted against Vincent's iCloud storage | Vincent (iCloud account) |
-| Apple Bonjour (`_rfb._tcp`, `_net-assistant._udp`) | Bonjour Discovery | LAN multicast only | — |
+| Apple Bonjour (`_rfb._tcp`, `_net-assistant._udp`) | Bonjour Discovery: one `NWBrowser` per type while the Discovery Panel is open; each service resolved with `DNSServiceResolve` (SRV target `<name>.local` and port, no connection to the host); results merged per host. `_net-assistant._udp` is the ARD agent (port 3283), never the RFB port: a host advertising only it gets 5900. Kind guess: Remote Management advertised → Mac ARD, else VNC (an `_rfb._tcp` record carries no TXT telling Apple's server apart, measured 2026-10-22). | LAN multicast only; needs the Local Network privilege (macOS 15+, TN3179) | — |
 | macOS User Notifications | Status Notifications | — | — |
 | Sparkle appcast (GitHub Releases) | Updates | — | Vincent |
 
@@ -89,6 +89,7 @@ flowchart LR
 - **Screenshots** are sent to Anthropic only on explicit Claude Assistant requests; a header indicator shows when a request is in flight.
 - **Retention:** Session History is kept 365 days, then purged *(assumption)*. Assistant Actions are kept 30 days *(assumption)*. Screenshots are never written to disk.
 - **App Sandbox** on, with the `network.client` entitlement. Hardened runtime on for notarization.
+- **Local Network privacy (Bonjour Discovery).** Info.plist declares `NSBonjourServices` (`_rfb._tcp`, `_net-assistant._udp`) and `NSLocalNetworkUsageDescription`; the first browse shows the system prompt (TN3179: browsing and resolving Bonjour services both need the privilege; the multicast entitlement is iOS-only). No extra sandbox entitlement: browsing and resolving go through mDNSResponder, and the system profile (`/System/Library/Sandbox/Profiles/application.sb`, macOS 27.2) denies `/private/var/run/mDNSResponder` only when *neither* `network.client` nor `network.server` is present; `network.server` only adds inbound connections, which discovery does not need. TN3179 also warns that the privilege tracks the code signature, so the ad-hoc-signed Debug build may be asked again or behave unpredictably; check the prompt on a Developer ID build.
 
 ## Performance and reliability targets
 

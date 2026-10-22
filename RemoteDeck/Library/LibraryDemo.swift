@@ -4,13 +4,15 @@ import SwiftData
 import RemoteDeckCore
 import RFBKit
 
-/// Debug-only `-LibraryDemo list|editor|session` launch argument: runs the Library Window on an
+/// Debug-only `-LibraryDemo list|editor|session|discovery` launch argument: runs the Library Window on an
 /// in-memory store seeded with sample machines (for screenshots), with in-memory passwords, so neither
 /// the real store nor the Keychain is touched. `editor` also opens the Machine Editor on the first
 /// machine; `session` opens two Session Windows: "Mac mini" (a synthetic desktop) and "Studio"
 /// (authentication fails). Test connection uses `LibraryDemo.Tester`, which answers "Reachable, auth
 /// OK" after half a second, and sessions use `LibraryDemo.Connection`: no network access at all (the
-/// sample hosts are not real machines). The Accessibility prompt is never shown in demo mode.
+/// sample hosts are not real machines). `discovery` opens the Discovery Panel on fake Bonjour results
+/// (`LibraryDemo.discovery`; the demo never browses the network, in any mode). The Accessibility
+/// prompt is never shown in demo mode.
 enum LibraryDemo {
     struct Tester: ConnectionTester {
         func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
@@ -26,6 +28,41 @@ enum LibraryDemo {
     static var isEnabled: Bool { mode != nil }
     static var opensEditor: Bool { mode == "editor" }
     static var opensSessions: Bool { mode == "session" }
+    static var opensDiscovery: Bool { mode == "discovery" }
+
+    /// Fake Bonjour LAN: "Mac mini" (already in the sample library), an iMac with Remote
+    /// Management, a VNC-only Raspberry Pi on port 5901; results arrive after 0.6 s.
+    struct Browsers: BonjourBrowserFactory {
+        static let endpoints: [BonjourService: BonjourEndpoint] = [
+            BonjourService(name: "Mac mini", type: .rfb, domain: "local."): BonjourEndpoint(host: "mini.local", port: 5900),
+            BonjourService(name: "Mac mini", type: .netAssistant, domain: "local."): BonjourEndpoint(host: "mini.local", port: 3283),
+            BonjourService(name: "Office iMac", type: .rfb, domain: "local."): BonjourEndpoint(host: "office-imac.local", port: 5900),
+            BonjourService(name: "Office iMac", type: .netAssistant, domain: "local."): BonjourEndpoint(host: "office-imac.local", port: 3283),
+            BonjourService(name: "Raspberry Pi", type: .rfb, domain: "local."): BonjourEndpoint(host: "raspberrypi.local", port: 5901),
+        ]
+
+        func events(for type: BonjourServiceType) -> AsyncStream<BonjourBrowseEvent> {
+            AsyncStream { continuation in
+                continuation.yield(.ready)
+                let task = Task {
+                    try? await Task.sleep(for: .milliseconds(600))
+                    continuation.yield(.results(Set(Self.endpoints.keys.filter { $0.type == type })))
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+    }
+
+    struct Resolver: BonjourResolver {
+        func resolve(_ service: BonjourService) async -> BonjourEndpoint? {
+            Browsers.endpoints[service]
+        }
+    }
+
+    @MainActor
+    static func discovery() -> DiscoveryService {
+        DiscoveryService(browsers: Browsers(), resolver: Resolver())
+    }
     /// The machines `session` opens, in order. "Mac mini" twice: the second Connect must bring its
     /// window forward, not open a second window or connection.
     static let sessionMachineNames = ["Mac mini", "Studio", "Mac mini"]

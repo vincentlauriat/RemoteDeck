@@ -18,11 +18,16 @@ struct LibraryView: View {
     @Query private var groups: [MachineGroup]
     @Bindable var model: MachineLibraryModel
     let tester: any ConnectionTester
+    /// Builds the Discovery Panel's service (live Bonjour, or the demo's fake one).
+    let makeDiscovery: @MainActor () -> DiscoveryService
     /// Set when the on-disk store could not be opened (the library then runs in memory, and a
     /// persistent banner says so).
     let storeError: String?
 
     @State private var editorRequest: EditorRequest?
+    @State private var discoveryRequest: DiscoveryRequest?
+    /// The row whose "Add" closed the Discovery Panel: the editor opens once the panel is gone.
+    @State private var pendingDiscovered: DiscoveredMachine?
     @State private var pendingDelete: Machine?
     @State private var pendingGroupDelete: MachineGroup?
     @FocusState private var searchFocused: Bool
@@ -42,6 +47,12 @@ struct LibraryView: View {
         .toolbar { toolbar }
         .navigationTitle(settings.t("app_name"))
         .frame(minWidth: 720, minHeight: 480)
+        .sheet(item: $discoveryRequest, onDismiss: openPendingDiscovered) { request in
+            DiscoveryPanelView(model: request.model, libraryKeys: Set(machines.map(\.normalizedKey))) { found in
+                pendingDiscovered = found
+                discoveryRequest = nil
+            }
+        }
         .sheet(item: $editorRequest) { request in
             MachineEditorView(model: request.model) { saved in
                 model.selection = saved.id
@@ -74,11 +85,13 @@ struct LibraryView: View {
         }
         .focusedSceneValue(\.libraryActions, LibraryActions(
             newMachine: { openEditor(for: nil) },
+            discover: { openDiscovery() },
             find: { searchFocused = true }
         ))
         .onAppear {
             #if DEBUG
             if LibraryDemo.opensEditor { openEditor(for: machines.sorted { $0.name < $1.name }.first) }
+            if LibraryDemo.opensDiscovery { openDiscovery() }
             if LibraryDemo.opensSessions {
                 LibraryDemo.sessionMachineNames.forEach { name in connect(machines.first { $0.name == name }) }
             }
@@ -146,9 +159,7 @@ struct LibraryView: View {
                 Label(settings.t("empty_library_title"), systemImage: "desktopcomputer")
             } actions: {
                 HStack {
-                    Button(settings.t("empty_library_discover")) {}
-                        .disabled(true)
-                        .help(settings.t("discover_unavailable_help"))
+                    Button(settings.t("empty_library_discover")) { openDiscovery() }
                     Button(settings.t("empty_library_add")) { openEditor(for: nil) }
                         .buttonStyle(.borderedProminent)
                 }
@@ -173,11 +184,10 @@ struct LibraryView: View {
                 Label(settings.t("add_machine"), systemImage: "plus")
             }
             .help(settings.t("add_machine"))
-            Button {} label: {
+            Button { openDiscovery() } label: {
                 Label(settings.t("discover"), systemImage: "antenna.radiowaves.left.and.right")
             }
-            .disabled(true)
-            .help(settings.t("discover_unavailable_help"))
+            .help(settings.t("discover"))
             Button { connect(machine(model.selection)) } label: {
                 Label(settings.t("connect"), systemImage: "play.fill")
             }
@@ -193,11 +203,24 @@ struct LibraryView: View {
         return machines.first { $0.id == id }
     }
 
-    private func openEditor(for machine: Machine?) {
+    private func openEditor(for machine: Machine?, discovered: DiscoveredMachine? = nil) {
         editorRequest = EditorRequest(model: MachineEditorModel(
             machine: machine, context: model.context, passwords: model.passwords,
-            tester: tester, defaultSharedClipboard: settings.defaultSharedClipboard
+            tester: tester, defaultSharedClipboard: settings.defaultSharedClipboard, discovered: discovered
         ))
+    }
+
+    /// AppFlow › Discover (⌘D, toolbar, empty library): opens the Discovery Panel.
+    private func openDiscovery() {
+        guard discoveryRequest == nil, editorRequest == nil else { return }
+        discoveryRequest = DiscoveryRequest(model: makeDiscovery())
+    }
+
+    /// AppFlow › Discovery Panel › Add: Machine Editor pre-filled, after the panel has closed.
+    private func openPendingDiscovered() {
+        guard let found = pendingDiscovered else { return }
+        pendingDiscovered = nil
+        openEditor(for: nil, discovered: found)
     }
 
     /// Single entry point for Connect (double-click, Return, toolbar, detail pane): opens the
@@ -226,6 +249,7 @@ struct LibraryView: View {
             Spacer()
         }
         .frame(minHeight: 32)
+        .fixedSize(horizontal: false, vertical: true)   // the bar's height, not the window's
         .background(.orange.opacity(0.12))
     }
 
@@ -257,6 +281,7 @@ struct LibraryView: View {
 /// Library actions exposed to the menu bar (⌘N, ⌘F) by the focused Library Window.
 struct LibraryActions {
     let newMachine: () -> Void
+    let discover: () -> Void
     let find: () -> Void
 }
 
@@ -271,7 +296,7 @@ extension FocusedValues {
     }
 }
 
-/// AppFlow shortcuts: ⌘N Add machine, ⌘F Search, ⌘D Discover (T3.6, disabled), ⌘0 Library.
+/// AppFlow shortcuts: ⌘N Add machine, ⌘F Search, ⌘D Discover, ⌘0 Library.
 struct LibraryCommands: Commands {
     let settings: AppSettings
     @FocusedValue(\.libraryActions) private var actions
@@ -282,9 +307,9 @@ struct LibraryCommands: Commands {
             Button(settings.t("menu_new_machine")) { actions?.newMachine() }
                 .keyboardShortcut("n")
                 .disabled(actions == nil)
-            Button(settings.t("menu_discover")) {}
+            Button(settings.t("menu_discover")) { actions?.discover() }
                 .keyboardShortcut("d")
-                .disabled(true)
+                .disabled(actions == nil)
         }
         CommandGroup(after: .textEditing) {
             Button(settings.t("menu_find")) { actions?.find() }

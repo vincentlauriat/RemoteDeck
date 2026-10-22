@@ -3,7 +3,7 @@ import Testing
 @testable import RFBKit
 
 /// `RFBConnection.startSession` end to end against the in-process `FakeRFBServer`.
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct SessionLoopbackTests {
     static let timeout = Duration.seconds(30)
     /// SetPixelFormat (20) + SetEncodings with the 7 preferred encodings (4 + 28) + full request (10).
@@ -51,7 +51,7 @@ struct SessionLoopbackTests {
         let snapshot = try #require(await connection.framebufferSnapshot())
         #expect(snapshot.pixels == vector.expectedPixels)
 
-        let received = try await server.transcript.value
+        let received = try await server.received()
         #expect(received.count == 5)
         #expect(received[3] == Self.opening(width: 40, height: 30))
         #expect(received[4] == Array([[UInt8]](repeating: incremental.wireBytes, count: vector.updates).joined()))
@@ -83,7 +83,7 @@ struct SessionLoopbackTests {
         }
         #expect(await connection.bytesReceived == Int64(handshakeBytes + update.count + 1))
         await connection.close()
-        _ = try await server.transcript.value
+        _ = try await server.received()
     }
 
     @Test func bytesAfterServerInitAreDecodedFirst() async throws {
@@ -106,7 +106,7 @@ struct SessionLoopbackTests {
         #expect(try await iterator.next() == .bell)
         await connection.close()
         #expect(try await iterator.next() == nil)  // close() finishes the stream without error
-        _ = try await server.transcript.value
+        _ = try await server.received()
     }
 
     @Test func cancellingTheConsumerClosesTheConnection() async throws {
@@ -134,7 +134,7 @@ struct SessionLoopbackTests {
         let cancelledAt = ContinuousClock.now
         consumer.cancel()
         let count = try await consumer.value
-        let received = try await server.transcript.value
+        let received = try await server.received()
         #expect(ContinuousClock.now - cancelledAt < .seconds(5))
         #expect(count == 1)
         #expect(received.last == [])  // the server saw the socket close
@@ -158,7 +158,7 @@ struct SessionLoopbackTests {
         } catch {
             #expect(isViolation(error as? RFBError, "outside the 8x8 framebuffer"))
         }
-        #expect(try await server.transcript.value.last == [])
+        #expect(try await server.received().last == [])
         await connection.close()
     }
 
@@ -195,7 +195,7 @@ struct SessionLoopbackTests {
             return
         }
         #expect(update.regions.first?.pixels == [0xFF02_0202])
-        let received = try await server.transcript.value
+        let received = try await server.received()
         #expect(received.suffix(2) == [request.wireBytes, request.wireBytes])
         await connection.close()
     }
@@ -232,7 +232,7 @@ struct SessionLoopbackTests {
         // sees the close and its transcript fails instead of hanging.
         try await Task.sleep(for: .milliseconds(300))
         await connection.close()
-        let received = try await server.transcript.value
+        let received = try await server.received()
         #expect(received.last == full.wireBytes + incremental.wireBytes)
     }
 
@@ -271,7 +271,7 @@ struct SessionLoopbackTests {
         }
         #expect(update.regions.first?.pixels == [0xFF07_0707])
         await connection.close()
-        _ = try await server.transcript.value
+        _ = try await server.received()
     }
 
     /// `close()` racing `startSession` (before, during or after the opening send) never leaves the
@@ -296,7 +296,7 @@ struct SessionLoopbackTests {
             await #expect(throws: RFBError.protocolViolation("not connected")) {
                 _ = try await connection.startSession()
             }
-            _ = try await server.transcript.value
+            _ = try await server.received()
             server.stop()
         }
     }

@@ -76,8 +76,10 @@ final class MachineEditorModel {
         let deleting: Bool
     }
 
+    /// `discovered` pre-fills a new machine from a Discovery Panel row (kind, name, host, port;
+    /// user name empty). Ignored when editing an existing machine.
     init(machine: Machine?, context: ModelContext, passwords: any MachinePasswordStore,
-         tester: any ConnectionTester, defaultSharedClipboard: Bool) {
+         tester: any ConnectionTester, defaultSharedClipboard: Bool, discovered: DiscoveredMachine? = nil) {
         self.editing = machine
         self.context = context
         self.passwords = passwords
@@ -97,6 +99,12 @@ final class MachineEditorModel {
         isWatched = machine?.isWatched ?? false
         scalingMode = machine?.scalingModeValue ?? .fit
         sharedClipboard = machine?.sharedClipboard ?? defaultSharedClipboard
+        if machine == nil, let discovered {
+            kind = discovered.kind
+            name = String(discovered.name.prefix(MachineValidator.maxNameLength))
+            host = discovered.host
+            portText = String(discovered.port)
+        }
 
         var loaded: (password: String, scope: PasswordScope)?
         if let machine {

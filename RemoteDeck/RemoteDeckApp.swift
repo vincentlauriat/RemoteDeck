@@ -10,6 +10,7 @@ struct RemoteDeckApp: App {
     private let container: ModelContainer
     private let storeError: String?
     private let tester: any ConnectionTester
+    private let makeDiscovery: @MainActor () -> DiscoveryService
 
     init() {
         // The hosted RemoteDeckTests run inside this app: never open the user's on-disk store then.
@@ -24,22 +25,29 @@ struct RemoteDeckApp: App {
         _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords))
         var tester: any ConnectionTester = RFBConnectionTester()
         var makeConnection: @MainActor (SessionTarget) -> any SessionConnection = SessionManager.rfbConnection
+        // Built when the Discovery Panel opens: nothing browses the network before that.
+        var makeDiscovery: @MainActor () -> DiscoveryService = {
+            DiscoveryService(browsers: NWBonjourBrowserFactory(), resolver: DNSSDResolver(),
+                             excludedHosts: LocalHost.bonjourNames)
+        }
         #if DEBUG
         if LibraryDemo.isEnabled {
             LibraryDemo.seed(container.mainContext)
             tester = LibraryDemo.Tester()
             makeConnection = LibraryDemo.connection   // never the network: the sample hosts are not real
+            makeDiscovery = LibraryDemo.discovery
             LibraryDemo.suppressAccessibilityPrompt()
         }
         #endif
         self.tester = tester
+        self.makeDiscovery = makeDiscovery
         _sessions = State(initialValue: SessionManager(context: container.mainContext, passwords: passwords,
                                                        tester: tester, makeConnection: makeConnection))
     }
 
     var body: some Scene {
         Window(settings.t("app_name"), id: LibraryWindow.id) {
-            LibraryView(model: library, tester: tester, storeError: storeError)
+            LibraryView(model: library, tester: tester, makeDiscovery: makeDiscovery, storeError: storeError)
                 .environment(settings)
                 .environment(sessions)
                 .preferredColorScheme(settings.appearance.colorScheme)
