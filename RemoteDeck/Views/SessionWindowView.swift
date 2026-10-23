@@ -3,15 +3,39 @@ import SwiftData
 import RemoteDeckCore
 import RFBKit
 
-/// The Session Window scene id. One window per machine, keyed by `Machine.id`.
+/// The Session Window scene id. One window (a tab of the Session Window, `SessionTabs`) per machine,
+/// keyed by `Machine.id`.
 enum SessionWindow {
     static let id = "session"
 }
 
+/// A session window with no machine: the tab bar's "+" (AppKit shows it for every tab group, and
+/// SwiftUI answers it with a window without a value). There is no session to show, so it closes one
+/// main-queue turn after it appears (not inside AppKit's own handling of the "+") and brings the
+/// Library Window forward, where the next machine is picked. Hiding the "+" would need a custom
+/// `NSWindow` class or swizzling `newWindowForTab:` out of SwiftUI's responder chain, which is not a
+/// clean option for a SwiftUI-owned window.
+struct EmptySessionWindowView: View {
+    @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear.onAppear {
+            // One turn later: not while AppKit is still inserting the new tab that asked for it.
+            Task { @MainActor in
+                dismissWindow()
+                openWindow(id: LibraryWindow.id)
+            }
+        }
+    }
+}
+
 /// Session Window (AppFlow › Session Window, DesignBrief › Session Window): the remote screen, the
 /// connecting overlay with Cancel, the error banner with its action, and a compact toolbar (keyboard
-/// capture pill, Accessibility notice, scaling, Disconnect). Closing the window, Cancel and Disconnect
-/// all go through `SessionManager.close`, which tears the session down in order.
+/// capture pill, Accessibility notice, scaling, Disconnect). It is one tab of the Session Window
+/// (`SessionTabs`). Closing the tab or window (close button, ⌘W with the keyboard released), Cancel and
+/// Disconnect all close this `NSWindow`, whose `willClose` (`SessionWindowAccessor`) runs
+/// `SessionManager.close`, which tears this session down in order; the other tabs are untouched.
 struct SessionWindowView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(SessionManager.self) private var manager
@@ -36,6 +60,9 @@ struct SessionWindowView: View {
         }
         .frame(minWidth: 640, minHeight: 400)
         .onAppear {
+            // SwiftUI may run this again for the same window (its tab shown again): it already holds
+            // its session, and must not take itself for a duplicate.
+            guard session == nil, !duplicate else { return }
             guard let found = manager.session(for: machineID) else {
                 missing = true
                 return
@@ -48,9 +75,6 @@ struct SessionWindowView: View {
             }
             found.hasWindow = true
             session = found
-        }
-        .onDisappear {
-            if !duplicate { manager.close(machineID) }
         }
     }
 
@@ -76,6 +100,16 @@ struct SessionWindowView: View {
             if session.clipboardTooLarge { clipboardToast }
         }
         .background(.black)
+        .background {
+            // The tab joins the Session Window; only a real window close ends the session.
+            SessionWindowAccessor(onAttach: { [order = session.openOrder] window in
+                SessionTabs.prepare(window)   // a session tab from the start
+                Task { @MainActor in SessionTabs.adopt(window, order: order) }   // once SwiftUI has set it up
+            }, onClose: { [machineID, manager] window in
+                SessionTabs.forget(window)   // no new tab joins a closing window
+                manager.close(machineID)
+            })
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let failure = session.failure { banner(failure, session: session) }
         }
@@ -90,7 +124,9 @@ struct SessionWindowView: View {
     /// first frame (`SessionSurface.startCapture`).
     private func attach(_ view: FramebufferView, to session: SessionModel) {
         session.surface = view
-        session.bringWindowForward = { [weak view] in view?.window?.makeKeyAndOrderFront(nil) }
+        session.bringWindowForward = { [weak view] in
+            if let window = view?.window { SessionTabs.select(window) }   // its tab, in its group
+        }
         view.releaseCapture()
         let update: () -> Void = { [weak session, weak view] in
             guard let view else { return }
@@ -98,6 +134,9 @@ struct SessionWindowView: View {
                                        systemShortcutsAvailable: view.systemShortcutsAvailable)
         }
         view.onCaptureChange = { _ in update() }
+        view.onLocalShortcut = { shortcut in
+            if case .switchTab(let number) = shortcut { SessionTabs.selectTab(at: number - 1) }
+        }
         view.onWindowKeyChange = { [weak session] key in session?.windowKeyChanged(key) }
         session.windowKeyChanged(view.window?.isKeyWindow == true)
         view.systemShortcuts.onAvailabilityChange = { _ in update() }

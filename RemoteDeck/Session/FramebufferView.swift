@@ -8,7 +8,8 @@ import SwiftUI
 ///
 /// The display link runs only while there is something to draw (new pixels, a resize, a scaling,
 /// scroll or backing-scale change) and pauses itself after the frame, so a static desktop costs no
-/// frame and no wake-up at all. The coordinate system is flipped (origin top-left) to match the
+/// frame and no wake-up at all. It stays paused while the window is not visible (a background session
+/// tab, minimised), whatever arrives. The coordinate system is flipped (origin top-left) to match the
 /// framebuffer and `FramebufferGeometry`.
 ///
 /// Input: keys, clicks, drags, moves and scrolls are handed to `input` (`SessionInputController`),
@@ -56,10 +57,22 @@ final class FramebufferView: NSView {
     /// Frames drawn, for the debug counters.
     private(set) var drawCount = 0
 
+    /// ⌘1…⌘9 typed while this view has the keyboard (captured or not): matched by key code
+    /// (`LocalShortcut`), so AZERTY's ⌘& ⌘é… select tabs as well. The event still goes on to AppKit,
+    /// whose menu item for the same tab may run too (selecting a tab twice is harmless).
+    var onLocalShortcut: ((LocalShortcut) -> Void)?
+
+    /// Whether `window` is on screen; replaceable in tests.
+    var isWindowVisible: (NSWindow) -> Bool = { $0.occlusionState.contains(.visible) }
+
+    /// The display link runs (a frame is owed and the window is visible).
+    var isDisplayLinkRunning: Bool { displayLink.map { !$0.isPaused } ?? false }
+
     private let metalLayer = CAMetalLayer()
     private var displayLink: CADisplayLink?
     private var keyMonitor: Any?
     private var windowObservers: [any NSObjectProtocol] = []
+    private var visibilityObserver: (any NSObjectProtocol)?
     private var redraw = FramebufferRedrawState() {
         didSet { displayLink?.isPaused = redraw.isPaused }
     }
@@ -116,6 +129,7 @@ final class FramebufferView: NSView {
         displayLink?.invalidate()
         displayLink = nil
         updateInputObservers()
+        updateVisibilityObserver()
         guard window != nil else { return }
         let link = displayLink(target: self, selector: #selector(displayLinkFired(_:)))
         // Up to ProMotion's 120 Hz; the system clamps it to the display the window is on.
@@ -124,6 +138,26 @@ final class FramebufferView: NSView {
         link.add(to: .main, forMode: .common)
         displayLink = link
         viewDidChangeBackingProperties()
+    }
+
+    /// Background session tabs (AppKit orders the unselected tabs' windows out), minimised and fully
+    /// covered windows stop drawing; the session keeps receiving and uploading updates, so showing it
+    /// again draws the current picture at once.
+    private func updateVisibilityObserver() {
+        if let visibilityObserver { NotificationCenter.default.removeObserver(visibilityObserver) }
+        visibilityObserver = nil
+        guard let window else { return }
+        visibilityObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.updateVisibility() }
+        }
+        updateVisibility()
+    }
+
+    /// Reads the window's visibility again (also called by tests after changing `isWindowVisible`).
+    func updateVisibility() {
+        guard let window else { return }
+        redraw.setVisible(isWindowVisible(window))
     }
 
     /// The current placement of the framebuffer, `nil` before its size is known. The view size is the
@@ -274,9 +308,15 @@ extension FramebufferView {
     }
 
     /// Only events for this view's key window while it is first responder; the rest go on as usual.
-    private func handleMonitoredKey(_ event: NSEvent) -> Bool {
+    /// `true` consumes the event. (Internal for the tests, which call it as the local monitor does.)
+    func handleMonitoredKey(_ event: NSEvent) -> Bool {
         guard let window, event.window === window, window.isKeyWindow, window.firstResponder === self else {
             return false
+        }
+        if event.type == .keyDown, !event.isARepeat,
+           let shortcut = LocalShortcut.matching(keyCode: event.keyCode,
+                                                 flags: MacModifierFlags(rawValue: event.modifierFlags.rawValue)) {
+            onLocalShortcut?(shortcut)   // the controller leaves it to AppKit too (returns false)
         }
         return input.handleKey(event)
     }

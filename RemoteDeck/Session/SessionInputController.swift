@@ -11,7 +11,9 @@ import RFBKit
 /// fire and key-ups that AppKit would drop while ⌘ is down still arrive. Exceptions:
 /// - ⌃⌥⌘R (`ReleaseShortcut`) releases the capture and is never sent; a click in the view takes it again.
 /// - ⌘1…⌘9 (`LocalShortcut`) stay local: the key and its key-up go back to AppKit (menus).
-/// Losing focus or releasing the capture releases everything held on the remote.
+/// Losing focus or releasing the capture releases everything held on the remote. A key-up whose
+/// key-down was not sent by this capture is not sent either (`pressedKeys`): after ⌘2 selected another
+/// session tab, that tab's remote sees nothing of the 2 nor of the ⌘ it was typed with.
 ///
 /// System combos (`SystemShortcut`: ⌘Tab, ⌘Space, Mission Control, screenshots…) never reach the app;
 /// with the Accessibility permission the view's `SystemShortcutTap` takes them first and hands them to
@@ -34,6 +36,7 @@ final class SessionInputController {
         set {
             guard newValue != translator.profile else { return }
             emit(translator.releaseAll())
+            pressedKeys = []
             translator = InputTranslator(profile: newValue)
             if isCapturing { emit(translator.syncModifiers(currentModifierFlags())) }
         }
@@ -55,6 +58,10 @@ final class SessionInputController {
     /// Keys whose key-down came from the system-shortcut tap: their key-up and repeats are taken there
     /// too, whatever the modifiers are by then (⌘ may be up before Tab).
     private var systemKeys: Set<UInt16> = []
+    /// Keys whose key-down this capture sent to the remote. A key-up for any other key (pressed on
+    /// another session tab, e.g. the 2 of ⌘2 that selected this tab, or before the capture started) is
+    /// not sent, and its modifier flags are not synced: that would press ⌘ on this remote for nothing.
+    private var pressedKeys: Set<UInt16> = []
 
     init(profile: ModifierProfile = .appleRemoteDesktop) {
         translator = InputTranslator(profile: profile)
@@ -89,6 +96,7 @@ final class SessionInputController {
             emit(translator.releaseAll())
             localKeys = []
             systemKeys = []
+            pressedKeys = []
         }
         onCaptureChange?(isCapturing)
     }
@@ -108,11 +116,13 @@ final class SessionInputController {
                 localKeys.insert(key.keyCode)
                 return false
             } else {
+                pressedKeys.insert(key.keyCode)
                 emit(translator.keyDown(key))
             }
         case .keyUp:
             if localKeys.remove(key.keyCode) != nil { return false }
             systemKeys.remove(key.keyCode)   // the tap was turned off while it was down
+            guard pressedKeys.remove(key.keyCode) != nil else { return false }
             emit(translator.keyUp(key))
         case .flagsChanged:
             emit(translator.flagsChanged(key))
@@ -133,10 +143,12 @@ final class SessionInputController {
                   systemKeys.contains(key.keyCode)
                     || SystemShortcut.matches(keyCode: key.keyCode, flags: key.modifierFlags) else { return false }
             systemKeys.insert(key.keyCode)
+            pressedKeys.insert(key.keyCode)
             emit(translator.keyDown(key))
         } else {
             guard systemKeys.remove(key.keyCode) != nil else { return false }
             localKeys.remove(key.keyCode)
+            pressedKeys.remove(key.keyCode)
             emit(translator.keyUp(key))
         }
         return true

@@ -4,7 +4,8 @@ import RemoteDeckCore
 /// When `FramebufferView` draws. A frame is owed after anything that changes the picture (new pixels
 /// or a framebuffer resize, a different scaling mode, scroll offset, backing scale or drawable size)
 /// and stays owed until a draw succeeds; the display link runs only while a frame is owed, so a static
-/// desktop costs no frame. Setting a property to its current value owes nothing.
+/// desktop costs no frame. Setting a property to its current value owes nothing. While the window is
+/// not visible the link stays paused, frame owed or not.
 struct FramebufferRedrawState {
     private(set) var needsRedraw = true
     private(set) var scalingMode: ScalingMode = .fit
@@ -12,8 +13,19 @@ struct FramebufferRedrawState {
     private(set) var backingScale: CGFloat = 2
     /// Drawable size in pixels.
     private(set) var drawableSize: CGSize = .zero
+    /// The view's window is on screen (`NSWindow.occlusionState`): a background session tab, a
+    /// minimised or fully covered window draws nothing, however many updates arrive.
+    private(set) var isVisible = true
 
-    var isPaused: Bool { !needsRedraw }
+    var isPaused: Bool { !needsRedraw || !isVisible }
+
+    /// Hidden: no frame until shown again, the changes meanwhile stay owed. Shown again: one frame is
+    /// owed in any case, so the picture is the current texture at once.
+    mutating func setVisible(_ visible: Bool) {
+        guard visible != isVisible else { return }
+        isVisible = visible
+        if visible { needsRedraw = true }
+    }
 
     /// New pixels, a framebuffer resize, a new renderer or an AppKit redisplay.
     mutating func contentChanged() {

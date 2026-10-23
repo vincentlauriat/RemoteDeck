@@ -45,7 +45,7 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 - **Buttons:** standard `.bordered` for secondary actions, `.borderedProminent` only for the single primary action per sheet (Save, Connect). Destructive actions use the `.destructive` role and a confirm dialog.
 - **Forms:** `Form` with `.grouped` style in sheets, labels aligned on the left, validation message 11 pt in red under the field.
 - **Sidebar rows:** 28 pt height, SF Symbol by machine kind (`desktopcomputer`, `display`, `sparkles` for Anthropic VM), a status dot (8 pt) on the trailing side, and a star for favorites.
-- **Tabs:** native window tabs, title = machine name, with a status dot.
+- **Tabs:** native window tabs, title = machine name, with a status dot (the dot is not built yet: T4.2 ships the titles only; candidate: `NSWindowTab.accessoryView`).
 - **Session toolbar:** unified compact toolbar that auto-hides in full screen. Icons only, with tooltips.
 - **Banners:** top-of-session inline banner 32 pt high, colored left bar (error/warning), with a single action button. The Library Window's in-memory banner runs across the bottom of the window (at the top, the sidebar's search field would cover it).
 - **Toasts:** bottom-center, 2 s, for transient info ("Clipboard too large"). The Shared Clipboard syncs silently: a toast on every sync would be noise.
