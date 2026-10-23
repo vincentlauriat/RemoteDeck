@@ -148,6 +148,10 @@ enum Strings {
             "session_scaling_to_actual": "Taille réelle (⌥⌘S)",
             "session_scaling_to_fit": "Ajuster à la fenêtre (⌥⌘S)",
             "session_disconnect": "Se déconnecter",
+            "session_clipboard": "Presse-papiers partagé",
+            "session_clipboard_on": "Presse-papiers partagé activé pour cette session : cliquer pour le couper",
+            "session_clipboard_off": "Presse-papiers partagé coupé pour cette session : cliquer pour l'activer",
+            "session_clipboard_too_large": "Presse-papiers trop volumineux",
             "session_machine_missing": "Cette machine n'existe plus",
 
             // Réglages
@@ -326,6 +330,10 @@ enum Strings {
             "session_scaling_to_actual": "Actual size (⌥⌘S)",
             "session_scaling_to_fit": "Fit to window (⌥⌘S)",
             "session_disconnect": "Disconnect",
+            "session_clipboard": "Shared Clipboard",
+            "session_clipboard_on": "Shared Clipboard on for this session: click to turn it off",
+            "session_clipboard_off": "Shared Clipboard off for this session: click to turn it on",
+            "session_clipboard_too_large": "Clipboard too large",
             "session_machine_missing": "This machine no longer exists",
 
             "settings_title": "Settings",

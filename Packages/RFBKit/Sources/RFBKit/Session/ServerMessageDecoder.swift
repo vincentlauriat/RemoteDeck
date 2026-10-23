@@ -12,7 +12,8 @@ import Foundation
 /// The decoder assumes the server sends `PixelFormat.bgra32`, which `RFBConnection.startSession`
 /// requests before any update. It is not `Sendable` (it holds zlib state): keep it on one thread.
 public struct ServerMessageDecoder {
-    /// ServerCutText longer than this is skipped without being buffered (no event).
+    /// Legacy ServerCutText longer than this is skipped without being buffered (no event); also the
+    /// largest clipboard text RFBKit sends or accepts through the Extended Clipboard.
     public static let maxCutTextLength = 1 << 20
 
     private enum State {
@@ -83,8 +84,24 @@ public struct ServerMessageDecoder {
             case 2:
                 consume(1)
                 events.append(.bell)
-            case 3:  // ServerCutText: type, 3 padding bytes, U32 length, Latin-1 text
-                guard let length = u32(at: 4).map(Int.init) else { return false }
+            case 3:  // ServerCutText: type, 3 padding bytes, length, Latin-1 text
+                guard let raw = u32(at: 4) else { return false }
+                // Negative (S32): an extended message of |length| bytes (Extended Clipboard).
+                let signed = Int32(bitPattern: raw)
+                if signed < 0 {
+                    let length = Int(-Int64(signed))
+                    if length > ExtendedClipboard.maxMessageLength {
+                        consume(8)
+                        state = .skipping(length)
+                        return true
+                    }
+                    guard available >= 8 + length else { return false }
+                    let message = withBytes(8, length) { ExtendedClipboard.parse($0) }
+                    consume(8 + length)
+                    if let message { events.append(.extendedClipboard(message)) }
+                    return true
+                }
+                let length = Int(raw)
                 if length > Self.maxCutTextLength {
                     consume(8)
                     state = .skipping(length)

@@ -129,6 +129,10 @@ enum LibraryDemo {
             failsAuthentication = target.host == "studio.local"
         }
 
+        func setClipboardSharing(_ on: Bool) {}
+
+        func shareClipboard(_ text: String) async throws(RFBError) -> ClipboardShare { .notSharing }
+
         func connect(credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
             do {
                 try await Task.sleep(for: .milliseconds(800))

@@ -48,7 +48,7 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 - **Tabs:** native window tabs, title = machine name, with a status dot.
 - **Session toolbar:** unified compact toolbar that auto-hides in full screen. Icons only, with tooltips.
 - **Banners:** top-of-session inline banner 32 pt high, colored left bar (error/warning), with a single action button. The Library Window's in-memory banner runs across the bottom of the window (at the top, the sidebar's search field would cover it).
-- **Toasts:** bottom-center, 2 s, for transient info (clipboard sent).
+- **Toasts:** bottom-center, 2 s, for transient info ("Clipboard too large"). The Shared Clipboard syncs silently: a toast on every sync would be noise.
 - **Claude Assistant Panel:** inspector 320 pt wide. Messages as plain text blocks (no bubbles). Each proposed action is a row with an icon, a description (e.g. "Click at (412, 230) — 'Terminal'") and Confirm/Skip buttons.
 
 ## Layout rules
@@ -86,7 +86,7 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 - **Disabled:** system disabled style; "Connect" is disabled when the host is empty.
 - **Loading:** indeterminate spinner (small) for rows, overlay spinner for sessions, pulsing purple dot for Claude.
 - **Error:** red banner/inline text with an action.
-- **Success:** green check for the connection test; a brief toast for clipboard.
+- **Success:** green check for the connection test; clipboard syncs show nothing.
 
 ## Required assets
 

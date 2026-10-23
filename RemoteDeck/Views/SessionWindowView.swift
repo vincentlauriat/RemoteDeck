@@ -73,6 +73,7 @@ struct SessionWindowView: View {
                     .onTapGesture {}
             }
             if session.isConnecting { connectingOverlay(session) }
+            if session.clipboardTooLarge { clipboardToast }
         }
         .background(.black)
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -97,6 +98,8 @@ struct SessionWindowView: View {
                                        systemShortcutsAvailable: view.systemShortcutsAvailable)
         }
         view.onCaptureChange = { _ in update() }
+        view.onWindowKeyChange = { [weak session] key in session?.windowKeyChanged(key) }
+        session.windowKeyChanged(view.window?.isKeyWindow == true)
         view.systemShortcuts.onAvailabilityChange = { _ in update() }
         if session.phase == .connected { view.startCapture() }
     }
@@ -114,6 +117,21 @@ struct SessionWindowView: View {
                 .keyboardShortcut(.cancelAction)
         }
         .padding(20)
+    }
+
+    /// DesignBrief › Toasts: bottom-center, 2 s (the model clears it).
+    private var clipboardToast: some View {
+        VStack {
+            Spacer()
+            Label(settings.t("session_clipboard_too_large"), systemImage: "doc.on.clipboard")
+                .font(.system(size: 12, weight: .medium))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.regularMaterial, in: Capsule())
+                .padding(.bottom, 16)
+        }
+        .allowsHitTesting(false)
+        .transition(.opacity)
     }
 
     /// DesignBrief › Banners: 32 pt, colored left bar, one action button.
@@ -178,6 +196,10 @@ struct SessionWindowView: View {
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
             .help(settings.t(session.scalingMode == .fit ? "session_scaling_to_actual" : "session_scaling_to_fit"))
+            Toggle(isOn: Binding(get: { session.clipboardSharing }, set: { session.clipboardSharing = $0 })) {
+                Label(settings.t("session_clipboard"), systemImage: "doc.on.clipboard")
+            }
+            .help(settings.t(session.clipboardSharing ? "session_clipboard_on" : "session_clipboard_off"))
             Button { dismissWindow() } label: {
                 Label(settings.t("session_disconnect"), systemImage: "xmark.circle")
             }

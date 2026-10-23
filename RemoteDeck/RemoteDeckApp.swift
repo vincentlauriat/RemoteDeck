@@ -36,6 +36,8 @@ struct RemoteDeckApp: App {
         _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords))
         var tester: any ConnectionTester = RFBConnectionTester()
         var makeConnection: @MainActor (SessionTarget) -> any SessionConnection = SessionManager.rfbConnection
+        // The hosted tests never touch the real pasteboard.
+        var pasteboard: any ClipboardPasteboard = LibraryStore.isRunningTests() ? InMemoryPasteboard() : SystemPasteboard()
         // Built when the Discovery Panel opens: nothing browses the network before that.
         var makeDiscovery: @MainActor () -> DiscoveryService = {
             DiscoveryService(browsers: NWBonjourBrowserFactory(), resolver: DNSSDResolver(),
@@ -48,6 +50,7 @@ struct RemoteDeckApp: App {
             notificationAuthorizer = LibraryDemo.NotificationAuthorizer()   // never the system prompt
             tester = LibraryDemo.Tester()
             makeConnection = LibraryDemo.connection   // never the network: the sample hosts are not real
+            pasteboard = InMemoryPasteboard()         // nor the user's clipboard
             makeDiscovery = LibraryDemo.discovery
             LibraryDemo.suppressAccessibilityPrompt()
         }
@@ -57,7 +60,8 @@ struct RemoteDeckApp: App {
         self.storeError = storeError
         self.notificationAuthorizer = notificationAuthorizer
         _sessions = State(initialValue: SessionManager(context: container.mainContext, passwords: passwords,
-                                                       tester: tester, makeConnection: makeConnection))
+                                                       tester: tester, makeConnection: makeConnection,
+                                                       pasteboard: pasteboard))
     }
 
     var body: some Scene {

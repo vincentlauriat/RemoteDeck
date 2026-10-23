@@ -26,8 +26,8 @@ final class SessionDisplayModel {
             renderer.apply(update)
         case .desktopResized(let width, let height):
             renderer.resize(width: width, height: height)
-        case .bell, .serverCutText, .cursor:
-            break   // cursor shape: not drawn yet (the local arrow stays); clipboard: T4.1
+        case .bell, .serverCutText, .extendedClipboard, .cursor:
+            break   // cursor shape: not drawn yet (the local arrow stays); clipboard: SessionModel's ClipboardBridge
         }
     }
 }

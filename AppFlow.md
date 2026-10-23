@@ -77,7 +77,9 @@ Changing kind, host, port, user or password clears a Test result (and cancels a 
 | Release keyboard | ⌃⌥⌘R while captured | — | — | Capture off: every key, modifier and button held on the remote is released; the pill disappears | — | — |
 | Capture keyboard | Click in the remote screen | — | — | Capture on; the first time in an app run without Accessibility access, the system prompt (see Keyboard capture) | — | — |
 | Toggle scaling | ⌘⌥S (keyboard released) / toolbar button | — | — | Fit-to-window ↔ 1:1, for this session only (Machine.scalingMode is the starting mode and is not changed) | — | — |
-| Send clipboard | ⌘V while focused (Shared Clipboard on) | Text ≤ 1 MB | — | Text pasted remotely | Toast: "Clipboard too large" | — |
+| Send clipboard | Automatic while Shared Clipboard is on and the Session Window is key: the local text goes to the remote when the window becomes key and when the local clipboard changes while it stays key (checked every 0.5 s), so ⌘V (or a remote Paste menu) pastes it | Plain text ≤ 1 MiB (UTF-8 bytes); items marked concealed/transient/auto-generated (password managers) are never sent | — | Text pasted remotely | Toast (bottom-center, 2 s): "Clipboard too large"; nothing sent | — |
+| Receive clipboard | Text copied on the remote (Shared Clipboard on) | Plain text ≤ 1 MiB | — | Local clipboard holds the text (also when the window is not key) | — (too large or malformed: ignored) | — |
+| Toggle Shared Clipboard | Toolbar `doc.on.clipboard` toggle | — | — | On/off for this session only (Machine.sharedClipboard is the starting value and is not changed); off, nothing is read, written or sent | — | — |
 | Switch tab | ⌘1…⌘9 / click tab | — | — | Tab shown | — | — |
 | Open Claude | ⌘K / toolbar sparkle icon | API key present | — | Claude Assistant Panel opens | No key → link to Settings Window › Claude | Claude Assistant Panel |
 | Disconnect | ⌘W (keyboard released) / toolbar "Disconnect" / window close button | — | — | Tab closes, SessionRecord saved | — | Library Window if no tab is left |

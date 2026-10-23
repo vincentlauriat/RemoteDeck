@@ -8,8 +8,13 @@ public enum RFBEvent: Equatable, Sendable {
     /// new size; the overlapping top-left content is kept until the server repaints it.
     case desktopResized(width: Int, height: Int)
     case bell
-    /// ServerCutText, decoded as Latin-1 (RFC 6143 §7.6.4).
+    /// Remote clipboard text: a legacy ServerCutText decoded as Latin-1 (RFC 6143 §7.6.4), or, from
+    /// `RFBConnection.startSession`, the text of an extended provide too (UTF-8, LF line ends).
     case serverCutText(String)
+    /// An extended ServerCutText (Extended Clipboard pseudo-encoding). Produced by
+    /// `ServerMessageDecoder`; `RFBConnection.startSession` answers it itself and delivers only the
+    /// text (as `.serverCutText`), never this case.
+    case extendedClipboard(ExtendedClipboard.Message)
     /// The cursor shape changed (Cursor pseudo-encoding).
     case cursor(CursorShape)
 }
