@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UserNotifications
 import ClaudeKit
 import RemoteDeckCore
 
@@ -8,6 +9,12 @@ struct RemoteDeckApp: App {
     @State private var settings: AppSettings
     @State private var library: MachineLibraryModel
     @State private var sessions: SessionManager
+    @State private var reachability: ReachabilityMonitor
+    @State private var notificationRouter: StatusNotificationRouter
+    @State private var notificationPermission: NotificationPermissionModel
+    /// `UNUserNotificationCenter` keeps its delegate weakly.
+    private let notificationDelegate: StatusNotificationDelegate?
+    private let watchFeed: WatchTargetFeed
     private let container: ModelContainer
     private let storeError: String?
     private let onboardingLaunch: OnboardingLaunch
@@ -71,12 +78,61 @@ struct RemoteDeckApp: App {
         self.makeDiscovery = makeDiscovery
         self.storeError = storeError
         self.notificationAuthorizer = notificationAuthorizer
-        _sessions = State(initialValue: SessionManager(context: container.mainContext, passwords: passwords,
-                                                       tester: tester, makeConnection: makeConnection,
-                                                       pasteboard: pasteboard,
-                                                       makeAssistant: { [claudeClient] session in
+        let sessions = SessionManager(context: container.mainContext, passwords: passwords,
+                                      tester: tester, makeConnection: makeConnection,
+                                      pasteboard: pasteboard,
+                                      makeAssistant: { [claudeClient] session in
             AssistantModel(port: session, client: claudeClient, apiKey: { settings.anthropicAPIKey })
-        }))
+        })
+        _sessions = State(initialValue: sessions)
+
+        // Status Notifications (T4.5). The hosted tests never probe, post or read the notification
+        // setting; demo modes never touch the network or Notification Center (`-LibraryDemo watch` fakes both).
+        let isRunningTests = LibraryStore.isRunningTests()
+        var monitorsReachability = !isRunningTests
+        var usesNotificationCenter = !isRunningTests
+        var poster: any NotificationPosting = isRunningTests
+            ? SilentNotificationPoster() : UserNotificationPoster(t: { settings.t($0) })
+        var probe: any ReachabilityProbe = TCPReachabilityProbe()
+        var path: any NetworkPathMonitoring = NWNetworkPathMonitor()
+        var configuration = ReachabilityMonitor.Configuration()
+        #if DEBUG
+        if LibraryDemo.isEnabled {
+            monitorsReachability = LibraryDemo.watchesMachines
+            usesNotificationCenter = false
+            // Only `watch` pretends notifications are allowed; the other modes never post.
+            poster = LibraryDemo.watchesMachines ? LibraryDemo.WatchPoster(t: { settings.t($0) })
+                                                 : SilentNotificationPoster()
+            probe = LibraryDemo.WatchProbe()
+            path = LibraryDemo.AlwaysOnlinePath()
+            configuration = LibraryDemo.watchConfiguration
+        }
+        #endif
+        let reachability = ReachabilityMonitor(
+            probe: probe, path: path, poster: poster, configuration: configuration,
+            notificationsEnabled: { settings.notificationsEnabled },
+            sessionState: { [sessions] id in
+                switch sessions.sessions[id]?.phase {
+                case .connected: .connected
+                case .connecting: .connecting
+                default: .noSession
+                }
+            })
+        _reachability = State(initialValue: reachability)
+        watchFeed = WatchTargetFeed(context: container.mainContext, monitor: reachability)
+        let router = StatusNotificationRouter()
+        _notificationRouter = State(initialValue: router)
+        _notificationPermission = State(initialValue: NotificationPermissionModel(poster: poster,
+                                                                                  authorizer: notificationAuthorizer))
+        if usesNotificationCenter {
+            // Before launch ends, so a click that launches the app reaches the router.
+            let delegate = StatusNotificationDelegate(router: router)
+            UNUserNotificationCenter.current().delegate = delegate
+            notificationDelegate = delegate
+        } else {
+            notificationDelegate = nil
+        }
+        if monitorsReachability { reachability.start() }
     }
 
     var body: some Scene {
@@ -85,6 +141,9 @@ struct RemoteDeckApp: App {
                         onboardingLaunch: onboardingLaunch, notificationAuthorizer: notificationAuthorizer)
                 .environment(settings)
                 .environment(sessions)
+                .environment(reachability)
+                .environment(notificationRouter)
+                .environment(notificationPermission)
                 .preferredColorScheme(settings.appearance.colorScheme)
         }
         .modelContainer(container)
@@ -105,6 +164,8 @@ struct RemoteDeckApp: App {
                 SessionWindowView(machineID: machineID)
                     .environment(settings)
                     .environment(sessions)
+                    // Edit credentials opens the Machine Editor, whose Watch note reads it.
+                    .environment(notificationPermission)
                     .preferredColorScheme(settings.appearance.colorScheme)
             } else {
                 EmptySessionWindowView()
@@ -122,6 +183,7 @@ struct RemoteDeckApp: App {
         Settings {
             SettingsView(apiKeyChecker: apiKeyChecker)
                 .environment(settings)
+                .environment(notificationPermission)
         }
 
         #if DEBUG

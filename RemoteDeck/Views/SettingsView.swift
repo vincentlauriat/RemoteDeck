@@ -38,6 +38,15 @@ struct SettingsView: View {
                 LabeledContent(settings.t("settings_model"), value: settings.claudeModel)
             }
 
+            // Status Notifications (T4.5, AppFlow › Settings Window › Toggle notifications).
+            Section(settings.t("settings_notifications")) {
+                Toggle(settings.t("settings_status_notifications"), isOn: $settings.notificationsEnabled)
+                Text(settings.t("settings_status_notifications_help"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                NotificationPermissionNotice(showsAuthorized: true)
+            }
+
             Section(settings.t("settings_about")) {
                 Text(settings.t("settings_about_text"))
                     .font(.callout)
@@ -49,7 +58,7 @@ struct SettingsView: View {
             if editor == nil { editor = APIKeyEditorModel(settings: settings, checker: apiKeyChecker) }
         }
         #if os(macOS)
-        .frame(width: 460, height: 420)
+        .frame(width: 460, height: 520)
         #endif
     }
 }

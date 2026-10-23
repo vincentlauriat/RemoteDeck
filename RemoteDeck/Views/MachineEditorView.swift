@@ -84,7 +84,11 @@ struct MachineEditorView: View {
                         }
                     }
                     Toggle(settings.t("field_favorite"), isOn: $model.isFavorite)
-                    Toggle(settings.t("field_watch"), isOn: $model.isWatched)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle(settings.t("field_watch"), isOn: $model.isWatched)
+                        // Notifications not allowed (or off in Settings): said here, the dot works anyway.
+                        if model.isWatched { NotificationPermissionNotice() }
+                    }
                 }
 
                 Section(settings.t("editor_section_session")) {

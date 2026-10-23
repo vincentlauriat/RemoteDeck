@@ -2,10 +2,11 @@ import SwiftUI
 import RemoteDeckCore
 
 /// Library Window detail pane (DesignBrief › Library Window): name, host:port (mono), kind,
-/// last connected, and a large Connect button.
+/// last connected, the status line (T4.5), and a large Connect button.
 struct MachineDetailView: View {
     @Environment(AppSettings.self) private var settings
     let machine: Machine
+    var status: StatusPresentation = .notWatched
     let onConnect: () -> Void
     let onEdit: () -> Void
 
@@ -35,6 +36,12 @@ struct MachineDetailView: View {
                 }
                 if let group = machine.group {
                     row("detail_group") { Text(group.name) }
+                }
+                row("detail_status") {
+                    HStack(spacing: 6) {
+                        StatusDotView(presentation: status, isDecorative: true)
+                        Text(settings.t(status.labelKey))
+                    }
                 }
                 row("detail_last_connected") {
                     if let date = machine.lastConnectedAt {

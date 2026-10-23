@@ -13,6 +13,8 @@ struct EditorRequest: Identifiable {
 struct LibraryView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(SessionManager.self) private var sessions
+    @Environment(ReachabilityMonitor.self) private var reachability
+    @Environment(StatusNotificationRouter.self) private var notificationRouter
     @Environment(\.openWindow) private var openWindow
     @Query private var machines: [Machine]
     @Query private var groups: [MachineGroup]
@@ -100,7 +102,11 @@ struct LibraryView: View {
             discover: { openDiscovery() },
             find: { searchFocused = true }
         ))
+        // Status Notifications (T4.5): the watched machines reach the monitor from the store
+        // (`WatchTargetFeed`), not from this window, which may be closed.
+        .onChange(of: notificationRouter.pending, initial: true) { openFromNotification() }
         .onAppear {
+            notificationRouter.openLibrary = { [openWindow] in openWindow(id: LibraryWindow.id) }
             // First launch (AppFlow › First use); never under tests or the other debug modes.
             if onboarding == nil {
                 onboarding = onboardingLaunch.makeModel(settings: settings, authorizer: notificationAuthorizer)
@@ -133,7 +139,8 @@ struct LibraryView: View {
             ForEach(sections) { section in
                 Section {
                     ForEach(section.machines) { machine in
-                        MachineRowView(machine: machine, isConnecting: sessions.isConnecting(machine.id))
+                        MachineRowView(machine: machine, isConnecting: sessions.isConnecting(machine.id),
+                                       status: status(of: machine))
                             .tag(machine.id)
                     }
                 } header: {
@@ -188,7 +195,7 @@ struct LibraryView: View {
                 }
             }
         } else if let machine = machine(model.selection) {
-            MachineDetailView(machine: machine, onConnect: { connect(machine) }, onEdit: { openEditor(for: machine) })
+            MachineDetailView(machine: machine, status: status(of: machine), onConnect: { connect(machine) }, onEdit: { openEditor(for: machine) })
         } else {
             ContentUnavailableView(
                 settings.t("no_selection_title"),
@@ -266,6 +273,20 @@ struct LibraryView: View {
 
     private func canConnect(_ machine: Machine?) -> Bool {
         machine?.canConnect ?? false
+    }
+
+    // MARK: Status Notifications
+
+    private func status(of machine: Machine) -> StatusPresentation {
+        reachability.presentation(machineID: machine.id, isWatched: machine.isWatched)
+    }
+
+    /// A clicked notification (AppFlow › Entry points): the machine is selected; "back online"
+    /// also connects, through the same path as the Connect button. A machine deleted since is ignored.
+    private func openFromNotification() {
+        guard let request = notificationRouter.take(), let machine = machine(request.machineID) else { return }
+        model.selection = machine.id
+        if request.connects { connect(machine) }
     }
 
     // MARK: Banner and alerts

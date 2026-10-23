@@ -188,7 +188,12 @@ struct SessionLoopbackTests {
             return
         }
         // Busy with the first update: the second can now arrive, but only because it was taken.
-        try await Task.sleep(for: .milliseconds(400))
+        // Poll with a deadline instead of a fixed sleep: under parallel load (the cancel-race
+        // stress suites) the second update can take longer than a few hundred milliseconds.
+        let deadline = ContinuousClock.now + .seconds(10)
+        while await connection.framebufferSnapshot()?[0, 0] != 0xFF02_0202, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         #expect(await connection.framebufferSnapshot()?[0, 0] == 0xFF02_0202)
         guard case .framebufferUpdate(let update) = try await iterator.next() else {
             Issue.record("expected the second update")

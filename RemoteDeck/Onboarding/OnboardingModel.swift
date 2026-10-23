@@ -18,7 +18,9 @@ protocol NotificationAuthorizing: Sendable {
     func requestAuthorization() async -> NotificationAuthorization
 }
 
-/// The real request (UserNotifications). Status Notifications themselves come with T4.5.
+/// The real request (UserNotifications). Also behind "Allow notifications" in the Settings Window and
+/// the Machine Editor (`NotificationPermissionModel`); Status Notifications post through
+/// `UserNotificationPoster`.
 struct UserNotificationAuthorizer: NotificationAuthorizing {
     func requestAuthorization() async -> NotificationAuthorization {
         do {

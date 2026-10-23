@@ -21,6 +21,11 @@ import RFBKit
 /// `discovery-failed` (a browser failure with its code), and `onboarding` (the Onboarding Sheet over an
 /// empty library; nothing is persisted, the notification button answers "allowed" without the system
 /// prompt, and its last page opens the fake Discovery Panel). Every other mode never shows onboarding.
+///
+/// `watch` (T4.5, Status Notifications): "Mac mini", "NAS" and "Build server" are watched and probed
+/// every 3 s by `WatchProbe` (no network): "Mac mini" always answers, "NAS" answers twice then fails
+/// three times (so it goes offline and comes back), "Build server" never answers. Notifications go to
+/// `WatchPoster`, which prints them on stderr: Notification Center is never used in any demo mode.
 enum LibraryDemo {
     struct Tester: ConnectionTester {
         func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
@@ -40,6 +45,7 @@ enum LibraryDemo {
     /// `empty` and `onboarding` start from an empty library, as on a first launch.
     static var seedsLibrary: Bool { mode != "empty" && mode != OnboardingLaunch.demoMode }
     static var simulatesStoreError: Bool { mode == "store-error" }
+    static var watchesMachines: Bool { mode == "watch" }
     static let storeError = "Demo: simulated SwiftData error (the on-disk store could not be opened)"
 
     /// Answers "allowed" after half a second: the demo never shows the system prompt.
@@ -228,6 +234,55 @@ enum LibraryDemo {
         ]
     }
 
+    // MARK: Status Notifications (`-LibraryDemo watch`)
+
+    static let watchedMachineNames: Set<String> = ["Mac mini", "NAS", "Build server"]
+    static let watchConfiguration = ReachabilityMonitor.Configuration(
+        interval: .seconds(3), timeout: .seconds(2), failuresBeforeOffline: 2, maxConcurrentProbes: 4,
+        wakeGrace: .seconds(3))
+
+    /// Scripted answers per sample host, after 0.3 s; never a socket.
+    actor WatchProbe: ReachabilityProbe {
+        private var counts: [String: Int] = [:]
+
+        func probe(host: String, port: Int) async -> ProbeOutcome {
+            try? await Task.sleep(for: .milliseconds(300))
+            let count = counts[host, default: 0]
+            counts[host] = count + 1
+            switch host {
+            case "mini.local": return .reachable
+            case "nas.local": return count % 5 < 2 ? .reachable : .unreachable   // up, up, down, down, down…
+            default: return .unreachable
+            }
+        }
+    }
+
+    /// Always "network available": the demo never watches the real path.
+    @MainActor
+    final class AlwaysOnlinePath: NetworkPathMonitoring {
+        func start(_ onChange: @escaping @MainActor @Sendable (Bool) -> Void) {}
+        func cancel() {}
+    }
+
+    /// Allowed, and prints instead of posting.
+    @MainActor
+    final class WatchPoster: NotificationPosting {
+        private let t: @MainActor (String) -> String
+
+        init(t: @escaping @MainActor (String) -> String) {
+            self.t = t
+        }
+
+        func authorizationStatus() async -> NotificationPermission { .authorized }
+
+        func post(_ change: StatusChange) async {
+            let content = StatusNotificationContent(change) { t($0) }
+            FileHandle.standardError.write(Data("[LibraryDemo watch] notification: \(content.title) — \(content.body)\n".utf8))
+        }
+
+        func removeDelivered(_ machineID: UUID) async {}
+    }
+
     /// Marks the once-per-run prompt as already shown, so a demo session never asks for access.
     @MainActor
     static func suppressAccessibilityPrompt() {
@@ -252,6 +307,9 @@ enum LibraryDemo {
         machines[1].group = servers
         machines[2].group = servers
         machines[3].group = office
+        if watchesMachines {
+            machines.filter { watchedMachineNames.contains($0.name) }.forEach { $0.isWatched = true }
+        }
         machines.forEach(context.insert)
         try? context.save()
     }

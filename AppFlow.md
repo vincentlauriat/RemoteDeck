@@ -5,7 +5,7 @@
 - Launching the app (Dock, Spotlight): opens the Library Window, at every launch (also after a killed run). Session Windows are never restored at launch: reopening one would reconnect to a host without the user asking.
 - Menu Bar Extra: quick-connect list of favorite and recent machines.
 - URL scheme `remotedeck://connect?id=<machine-id>`, plus `vnc://host` URLs registered as a handler: opens a session directly. *(assumption)*
-- Status Notifications: clicking an "online again" notification opens a session on that machine.
+- Status Notifications (T4.5): clicking a notification brings the app forward with the Library Window, the machine selected; an "online again" notification also opens a session on that machine (the Connect path: its tab is selected if already open). A machine deleted since is ignored.
 - First launch: Onboarding Sheet over the Library Window, until it is finished or skipped (AppSettings `onboardingCompleted`); never under the hosted tests, `-FramebufferDebug` or a `-LibraryDemo` mode other than `onboarding`. No menu item reopens it.
 
 ## Screen list
@@ -98,6 +98,25 @@ The banner sits at the top of the Session Window (32 pt, red bar, one button); t
 | Cancel / Esc / window closed before the first frame | — (window closes) | — | `cancelled` |
 
 
+### Status Notifications (T4.5)
+
+| Action | Trigger | Validation | Loading | Success | Error | Next |
+|---|---|---|---|---|---|---|
+| Watch | "Watch (notify when offline)" toggle in the Machine Editor, then Save | — | Grey dot, "Checking…", until the first answer | Green dot "Online" / red dot "Offline — not answering" in the row and the detail pane (a machine not watched has no dot in the row; the detail pane says "Not watched") | Notifications not allowed: a note under the toggle ("Allow notifications" button when not asked yet, a pointer to System Settings › Notifications when denied, or "turned off in Settings"); the dot works anyway | — |
+| Offline notification | A watched machine seen online fails 2 probes in a row | Settings › Status notifications on, macOS permission granted (never requested here) | — | "<name> is offline" — "The machine no longer answers on the network." | — | — |
+| Back online notification | First answer after offline | Same | — | "<name> is back online" — "Click to connect." (replaces the offline one in Notification Center) | — | — |
+| Click a notification | Banner or Notification Center | Machine still in the library | — | App forward, Library Window opened with the machine selected; "back online" also connects | Machine deleted: the app comes forward, nothing else | Library Window / Session Window |
+
+Rules:
+- Probe: a TCP connect to the machine's host and port, closed at once (no RFB handshake, no credentials), every 60 s per watched machine, 5 s timeout, at most 4 at once.
+- The first answer after Watch is turned on (or after launch) sets the dot without a notification: a machine already down when watched shows red and posts nothing; only online → offline and offline → online notify. Turning Watch off or deleting the machine stops its probe at once.
+- A machine with a connected session counts as online (no probe), and turns green again without a "back online" notification; a connecting session skips the round.
+- Turning Watch off or deleting the machine also removes its delivered notification from Notification Center. A Watch or address change takes effect wherever it is saved (the Library, or the Machine Editor opened from a session's Edit credentials with the Library Window closed).
+- Local Network privacy: the first probe of a watched LAN machine may bring the system's Local Network prompt (as the Discovery Panel's first browse does). While access is off, the machine's dot is grey with "Local network access is off (System Settings › Privacy & Security › Local Network)": never red, no notification.
+- No network on this Mac: probes stop, every watched dot turns grey ("No network on this Mac"), earlier failures are forgotten; they resume when the network is back. Sleep stops them too; after wake they wait 15 s, even if the network comes and goes meanwhile.
+- Timing: the offline notification comes 60–120 s after the port starts refusing (Screen Sharing turned off), 70–130 s after the machine stops answering at all (unplugged: two 5 s timeouts; the 60 s are counted from the end of each probe).
+- Notifications show while the app is frontmost too (banner, Notification Center, sound).
+
 ### Claude Assistant Panel
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
@@ -123,7 +142,7 @@ The banner sits at the top of the Session Window (32 pt, red bar, one button); t
 | Save API key | Paste the key, "Save" (or Return). Typing only edits a draft: nothing is written before Save | Starts with `sk-ant-` ("An Anthropic API key starts with sk-ant-.", nothing sent), then a test request (`GET /v1/models`, no tokens billed) | "Checking…" | "Key valid" ✓; the field is emptied and the section says "An API key is stored." (the key is never shown back) | "Invalid key" (401/403); "The key could not be checked, nothing was saved: …" (network, rate limit, server); Keychain refusal with its status. Nothing is saved in any of them | — |
 | Remove API key | "Remove Key" | A key is stored | — | "Key removed." | Keychain error with its status | — |
 | Toggle iCloud Sync | Switch | iCloud account signed in | "Syncing…" | Last-sync timestamp shown | "iCloud unavailable" | — |
-| Toggle notifications | Switch | Permission granted | — | — | Permission denied → button that opens System Settings | — |
+| Toggle notifications | "Status notifications" switch (Settings › Notifications, AppSettings `notificationsEnabled`, on by default) | — | — | Off: no Status Notification is posted (probes and dots go on) | Under the switch, the macOS permission: not asked yet → "Allow notifications" (the system prompt, on that click only); denied → "Notifications are off in System Settings › Notifications" (text pointer, no deep link); request failed → Retry; allowed → "Notifications allowed" | — |
 
 ## Navigation rules
 
@@ -161,13 +180,13 @@ Accessibility prompt flow (system combos):
 3. Once granted, the next capture (click, or focus coming back) takes the system combos, without a restart *(expected; not yet verified live)*. If access is revoked while captured, the app drops the tap as soon as macOS announces the change; revoking with a tap active is a known macOS risk (system input can become unresponsive, Apple bug FB24619068, TRD › Input), so releasing the capture (⌃⌥⌘R) first is safer.
 ## Empty and blocked states
 
-Each state can be reproduced: by a hosted test through its model, or with a Debug `-LibraryDemo` mode (`empty`, `store-error`, `discovery-empty`, `discovery-blocked`, `discovery-failed`; `session` for the auth-failure banner). States marked with a later task are not built yet.
+Each state can be reproduced: by a hosted test through its model, or with a Debug `-LibraryDemo` mode (`empty`, `store-error`, `discovery-empty`, `discovery-blocked`, `discovery-failed`; `session` for the auth-failure banner; `watch` for the status dots and Status Notifications: three watched sample machines on fake probes every 3 s, "NAS" going offline and back, notifications printed on stderr instead of posted). States marked with a later task are not built yet.
 
 - **Library in memory** (the on-disk store could not be opened): persistent orange banner across the bottom of the Library Window (at the top, the sidebar's search field covered it), "The library could not be opened — The library runs in memory: nothing you do now is saved, passwords included."
 - **Empty library:** illustration-free message "No machines yet", with two buttons: "Discover on network" (opens the Discovery Panel) and "Add manually".
 - **Discovery found nothing:** "No Mac with Screen Sharing found. Enable it in System Settings › General › Sharing on the remote Mac.", with a Retry button.
 - **Local network permission denied:** "Local network access is off", explanation plus a button that opens System Settings › Privacy & Security › Local Network. Detected when a browser waits with kDNSServiceErr_PolicyDenied (TN3179); the browser keeps running, so granting access brings the rows without Retry.
-- **Offline / host unreachable:** session banner "Unreachable — check VPN or network", with a Retry button. Watched machines show a grey dot in the sidebar (T4.5).
+- **Offline / host unreachable:** session banner "Unreachable — check VPN or network", with a Retry button. A watched machine that stops answering shows a red dot ("Offline — not answering") in the sidebar and the detail pane; grey while its status is not known yet or when this Mac has no network (T4.5).
 - **No Anthropic API key** (T4.4): the Claude Assistant Panel shows "Add your API key in Settings to use Claude", with an "Open Settings…" button. All Claude Assistant Panel states can be reproduced with the Debug `-LibraryDemo assistant` mode (one session, the panel open, an in-memory demo key and scripted API answers: a progress note, an answer, a click and a typing proposal) or by the hosted `AssistantModelTests`.
 - **iCloud signed out** (T4.3): the sync section shows "Sign in to iCloud to sync your library". The app keeps working locally.
 - **Empty Session History** (T4.6): "Sessions you open will appear here."

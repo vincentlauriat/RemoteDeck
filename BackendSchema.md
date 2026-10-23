@@ -27,7 +27,7 @@ SwiftData + CloudKit rule: every synced property is optional or has a default, a
 | username | String? | for `macARD` | nil | |
 | group | MachineGroup? | no | nil | Relationship |
 | isFavorite | Bool | yes | false | |
-| isWatched | Bool | yes | false | Drives Status Notifications |
+| isWatched | Bool | yes | false | Drives Status Notifications (T4.5): probed by `ReachabilityMonitor`; the status itself is not stored |
 | scalingMode | String (`fit`, `actual`) | yes | `fit` | |
 | sharedClipboard | Bool | yes | true | Starting value of the session's Shared Clipboard toggle (not written back by the toolbar) |
 | lastConnectedAt | Date? | no | nil | |
@@ -96,7 +96,7 @@ Lifecycle (T3.5, `SessionModel`): one record per attempt (Connect, Retry, Reconn
 | Key | Type | Default |
 |---|---|---|
 | `iCloudSyncEnabled` | Bool | false |
-| `notificationsEnabled` | Bool | true |
+| `notificationsEnabled` | Bool | true (Settings › Notifications › Status notifications; off: nothing is posted, probes and dots go on) |
 | `defaultSharedClipboard` | Bool | true |
 | `claudeModel` | — (not stored) | `claude-opus-5-5`, the constant `ClaudeAPI.defaultModel` (the toolset `computer_toolset_20260801` is the only computer use tool on Opus 5.5). A value left in UserDefaults is ignored. No picker: Settings › Claude shows it |
 | `onboardingCompleted` | Bool | false |
