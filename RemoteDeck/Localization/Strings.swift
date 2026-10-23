@@ -81,6 +81,7 @@ enum Strings {
             "password_save_failed": "Le mot de passe n'a pas pu être enregistré dans le Trousseau (%@). Rien n'a été enregistré.",
             "password_delete_failed": "Le mot de passe effacé n'a pas pu être retiré du Trousseau (%@). Rien n'a été enregistré.",
             "password_local_note": "Mot de passe enregistré sur ce Mac uniquement, en attendant le Trousseau iCloud.",
+            "anthropic_vm_password_note": "Laisser vide si le serveur VNC n’a pas de mot de passe : le conteneur computer use de référence d’Anthropic n’en a pas (x11vnc -nopw).",
             "store_banner": "Bibliothèque en mémoire : rien de ce que tu fais maintenant ne sera enregistré, mots de passe compris.",
 
             // Discovery Panel
@@ -239,6 +240,7 @@ enum Strings {
             "password_save_failed": "The password could not be saved to the Keychain (%@). Nothing was saved.",
             "password_delete_failed": "The cleared password could not be removed from the Keychain (%@). Nothing was saved.",
             "password_local_note": "Password stored on this Mac only until iCloud Keychain is available.",
+            "anthropic_vm_password_note": "Leave empty when the VNC server has no password: Anthropic’s reference computer use container has none (x11vnc -nopw).",
             "store_banner": "The library runs in memory: nothing you do now is saved, passwords included.",
 
             "discovery_title": "Discover on network",

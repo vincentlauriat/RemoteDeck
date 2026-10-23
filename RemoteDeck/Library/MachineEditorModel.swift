@@ -123,6 +123,10 @@ final class MachineEditorModel {
     /// Anthropic VM has no user field (DesignBrief › Machine Editor); Mac ARD requires it.
     var showsUsername: Bool { kind != .anthropicVM }
     var requiresUsername: Bool { kind == .macARD }
+    /// VNC and Anthropic VM servers may have no password: empty means none, so the server must offer
+    /// security type 1 (TRD › Security). Mac ARD shows no "Optional" placeholder: its server asks
+    /// for the password at connect time, which then fails as credentials required.
+    var passwordIsOptional: Bool { kind != .macARD }
 
     func issue(for field: MachineValidator.Field) -> MachineValidator.Reason? {
         issues.first { $0.field == field }?.reason

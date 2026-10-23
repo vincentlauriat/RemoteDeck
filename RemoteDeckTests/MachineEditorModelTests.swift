@@ -113,6 +113,22 @@ struct MachineEditorModelTests {
         #expect(saved.kindValue == .anthropicVM)
     }
 
+    /// AC4: the reference computer use container serves VNC on 5900 with no password (x11vnc -nopw).
+    @Test func anthropicVMSavesOnPort5900WithoutPassword() throws {
+        let model = editor()
+        #expect(model.portText == "5900")
+        model.kind = .anthropicVM
+        model.name = "Computer use"
+        model.host = "127.0.0.1"
+        #expect(model.passwordIsOptional)
+
+        let saved = try #require(model.save())
+        #expect(saved.port == 5900 && saved.username == nil && saved.kindValue == .anthropicVM)
+        #expect(passwords.items.isEmpty && passwords.localItems.isEmpty)
+        model.kind = .macARD
+        #expect(!model.passwordIsOptional)
+    }
+
     @Test func vncUsernameIsOptional() throws {
         let model = editor()
         fill(model, username: "")

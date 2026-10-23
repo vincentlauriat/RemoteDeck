@@ -473,6 +473,38 @@ struct SessionModelTests {
         let ard = RFBCredentials(kind: .macARD, username: " vincent ", password: "pw")
         #expect(ard.username == "vincent")
     }
+
+    /// AC4 path: an Anthropic VM with no stored password (or an empty one) connects with no
+    /// credentials at all, so `RFBHandshake` picks security type 1 when the server offers it.
+    @Test(arguments: [nil, ""] as [String?])
+    func anthropicVMWithoutPasswordConnectsWithNoCredentials(stored: String?) async throws {
+        machine.kindValue = .anthropicVM
+        machine.username = "left-over"
+        passwords.items[machine.id] = stored
+        let fake = FakeSessionConnection(log: log)
+        let (model, _, _) = session([fake])
+        #expect(model.target.modifierProfile == .x11)
+        model.connect()
+        #expect(await waitUntilAsync { await fake.credentials != nil })
+        let credentials = try #require(await fake.credentials)
+        #expect(credentials.username == nil && credentials.password == nil)
+        await model.close()
+    }
+
+    /// A VNC-password-only server and no password: the banner says a password is needed and offers
+    /// Edit credentials (AppFlow › Session Window).
+    @Test func anthropicVMOnPasswordOnlyServerAsksForCredentials() async throws {
+        machine.kindValue = .anthropicVM
+        passwords.items[machine.id] = nil
+        let fake = FakeSessionConnection(log: log, connectResult: .failure(.credentialsRequired(securityType: 2)))
+        let (model, _, _) = session([fake])
+        model.connect()
+        #expect(await waitUntil { model.failure != nil })
+        #expect(model.failure == .connect(.credentialsRequired(username: false)))
+        #expect(model.failure?.action == .editCredentials)
+        #expect(model.failure?.message(english) == english("test_needs_password"))
+        #expect(try records().first?.outcomeValue == .authFailed)
+    }
 }
 
 // MARK: - Connect validation
