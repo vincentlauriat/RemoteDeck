@@ -130,6 +130,9 @@ public struct RFBHandshake: Sendable {
 
     private var pendingServerInit: ServerInit?
 
+    /// Bytes received but not yet parsed (bounded by `maxBufferedBytes`).
+    var bufferedCount: Int { buffer.count }
+
     // MARK: State machine
 
     /// Parses one message if it is complete. Returns `true` when it consumed input and moved on.

@@ -169,7 +169,8 @@ final class Deflater {
                 stream.pointee.next_out = outBuffer.baseAddress
                 stream.pointee.avail_out = uInt(outBuffer.count)
                 let status = deflate(stream, Z_SYNC_FLUSH)
-                precondition(status == Z_OK && stream.pointee.avail_in == 0)
+                // Z_BUF_ERROR: an empty input right after a flush has nothing to emit (fuzz generators do that).
+                precondition((status == Z_OK || status == Z_BUF_ERROR && data.isEmpty) && stream.pointee.avail_in == 0)
                 return outBuffer.count - Int(stream.pointee.avail_out)
             }
         }
