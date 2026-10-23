@@ -102,6 +102,8 @@ Lifecycle (T3.5, `SessionModel`): one record per attempt (Connect, Retry, Reconn
 | `onboardingCompleted` | Bool | false |
 | `historyRetentionDays` | Int | 365 |
 
+`onboardingCompleted` is set to true once, when the Onboarding Sheet is finished or skipped ("Later", Esc on the first two pages, or the sheet dismissed with the Library Window); while it is false, each launch shows the sheet, so quitting the app before the sheet ends shows it again. `-LibraryDemo onboarding` shows the sheet whatever the value and never writes it.
+
 ## Relations
 
 ```mermaid

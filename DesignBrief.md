@@ -47,7 +47,7 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 - **Sidebar rows:** 28 pt height, SF Symbol by machine kind (`desktopcomputer`, `display`, `sparkles` for Anthropic VM), a status dot (8 pt) on the trailing side, and a star for favorites.
 - **Tabs:** native window tabs, title = machine name, with a status dot.
 - **Session toolbar:** unified compact toolbar that auto-hides in full screen. Icons only, with tooltips.
-- **Banners:** top-of-session inline banner 32 pt high, colored left bar (error/warning), with a single action button.
+- **Banners:** top-of-session inline banner 32 pt high, colored left bar (error/warning), with a single action button. The Library Window's in-memory banner runs across the bottom of the window (at the top, the sidebar's search field would cover it).
 - **Toasts:** bottom-center, 2 s, for transient info (clipboard sent).
 - **Claude Assistant Panel:** inspector 320 pt wide. Messages as plain text blocks (no bubbles). Each proposed action is a row with an icon, a description (e.g. "Click at (412, 230) — 'Terminal'") and Confirm/Skip buttons.
 
@@ -62,7 +62,7 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 
 ## Per-screen notes
 
-- **Onboarding Sheet:** 3 pages, 520 × 400 pt, a large SF Symbol, one sentence and one primary button per page.
+- **Onboarding Sheet:** 3 pages, 520 × 400 pt, a large SF Symbol (48 pt: `desktopcomputer`, `lock.shield`, `icloud`), one sentence and one primary button per page (Continue, Continue, Not now), page dots above the buttons, "Later" bottom left on the first two pages. The permissions page lists Local Network and Notifications as rows (symbol, title, 11 pt secondary text; "Allow notifications" under the latter).
 - **Library Window:** groups as collapsible sidebar sections. Favorites section pinned at the top. The detail pane shows name, host:port (mono), kind, last connected, and a status line. The sidebar status dot and the status line come with reachability monitoring (T4.5); until then rows show no dot.
 - **Machine Editor:** the kind picker comes first, because it changes the fields (Anthropic VM hides the user field and shows an 11 pt secondary note under the password, which is optional; Mac ARD requires the user field). The "Test" button sits next to "Save".
 - **Discovery Panel:** popover-sized sheet 420 × 360 pt, title on top, "Close" (Esc) at the bottom right. Each row shows the kind symbol, name, host in SF Mono (`:port` when not 5900) and service types in 11 pt secondary ("Screen Sharing · Remote Management"), with an "Add" button on the right; machines already added are greyed (50 %) with "Already added" instead of the button. Searching, empty, blocked and failed states use `ContentUnavailableView` with their one action (Retry / Open System Settings).
