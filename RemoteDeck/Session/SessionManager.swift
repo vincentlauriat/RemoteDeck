@@ -5,10 +5,11 @@ import SwiftData
 import RemoteDeckCore
 import RFBKit
 
-/// The open sessions, one per machine (one Session Window each; tabs are T4.2). Connect on a machine
-/// that already has a session brings its window forward and opens no second window or connection.
-/// This does not rely on `openWindow(value:)` finding the existing window: two Connects in a row
-/// (measured with `-LibraryDemo session`) opened two windows for the same value.
+/// The open sessions, one per machine, each in its own tab of the Session Window (`SessionTabs`), with
+/// its own connection. Connect on a machine that already has a session selects its tab and opens no
+/// second tab or connection. This does not rely on `openWindow(value:)` finding the existing window:
+/// two Connects in a row (measured with `-LibraryDemo session`) opened two windows for the same value.
+/// A session ends only when its own tab (window) closes (`close`); the other tabs are untouched.
 @Observable
 @MainActor
 final class SessionManager {
@@ -42,10 +43,12 @@ final class SessionManager {
     }
 
     @ObservationIgnored private var terminationObserver: (any NSObjectProtocol)?
+    /// Sessions opened so far (`SessionModel.openOrder`).
+    @ObservationIgnored private var openCount = 0
 
     /// ⌘Q with sessions open: their records get their end at once (`SessionModel.beginClose`), with no
     /// network teardown. Sessions whose window was closing already did so in `close`, so a quit always
-    /// leaves an end time, whether SwiftUI ran `onDisappear` before `willTerminate` or not.
+    /// leaves an end time, whether the window's `willClose` came before `willTerminate` or not.
     func appWillTerminate() {
         sessions.values.forEach { $0.beginClose() }
     }
@@ -69,6 +72,8 @@ final class SessionManager {
             .first else { return nil }
         let session = SessionModel(machine: machine, context: context, passwords: passwords, display: makeDisplay(),
                                    clock: clock, pasteboard: pasteboard, makeConnection: makeConnection)
+        openCount += 1
+        session.openOrder = openCount
         sessions[machineID] = session
         session.connect()
         return session
@@ -90,7 +95,7 @@ final class SessionManager {
         sessions[machineID]?.isConnecting ?? false
     }
 
-    /// The window closed: forget the session at once (a new Connect starts a fresh one), end its
+    /// Its tab (window) closed: forget the session at once (a new Connect starts a fresh one), end its
     /// record now (`beginClose`), and tear it down in order in the background.
     func close(_ machineID: UUID) {
         guard let session = sessions.removeValue(forKey: machineID) else { return }

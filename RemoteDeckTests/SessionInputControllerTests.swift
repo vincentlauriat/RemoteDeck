@@ -146,6 +146,35 @@ struct SessionInputControllerTests {
                                  .keyEvent(down: false, key: 0x77), .keyEvent(down: false, key: Keysym.altL)])
     }
 
+    /// ⌘2 typed on tab 1 selects tab 2 on the key-down; its key-up and the ⌘ release land on tab 2's
+    /// view, which captures from then on. Tab 2's remote sees nothing: no 2, and no ⌘ pressed then
+    /// released by syncing the key-up's flags (T3.3b review). A key that is pressed there goes as usual.
+    @Test func keyUpFromAnotherTabSendsNothing() throws {
+        let newTab = Harness()   // focused when its window became key, ⌘ still held
+        #expect(!newTab.controller.handleKey(try Self.key(.keyUp, 0x13, "2", flags: [.command])))
+        #expect(newTab.controller.handleKey(try Self.flags(0x37, [])))
+        #expect(newTab.sent.isEmpty)
+        // ⌘ still held when the key-up comes, then released after: same.
+        #expect(!newTab.controller.handleKey(try Self.key(.keyUp, 0x13, "2", flags: [.command])))
+        #expect(newTab.sent.isEmpty)
+        // A key pressed on this tab is sent down and up.
+        #expect(newTab.controller.handleKey(try Self.key(.keyDown, 0x00, "a")))
+        #expect(newTab.controller.handleKey(try Self.key(.keyUp, 0x00, "a")))
+        #expect(newTab.sent == [.keyEvent(down: true, key: 0x61), .keyEvent(down: false, key: 0x61)])
+    }
+
+    /// A key held when the capture ended was released then; its key-up after the capture came back is
+    /// not sent again.
+    @Test func keyUpAfterTheCaptureCameBackSendsNothing() throws {
+        let harness = Harness()
+        #expect(harness.controller.handleKey(try Self.key(.keyDown, 0x00, "a")))
+        harness.controller.setFocus(false)
+        harness.controller.setFocus(true)
+        harness.sent = []
+        #expect(!harness.controller.handleKey(try Self.key(.keyUp, 0x00, "a")))
+        #expect(harness.sent.isEmpty)
+    }
+
     /// The tap path takes ⌘Tab (down, repeat, and the key-up after ⌘ is already up) and nothing else;
     /// what it leaves goes to the local path. Each event is handled by one path only.
     @Test func systemComboGoesThroughTheTapPathOnly() throws {

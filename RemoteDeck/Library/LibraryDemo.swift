@@ -7,8 +7,8 @@ import RFBKit
 /// Debug-only `-LibraryDemo list|editor|session|discovery` launch argument: runs the Library Window on an
 /// in-memory store seeded with sample machines (for screenshots), with in-memory passwords, so neither
 /// the real store nor the Keychain is touched. `editor` also opens the Machine Editor on the first
-/// machine; `session` opens two Session Windows: "Mac mini" (a synthetic desktop) and "Studio"
-/// (authentication fails). Test connection uses `LibraryDemo.Tester`, which answers "Reachable, auth
+/// machine; `session` opens three tabs of one Session Window: "Mac mini" and "NAS" (a synthetic
+/// desktop) and "Studio" (authentication fails), then selects the second tab as ⌘2 does. Test connection uses `LibraryDemo.Tester`, which answers "Reachable, auth
 /// OK" after half a second, and sessions use `LibraryDemo.Connection`: no network access at all (the
 /// sample hosts are not real machines). `discovery` opens the Discovery Panel on fake Bonjour results
 /// (`LibraryDemo.discovery`; the demo never browses the network, in any mode). The Accessibility
@@ -115,9 +115,11 @@ enum LibraryDemo {
         return DiscoveryService(browsers: Browsers(scenario: scenario), resolver: Resolver(),
                                 emptyAfter: scenario == .empty ? .seconds(2) : DiscoveryService.defaultEmptyAfter)
     }
-    /// The machines `session` opens, in order. "Mac mini" twice: the second Connect must bring its
-    /// window forward, not open a second window or connection.
-    static let sessionMachineNames = ["Mac mini", "Studio", "Mac mini"]
+    /// The machines `session` opens, in order, as three tabs of one Session Window. "Mac mini" twice:
+    /// the second Connect must select its tab, not open a second tab or connection.
+    static let sessionMachineNames = ["Mac mini", "NAS", "Studio", "Mac mini"]
+    /// Then the second tab is selected as ⌘2 would (AC6): "NAS" in front, the others still connected.
+    static let selectsSecondTabAfter: Duration = .seconds(3)
 
     /// A fake session: the color-bar test pattern after 0.8 s; "studio.local" fails authentication.
     actor Connection: SessionConnection {

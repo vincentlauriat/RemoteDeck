@@ -80,15 +80,19 @@ struct RemoteDeckApp: App {
         .defaultLaunchBehavior(.presented)
         .commands {
             LibraryCommands(settings: settings)
+            SessionTabCommands(settings: settings, sessions: sessions)
         }
 
-        // One Session Window per machine; opening a machine that has one brings it forward.
+        // One window per machine, each a native tab of the Session Window (`SessionTabs`); opening a
+        // machine that has one selects its tab.
         WindowGroup(id: SessionWindow.id, for: UUID.self) { $machineID in
             if let machineID {
                 SessionWindowView(machineID: machineID)
                     .environment(settings)
                     .environment(sessions)
                     .preferredColorScheme(settings.appearance.colorScheme)
+            } else {
+                EmptySessionWindowView()
             }
         }
         .modelContainer(container)

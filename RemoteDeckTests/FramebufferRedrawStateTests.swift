@@ -22,6 +22,27 @@ struct FramebufferRedrawStateTests {
         #expect(state.isPaused)
     }
 
+    /// A background session tab: nothing drawn while hidden, whatever arrives; one frame once shown.
+    @Test func hiddenOwesNoTickUntilShown() {
+        var state = Self.idle()
+        state.setVisible(false)
+        #expect(state.isPaused)
+        state.contentChanged()
+        state.setScalingMode(.actual)
+        #expect(state.needsRedraw && state.isPaused)
+        state.setVisible(true)
+        #expect(!state.isPaused)
+        state.tick(drawSucceeded: true)
+        #expect(state.isPaused)
+        // Shown again with nothing new: one frame anyway (the current texture).
+        state.setVisible(false)
+        state.setVisible(true)
+        #expect(!state.isPaused)
+        state.setVisible(true)   // unchanged: nothing more
+        state.tick(drawSucceeded: true)
+        #expect(state.isPaused)
+    }
+
     @Test func retriesAfterAFailedDraw() {
         var state = Self.idle()
         state.contentChanged()

@@ -212,6 +212,8 @@ final class SessionModel {
     @ObservationIgnored var hasWindow = false
     /// Brings that window forward (set by the window).
     @ObservationIgnored var bringWindowForward: (() -> Void)?
+    /// Rank of the Connect that opened this session (`SessionManager`): the place of its tab.
+    @ObservationIgnored var openOrder = 0
     @ObservationIgnored let display: SessionDisplayModel?
 
     @ObservationIgnored private let context: ModelContext

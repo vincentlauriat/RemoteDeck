@@ -111,6 +111,11 @@ struct LibraryView: View {
             if LibraryDemo.opensDiscovery { openDiscovery() }
             if LibraryDemo.opensSessions {
                 LibraryDemo.sessionMachineNames.forEach { name in connect(machines.first { $0.name == name }) }
+                // AC6: what ⌘2 does (the same call as the menu item), once the tabs are up.
+                Task {
+                    try? await Task.sleep(for: LibraryDemo.selectsSecondTabAfter)
+                    SessionTabs.selectTab(at: 1)
+                }
             }
             #endif
         }

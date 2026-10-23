@@ -42,7 +42,7 @@ First-time variant: `Onboarding Sheet -> Discovery Panel -> Add -> Machine Edito
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
-| Connect | Double-click / Return / toolbar "Connect" / detail pane "Connect" | Machine has host and port | Row spinner | Session Window opens (one window per machine until Session Tabs, T4.2); a machine whose window is already open: that window comes forward, no second connection | — (errors are shown in the session) | Session Window |
+| Connect | Double-click / Return / toolbar "Connect" / detail pane "Connect" | Machine has host and port | Row spinner | A new tab of the Session Window opens and is selected (one tab per machine); a machine whose tab is already open: that tab is selected and comes forward, no second connection | — (errors are shown in the session) | Session Window |
 | Add machine | ⌘N / "+" | — | — | Empty editor | — | Machine Editor |
 | Discover | ⌘D / toolbar | — | — | Panel opens | Local network permission denied → blocked state | Discovery Panel |
 | Search | ⌘F, type | — | — | List filtered live on name/host (case- and accent-insensitive); empty sections hidden | "No results" | — |
@@ -124,8 +124,9 @@ The banner sits at the top of the Session Window (32 pt, red bar, one button); t
 
 ## Navigation rules
 
-- One Library Window, one Session Window containing native macOS window tabs, and one Settings Window (⌘,). Until Session Tabs (T4.2), each machine has its own Session Window.
-- ⌘0 Library, ⌘1…⌘9 session tabs, ⌘K Claude Assistant Panel, ⌘Y Session History View.
+- One Library Window, one Session Window containing native macOS window tabs (one per open machine, each with its own connection), and one Settings Window (⌘,). A tab can be moved to its own window or windows merged back (Window menu); a new session joins the frontmost Session Window (visible and not minimised; else the one opened last). The tab bar's "+" brings the Library Window forward, where the next machine is picked. Switching tabs, minimising and full screen never disconnect; only closing a tab does.
+- ⌘0 Library, ⌘1…⌘9 session tabs (Window › Session Tabs; the physical top-row keys, so AZERTY's ⌘& ⌘é… too, captured or not), ⌘K Claude Assistant Panel, ⌘Y Session History View.
+- Only the selected tab of the key window captures the keyboard, runs the system-shortcut tap and reads the local clipboard; leaving a tab releases every key held on its remote, and a background tab stops drawing but stays connected and up to date.
 - While a session has the keyboard captured, key combos go to the remote machine, with the exceptions in Keyboard capture below.
 - Deep links open in a new tab of the existing Session Window.
 
@@ -136,7 +137,7 @@ Shortcuts match the physical key (key code) and the exact set of ⇧⌃⌥⌘, s
 | While captured | What happens | Why |
 |---|---|---|
 | ⌃⌥⌘R | Releases the capture; never sent to the remote | Not used by macOS or common apps. (The Force Quit combo, which macOS never hands to apps, was the first choice.) |
-| ⌘1…⌘9 (top-row digit keys) | Stay local: switch session tab | The only local allow-list (`LocalShortcut`); the remote sees ⌘ go down and up, nothing else |
+| ⌘1…⌘9 (top-row digit keys) | Stay local: switch session tab | The only local allow-list (`LocalShortcut`); the tab left sees ⌘ go down and up, nothing else; the tab selected sees nothing of the combo |
 | ⌘Tab, ⌘⇧Tab, ⌘Space, ⌥⌘Space, ⌃Space, ⌃⌥Space, ⌃↑ ⌃↓ ⌃← ⌃→ (and with ⇧), ⌘⇧3/4/5, ⌃⌘⇧3/4, ⌥⌘D | Sent to the remote, swallowed locally, **only with Accessibility access** (`SystemShortcut`). Without it, macOS acts on them locally as usual | macOS takes them before the app (app switcher, Spotlight, input sources, Mission Control and Spaces, screenshots, Dock hiding) |
 | Force Quit, F-key hotkeys (F11, ⌃F1…⌃F8, brightness) | Stay local | Force Quit is the way out if the app hangs; the top row sends media keys by default |
 | Everything else (⌘W, ⌘Q, ⌘K, ⌘V, ⌘⌥S…) | Sent to the remote | The Session Window's own shortcuts work after ⌃⌥⌘R, or from the toolbar and menus |
