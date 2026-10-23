@@ -90,6 +90,22 @@ docker run --rm -it --name computer-use \
 
 Wait for `Computer Use Demo is ready!`, then check the desktop at `http://localhost:6080/vnc.html`.
 
+### Live results (2026-10-23, image digest `sha256:b608f419…6625`)
+
+Run on the dev Mac with `-p 127.0.0.1:5901:5900`, no API key (the desktop starts without one).
+
+- Handshake: banner `RFB 003.008`, security types `[1]` only, type 1 chosen with no credentials,
+  ServerInit 1024 × 768. `open` takes 0.4–0.6 s.
+- Decoders: the first full frame decoded with the default list, `tight,raw`, `zrle,raw` and `raw` gives
+  0 pixels different from `raw` (3354 colours); the frame shows the mutter desktop and the tint2 bar.
+- Typing through RFBKit's X11 path (`InputTranslator(profile: .x11)` + `RFBConnection.send`): lower and
+  upper case, digits and every ASCII symbol arrive exactly in xterm; ⌃C interrupts a running command.
+- Accents (é à ç €) are dropped by the image's default xterm because the container locale is `POSIX`
+  (`xdotool type` from inside the container fails the same way). In an xterm started with
+  `LANG=C.UTF-8 xterm -u8` they arrive exactly, with the stock x11vnc. Not a client bug.
+- Still to check by hand in the app: add the machine, double-click, type, click, drag and scroll in the
+  Session Window.
+
 ### AC4 checklist
 
 1. **Before the pull:** check the size with `docker manifest inspect -v …` (see above) and check free disk space.
