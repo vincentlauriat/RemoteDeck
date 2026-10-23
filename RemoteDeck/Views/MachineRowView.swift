@@ -28,13 +28,14 @@ extension Machine {
     }
 }
 
-/// Sidebar row: kind symbol, name, host in SF Mono, star for favorites. The status dot arrives
-/// with reachability monitoring (T4.5).
+/// Sidebar row: kind symbol, name, host in SF Mono, star for favorites, and the status dot on the
+/// trailing side for watched machines (T4.5: green online, red offline, grey unknown).
 struct MachineRowView: View {
     @Environment(AppSettings.self) private var settings
     let machine: Machine
     /// AppFlow › Connect: row spinner while its session connects.
     var isConnecting = false
+    var status: StatusPresentation = .notWatched
 
     var body: some View {
         HStack(spacing: 8) {
@@ -60,6 +61,9 @@ struct MachineRowView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.yellow)
                     .accessibilityLabel(settings.t("field_favorite"))
+            }
+            if status.showsSidebarDot {
+                StatusDotView(presentation: status)
             }
         }
         .frame(minHeight: 28)
