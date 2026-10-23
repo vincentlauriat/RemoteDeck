@@ -1,6 +1,7 @@
 #if DEBUG
 import Foundation
 import SwiftData
+import ClaudeKit
 import RemoteDeckCore
 import RFBKit
 
@@ -156,6 +157,14 @@ enum LibraryDemo {
             return stream
         }
 
+        /// The test pattern, as the session shows it (the Claude Assistant's screenshot).
+        func framebufferSnapshot() -> Framebuffer? {
+            guard continuation != nil else { return nil }
+            let width = 1920, height = 1080
+            return try? Framebuffer(width: width, height: height,
+                                    pixels: FramebufferDebugView.testPattern(width: width, height: height))
+        }
+
         func send(_ messages: [ClientMessage]) async throws(RFBError) {}
 
         func close() {
@@ -168,6 +177,55 @@ enum LibraryDemo {
 
     static func connection(_ target: SessionTarget) -> any SessionConnection {
         Connection(target)
+    }
+
+    // MARK: Claude Assistant (`-LibraryDemo assistant`)
+
+    /// `assistant`: one "Mac mini" session with the Claude Assistant Panel open, an in-memory demo key
+    /// and scripted API answers (`ScriptedTransport`): no request leaves the Mac, no token is spent.
+    static var scriptsAssistant: Bool { mode == "assistant" }
+    static let assistantKey = "sk-ant-demo-not-a-real-key"
+
+    static func assistantClient() -> MessagesClient {
+        MessagesClient(transport: ScriptedTransport(), retry: RetryPolicy(maxRetries: 0))
+    }
+
+    /// First request: a progress note, an answer and two proposed actions (a click, then typing).
+    /// Every later one: a short final answer. `GET /v1/models` (the key check) answers 200.
+    struct ScriptedTransport: HTTPTransport {
+        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            try await Task.sleep(for: .milliseconds(900))
+            let url = request.url ?? ClaudeAPI.messagesURL
+            let body = request.httpBody.flatMap { try? JSONValue.decode($0) }
+            let turns = body?["messages"]?.arrayValue?.count ?? 0
+            let reply: JSONValue = request.httpMethod == "GET" ? ["data": []] : turns <= 1 ? Self.firstTurn : Self.lastTurn
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+            return (reply.encoded(), response)
+        }
+
+        static let firstTurn: JSONValue = [
+            "type": "message", "id": "msg_demo_1", "role": "assistant", "model": .string(ClaudeAPI.defaultModel),
+            "stop_reason": "tool_use",
+            "content": [
+                ["type": "thinking", "thinking": "", "signature": "demo"],
+                ["type": "text", "text": "The screen shows a colour-bar test pattern. I'll open the search field and type the command."],
+                ["type": "thinking", "thinking": "Clicking the centre of the screen first.", "signature": "demo"],
+                ["type": "tool_use", "id": "toolu_demo_click", "name": "left_click", "toolset_name": "computer",
+                 "input": ["coordinate": [640, 360]]],
+                ["type": "tool_use", "id": "toolu_demo_type", "name": "type", "toolset_name": "computer",
+                 "input": ["text": "uptime\n"]],
+            ],
+            "usage": ["input_tokens": 1234, "output_tokens": 210, "cache_creation_input_tokens": 4600,
+                      "cache_read_input_tokens": 0],
+        ]
+
+        static let lastTurn: JSONValue = [
+            "type": "message", "id": "msg_demo_2", "role": "assistant", "model": .string(ClaudeAPI.defaultModel),
+            "stop_reason": "end_turn",
+            "content": [["type": "text", "text": "Done. (Demo: scripted answer, no request was sent.)"]],
+            "usage": ["input_tokens": 80, "output_tokens": 30, "cache_creation_input_tokens": 300,
+                      "cache_read_input_tokens": 5834],
+        ]
     }
 
     /// Marks the once-per-run prompt as already shown, so a demo session never asks for access.

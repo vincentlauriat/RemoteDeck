@@ -70,7 +70,7 @@ Store files (TRD › Backend and database): Machine and MachineGroup in `Applica
 | endedAt | Date? | no | nil | |
 | outcome | String (`connected`, `authFailed`, `unreachable`, `cancelled`, `dropped`) | yes | — | |
 | bytesReceived | Int64 | yes | 0 | |
-| assistantTokens | Int | yes | 0 | Input + output tokens of the Claude Assistant |
+| assistantTokens | Int | yes | 0 | Tokens of the Claude Assistant during this attempt: every response's `input_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens` + `output_tokens` |
 
 Indexes: `startedAt`, `machineID`.
 
@@ -87,9 +87,9 @@ Lifecycle (T3.5, `SessionModel`): one record per attempt (Connect, Retry, Reconn
 | id | UUID | yes | `UUID()` | |
 | session | SessionRecord | yes | — | Relationship, delete rule `.cascade` from SessionRecord |
 | createdAt | Date | yes | now | |
-| kind | String (`click`, `doubleClick`, `type`, `key`, `scroll`, `screenshot`) | yes | — | |
-| payload | String (JSON) | yes | `"{}"` | Coordinates, text, key combo |
-| decision | String (`pending`, `confirmed`, `rejected`, `cancelled`) | yes | `pending` | |
+| kind | String (`click`, `doubleClick`, `tripleClick`, `rightClick`, `middleClick`, `drag`, `mouseMove`, `scroll`, `type`, `key`, `holdKey`, `wait`, `screenshot`, `zoom`, `cursorPosition`) | yes | — | One per computer use toolset member the assistant runs (T4.4 added the cases after `screenshot`; stored as the raw String, so no migration) |
+| payload | String (JSON) | yes | `"{}"` | `{"input": <the member's input as Claude sent it, screenshot pixels>, "remote": [[x, y], …]}` (remote pixels, when the action has a target). Key combos are in `input`; typed text never is (it may be a password): a `type` stores only `{"input": {"length": <characters>}}` |
+| decision | String (`pending`, `confirmed`, `rejected`, `cancelled`, `automatic`) | yes | `pending` | `pending` while the proposal waits; Confirm → `confirmed`, Skip → `rejected`, Stop or disconnect → `cancelled`; `automatic`: a read-only action (screenshot, zoom, cursor position, wait) that ran without asking |
 
 ### AppSettings (UserDefaults)
 
@@ -98,7 +98,7 @@ Lifecycle (T3.5, `SessionModel`): one record per attempt (Connect, Retry, Reconn
 | `iCloudSyncEnabled` | Bool | false |
 | `notificationsEnabled` | Bool | true |
 | `defaultSharedClipboard` | Bool | true |
-| `claudeModel` | String | `claude-sonnet-5-5` *(assumption)* |
+| `claudeModel` | — (not stored) | `claude-opus-5-5`, the constant `ClaudeAPI.defaultModel` (the toolset `computer_toolset_20260801` is the only computer use tool on Opus 5.5). A value left in UserDefaults is ignored. No picker: Settings › Claude shows it |
 | `onboardingCompleted` | Bool | false |
 | `historyRetentionDays` | Int | 365 |
 
@@ -139,8 +139,8 @@ No accounts and no roles: the single local user has full read/create/update/dele
 - Uniqueness: one Machine per lowercase `host:port`. Checked on save; iCloud Sync merges duplicates by keeping the most recently modified one.
 - Machine.username: required when `kind == macARD`.
 - MachineGroup.name: 1–40 characters, unique case-insensitive.
-- Anthropic API key: starts with `sk-ant-` and passes a test request before saving.
-- AssistantAction coordinates: inside the current framebuffer bounds; otherwise the action is rejected.
+- Anthropic API key: starts with `sk-ant-` and passes a test request (`GET /v1/models?limit=1`, which bills no tokens) before saving; until then it is a draft in the Settings Window, never written to the Keychain (T4.4).
+- AssistantAction coordinates: inside the last screenshot sent to Claude; otherwise the action is answered with an error and never proposed. Inside, they map back to remote pixels per axis and are clamped to the framebuffer (rounding at the last column).
 
 ## Retention and deletion
 

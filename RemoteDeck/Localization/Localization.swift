@@ -1,6 +1,49 @@
 import SwiftUI
 import Observation
+import ClaudeKit
 import RemoteDeckCore
+
+// MARK: - Clé API
+
+/// Where the Anthropic API key lives: the Keychain in the app (account `anthropic.apiKey`, local to
+/// this Mac), in memory under XCTest and in the Debug demo, so neither reads nor writes the user's key.
+protocol APIKeyStore {
+    func readKey() throws(KeychainError) -> String?
+    func saveKey(_ key: String) throws(KeychainError)
+    func deleteKey() throws(KeychainError)
+}
+
+struct KeychainAPIKeyStore: APIKeyStore {
+    var keychain = KeychainStore()
+
+    func readKey() throws(KeychainError) -> String? { try keychain.read(.anthropicAPIKey) }
+    func saveKey(_ key: String) throws(KeychainError) { try keychain.save(key, for: .anthropicAPIKey) }
+    func deleteKey() throws(KeychainError) { try keychain.delete(.anthropicAPIKey) }
+}
+
+final class InMemoryAPIKeyStore: APIKeyStore {
+    var key: String?
+    var saveError: KeychainError?
+    /// Saves and deletes, for the tests ("no write per keystroke").
+    private(set) var writes = 0
+
+    init(key: String? = nil) {
+        self.key = key
+    }
+
+    func readKey() throws(KeychainError) -> String? { key }
+
+    func saveKey(_ key: String) throws(KeychainError) {
+        writes += 1
+        if let saveError { throw saveError }
+        self.key = key
+    }
+
+    func deleteKey() throws(KeychainError) {
+        writes += 1
+        key = nil
+    }
+}
 
 // MARK: - Apparence
 
@@ -58,16 +101,16 @@ final class AppSettings {
         static let iCloudSyncEnabled = "iCloudSyncEnabled"
         static let notificationsEnabled = "notificationsEnabled"
         static let defaultSharedClipboard = "defaultSharedClipboard"
-        static let claudeModel = "claudeModel"
         static let onboardingCompleted = "onboardingCompleted"
         static let historyRetentionDays = "historyRetentionDays"
     }
 
-    static let defaultClaudeModel = "claude-sonnet-5-5"
+    /// The Claude Assistant's model (`ClaudeAPI.defaultModel`, Claude Opus 5.5).
+    static let defaultClaudeModel = ClaudeAPI.defaultModel
     static let defaultHistoryRetentionDays = 365
 
     @ObservationIgnored private let defaults: UserDefaults
-    @ObservationIgnored private let keychain: KeychainStore
+    @ObservationIgnored private let apiKeys: any APIKeyStore
 
     var appearanceRaw: String {
         didSet { defaults.set(appearanceRaw, forKey: Key.appearance) }
@@ -88,9 +131,9 @@ final class AppSettings {
     var defaultSharedClipboard: Bool {
         didSet { defaults.set(defaultSharedClipboard, forKey: Key.defaultSharedClipboard) }
     }
-    var claudeModel: String {
-        didSet { defaults.set(claudeModel, forKey: Key.claudeModel) }
-    }
+    /// The Claude Assistant's model: the one constant (`ClaudeAPI.defaultModel`), never read from
+    /// UserDefaults, so a stale or unknown stored value cannot send another model the toolset.
+    var claudeModel: String { Self.defaultClaudeModel }
     var onboardingCompleted: Bool {
         didSet { defaults.set(onboardingCompleted, forKey: Key.onboardingCompleted) }
     }
@@ -99,31 +142,29 @@ final class AppSettings {
     }
 
     /// Clé API Anthropic, stockée dans le Keychain (compte `anthropic.apiKey`, non synchronisé),
-    /// jamais dans UserDefaults. Une chaîne vide supprime l'entrée.
-    var anthropicAPIKey: String {
-        didSet { persistAPIKey() }
-    }
+    /// jamais dans UserDefaults. Changée seulement par `storeAPIKey` (après le contrôle du préfixe et
+    /// la requête de test, `APIKeyEditorModel`) et `removeAPIKey`, jamais à chaque frappe.
+    private(set) var anthropicAPIKey: String
 
     /// Dernier échec Keychain (lecture ou écriture de la clé API), `nil` si tout va bien.
     private(set) var keychainError: KeychainError? = nil
 
     var apiKeyConfigured: Bool { !anthropicAPIKey.isEmpty }
 
-    init(defaults: UserDefaults = .standard, keychain: KeychainStore = KeychainStore()) {
+    init(defaults: UserDefaults = .standard, apiKeys: any APIKeyStore = KeychainAPIKeyStore()) {
         self.defaults = defaults
-        self.keychain = keychain
+        self.apiKeys = apiKeys
         appearanceRaw = defaults.string(forKey: Key.appearance) ?? AppearanceMode.system.rawValue
         languageRaw = defaults.string(forKey: Key.language) ?? AppLanguage.system.rawValue
         // `object(forKey:)`, pas `bool(forKey:)` : une clé absente doit donner le défaut, pas false/0.
         iCloudSyncEnabled = defaults.object(forKey: Key.iCloudSyncEnabled) as? Bool ?? false
         notificationsEnabled = defaults.object(forKey: Key.notificationsEnabled) as? Bool ?? true
         defaultSharedClipboard = defaults.object(forKey: Key.defaultSharedClipboard) as? Bool ?? true
-        claudeModel = defaults.string(forKey: Key.claudeModel) ?? Self.defaultClaudeModel
         onboardingCompleted = defaults.object(forKey: Key.onboardingCompleted) as? Bool ?? false
         historyRetentionDays = defaults.object(forKey: Key.historyRetentionDays) as? Int
             ?? Self.defaultHistoryRetentionDays
         do {
-            anthropicAPIKey = try keychain.read(.anthropicAPIKey) ?? ""
+            anthropicAPIKey = try apiKeys.readKey() ?? ""
         } catch {
             anthropicAPIKey = ""
             keychainError = error
@@ -131,13 +172,22 @@ final class AppSettings {
         AppLocale.identifier = localeIdentifier
     }
 
-    private func persistAPIKey() {
+    /// Saves a checked key; on a Keychain error the previous key stays.
+    func storeAPIKey(_ key: String) throws(KeychainError) {
         do {
-            if anthropicAPIKey.isEmpty {
-                try keychain.delete(.anthropicAPIKey)
-            } else {
-                try keychain.save(anthropicAPIKey, for: .anthropicAPIKey)
-            }
+            try apiKeys.saveKey(key)
+        } catch {
+            keychainError = error
+            throw error
+        }
+        anthropicAPIKey = key
+        keychainError = nil
+    }
+
+    func removeAPIKey() {
+        do {
+            try apiKeys.deleteKey()
+            anthropicAPIKey = ""
             keychainError = nil
         } catch {
             keychainError = error

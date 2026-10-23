@@ -1,3 +1,4 @@
+import ClaudeKit
 import Foundation
 import Observation
 import SwiftData
@@ -24,6 +25,8 @@ protocol SessionConnection: AnyObject, Sendable {
     /// Local clipboard text to the server (`RFBConnection.shareClipboard`).
     @discardableResult
     func shareClipboard(_ text: String) async throws(RFBError) -> ClipboardShare
+    /// The current framebuffer, for the Claude Assistant's screenshots (`RFBConnection.framebufferSnapshot`).
+    func framebufferSnapshot() async -> Framebuffer?
 }
 
 extension RFBConnection: SessionConnection {
@@ -237,6 +240,16 @@ final class SessionModel {
     /// Clipboard sends run one after the other, in order.
     @ObservationIgnored private var clipboardSend: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
+    /// The Claude Assistant of this session (set by `SessionManager`).
+    @ObservationIgnored var assistant: AssistantModel?
+    /// Framebuffer updates received in this attempt (the assistant waits for one after an action).
+    @ObservationIgnored private(set) var frameCount = 0
+    /// `frameCount` when the assistant last sent input, until its next screenshot.
+    @ObservationIgnored private var assistantInputFrame: Int?
+    /// Buttons held by the view's own input, as last sent (a release passes while an action runs).
+    @ObservationIgnored private var viewButtonMask: UInt8 = 0
+    /// Longest wait for the remote to redraw before a screenshot that follows an action.
+    @ObservationIgnored var assistantSettleLimit: Duration = .seconds(1)
 
     init(machine: Machine, context: ModelContext, passwords: any MachinePasswordStore,
          display: SessionDisplayModel?, clock: SessionClock = .live,
@@ -336,7 +349,10 @@ final class SessionModel {
             guard self.generation == generation else { return }
             display?.handle(event)
             if case .serverCutText(let text) = event { clipboard.receive(text) }
-            if case .framebufferUpdate = event, phase == .connecting { didReceiveFirstFrame() }
+            if case .framebufferUpdate = event {
+                frameCount += 1
+                if phase == .connecting { didReceiveFirstFrame() }
+            }
         }
     }
 
@@ -353,9 +369,27 @@ final class SessionModel {
 
     // MARK: Input
 
-    /// Input messages from the view, in order. Dropped when no session is running.
+    /// Input messages from the view, in order. Dropped when no session is running, and while a
+    /// confirmed Claude Assistant action runs: a mouse move over the view would otherwise land between
+    /// the steps of a drag or a held key and change what the remote sees.
     func sendInput(_ messages: [ClientMessage]) {
-        sender?.enqueue(messages)
+        let running = assistant?.phase == .running
+        var passing: [ClientMessage] = []
+        for message in messages {
+            // While an action runs only releases go through: key-ups, and the pointer event that lifts a
+            // button the view pressed before; moves and presses wait.
+            if running {
+                switch message {
+                case .keyEvent(let down, _) where !down: break
+                case .pointerEvent(let mask, _, _) where mask == 0 && viewButtonMask != 0: break
+                default: continue
+                }
+            }
+            if case .pointerEvent(let mask, _, _) = message { viewButtonMask = mask }
+            passing.append(message)
+        }
+        guard !passing.isEmpty else { return }
+        sender?.enqueue(passing)
     }
 
     /// The Session Window became or stopped being key: the clipboard is read only while it is.
@@ -424,6 +458,8 @@ final class SessionModel {
         let wasConnecting = phase == .connecting
         let wasRunning = wasConnecting || phase == .connected
         generation += 1
+        // The assistant's releases go into the input sender before the view's and before `finish()`.
+        assistant?.sessionEnded()
         phase = .closed
         guard wasRunning else { return nil }
         finishRecord(outcome: wasConnecting ? .cancelled : nil, bytes: nil)
@@ -447,6 +483,7 @@ final class SessionModel {
     /// A failure from the attempt `generation`; ignored once a newer attempt or a close took over.
     private func stop(failing failure: SessionFailure, generation: Int) async {
         guard generation == self.generation else { return }
+        assistant?.sessionEnded()
         phase = .failed(failure)
         finishRecord(outcome: failure.outcome, bytes: nil)
         let record = self.record   // a Retry during the teardown starts a new record
@@ -511,5 +548,58 @@ final class SessionModel {
     /// History is best effort: a failed save never breaks the session.
     private func save() {
         try? context.save()
+    }
+}
+
+// MARK: - Claude Assistant
+
+extension SessionModel: AssistantSessionPort {
+    var assistantCanAct: Bool { phase == .connected && sender != nil }
+
+    var assistantDesktop: RemoteDesktopKind { target.kind == .macARD ? .mac : .x11 }
+
+    var assistantProfile: ModifierProfile { target.modifierProfile }
+
+    func assistantSnapshot() async -> Framebuffer? {
+        await connection?.framebufferSnapshot()
+    }
+
+    /// The same path as the view's input: `InputSender`, in order, released on teardown.
+    func assistantSend(_ messages: [ClientMessage]) {
+        guard !messages.isEmpty else { return }
+        if assistantInputFrame == nil { assistantInputFrame = frameCount }
+        sender?.enqueue(messages)
+    }
+
+    /// Waits for a framebuffer update newer than the last assistant input, at most
+    /// `assistantSettleLimit`; at once if no input was sent since the last screenshot.
+    func assistantSettle() async {
+        guard let mark = assistantInputFrame else { return }
+        assistantInputFrame = nil
+        let deadline = ContinuousClock.now + assistantSettleLimit
+        while frameCount <= mark, ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    func assistantRecord(kind: AssistantActionKind, payload: String, decision: AssistantDecision) -> AssistantAction? {
+        guard let record else { return nil }
+        let action = AssistantAction(session: record, createdAt: clock.now(), kind: kind, payload: payload,
+                                     decision: decision)
+        context.insert(action)
+        save()
+        return action
+    }
+
+    func assistantSave() {
+        save()
+    }
+
+    func assistantAddTokens(_ count: Int) {
+        record?.assistantTokens += count
+    }
+
+    func assistantReleaseKeyboard() {
+        surface?.releaseCapture()
     }
 }

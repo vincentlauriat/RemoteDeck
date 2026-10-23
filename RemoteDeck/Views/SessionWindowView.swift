@@ -47,6 +47,8 @@ struct SessionWindowView: View {
     /// Another window already shows this machine: this one closes and leaves the session alone.
     @State private var duplicate = false
     @State private var editorRequest: EditorRequest?
+    /// Claude Assistant Panel shown (toolbar sparkles, ⌘K with the keyboard released).
+    @State private var showsAssistant = false
 
     var body: some View {
         Group {
@@ -75,6 +77,9 @@ struct SessionWindowView: View {
             }
             found.hasWindow = true
             session = found
+            #if DEBUG
+            if LibraryDemo.scriptsAssistant { showsAssistant = true }
+            #endif
         }
     }
 
@@ -86,6 +91,7 @@ struct SessionWindowView: View {
                 scalingMode: session.scalingMode,
                 modifierProfile: session.target.modifierProfile,
                 onInput: { [weak session] messages in session?.sendInput(messages) },
+                highlight: session.assistant?.highlight ?? [],
                 onCreate: { view in
                     Task { @MainActor in attach(view, to: session) }   // not during the view update
                 }
@@ -114,6 +120,12 @@ struct SessionWindowView: View {
             if let failure = session.failure { banner(failure, session: session) }
         }
         .toolbar { toolbar(session) }
+        .inspector(isPresented: $showsAssistant) {
+            Group {
+                if let assistant = session.assistant { AssistantPanelView(model: assistant) }
+            }
+            .inspectorColumnWidth(320)
+        }
         .navigationTitle(session.target.name)
         .sheet(item: $editorRequest) { request in
             MachineEditorView(model: request.model) { _ in session.connect() }
@@ -239,6 +251,13 @@ struct SessionWindowView: View {
                 Label(settings.t("session_clipboard"), systemImage: "doc.on.clipboard")
             }
             .help(settings.t(session.clipboardSharing ? "session_clipboard_on" : "session_clipboard_off"))
+            if session.assistant != nil {
+                Toggle(isOn: $showsAssistant) {
+                    Label(settings.t("assistant_toggle"), systemImage: "sparkles")
+                }
+                .keyboardShortcut("k", modifiers: .command)
+                .help(settings.t("assistant_toggle_help"))
+            }
             Button { dismissWindow() } label: {
                 Label(settings.t("session_disconnect"), systemImage: "xmark.circle")
             }

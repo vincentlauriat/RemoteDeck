@@ -13,14 +13,16 @@ public enum ModifierProfile: Sendable, Equatable {
     case appleRemoteDesktop
     case x11
 
-    func command(right: Bool) -> UInt32 {
+    /// The keysym the Mac's ⌘ is sent as.
+    public func command(right: Bool) -> UInt32 {
         switch self {
         case .appleRemoteDesktop: right ? Keysym.altR : Keysym.altL
         case .x11: right ? Keysym.superR : Keysym.superL
         }
     }
 
-    func option(right: Bool) -> UInt32 {
+    /// The keysym the Mac's ⌥ is sent as.
+    public func option(right: Bool) -> UInt32 {
         switch self {
         case .appleRemoteDesktop: right ? Keysym.metaR : Keysym.metaL
         case .x11: right ? Keysym.altR : Keysym.altL

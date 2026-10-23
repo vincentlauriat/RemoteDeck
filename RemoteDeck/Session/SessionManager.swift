@@ -22,14 +22,17 @@ final class SessionManager {
     @ObservationIgnored private let makeConnection: @MainActor (SessionTarget) -> any SessionConnection
     @ObservationIgnored private let makeDisplay: @MainActor () -> SessionDisplayModel?
     @ObservationIgnored private let pasteboard: any ClipboardPasteboard
+    @ObservationIgnored private let makeAssistant: @MainActor (SessionModel) -> AssistantModel?
 
     init(context: ModelContext, passwords: any MachinePasswordStore, tester: any ConnectionTester,
          clock: SessionClock = .live,
          makeConnection: @escaping @MainActor (SessionTarget) -> any SessionConnection = SessionManager.rfbConnection,
          makeDisplay: @escaping @MainActor () -> SessionDisplayModel? = SessionManager.metalDisplay,
          pasteboard: any ClipboardPasteboard,
+         makeAssistant: @escaping @MainActor (SessionModel) -> AssistantModel? = { _ in nil },
          notificationCenter: NotificationCenter = .default) {
         self.pasteboard = pasteboard
+        self.makeAssistant = makeAssistant
         self.context = context
         self.passwords = passwords
         self.tester = tester
@@ -74,6 +77,7 @@ final class SessionManager {
                                    clock: clock, pasteboard: pasteboard, makeConnection: makeConnection)
         openCount += 1
         session.openOrder = openCount
+        session.assistant = makeAssistant(session)
         sessions[machineID] = session
         session.connect()
         return session

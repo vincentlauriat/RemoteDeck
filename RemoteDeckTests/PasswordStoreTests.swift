@@ -160,7 +160,7 @@ struct DisplayAndLocalizationTests {
         let suite = "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let settings = AppSettings(defaults: defaults, keychain: KeychainStore(service: suite))
+        let settings = AppSettings(defaults: defaults, apiKeys: InMemoryAPIKeyStore())
         settings.languageRaw = AppLanguage.en.rawValue
 
         #expect(settings.t("no_results_desc", "100%done") == "No machine matches “100%done”.")
