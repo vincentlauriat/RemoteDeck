@@ -48,7 +48,8 @@ struct MachineEditorView: View {
                         }
                     }
                     VStack(alignment: .leading, spacing: 4) {
-                        SecureField(settings.t("field_password"), text: $model.password)
+                        SecureField(settings.t("field_password"), text: $model.password,
+                                    prompt: model.passwordIsOptional ? Text(settings.t("optional_placeholder")) : nil)
                             .onChange(of: model.password) { model.clearPasswordError() }
                         if let failure = model.passwordFailure {
                             errorText(failure.error.passwordMessage(deleting: failure.deleting, settings.t))
@@ -56,6 +57,11 @@ struct MachineEditorView: View {
                             errorText(settings.t("password_unreadable", String(error.status)))
                         } else if model.passwordScope == .local {
                             Text(settings.t("password_local_note"))
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else if model.kind == .anthropicVM {
+                            Text(settings.t("anthropic_vm_password_note"))
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)

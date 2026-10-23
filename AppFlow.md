@@ -53,9 +53,11 @@ First-time variant: `Onboarding Sheet -> Discovery Panel -> Add -> Machine Edito
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
-| Save | ⌘S / "Save" | Name 1–64 chars; host is a valid hostname/IPv4/IPv6; port 1–65535; user required for Mac ARD; no duplicate `host:port`; new group name 1–40 chars, unique | — | Sheet closes, row selected | Inline field error in red under the field. Keychain refusal → error under the password field, nothing saved; -34018 is not a refusal: saved to a local item, and the editor then notes "Password stored on this Mac only until iCloud Keychain is available" (BackendSchema › KeychainCredential) | Library Window |
+| Save | ⌘S / "Save" | Name 1–64 chars; host is a valid hostname/IPv4/IPv6; port 1–65535 (5900 by default); user required for Mac ARD; password optional for VNC and Anthropic VM (placeholder "Optional"; empty means no authentication, security type 1); no duplicate `host:port`; new group name 1–40 chars, unique | — | Sheet closes, row selected | Inline field error in red under the field. Keychain refusal → error under the password field, nothing saved; -34018 is not a refusal: saved to a local item, and the editor then notes "Password stored on this Mac only until iCloud Keychain is available" (BackendSchema › KeychainCredential) | Library Window |
 | Test connection | "Test" button | Same as Save | "Testing…" spinner (timeout 5 s) | Green check: "Reachable, auth OK"; the connection is closed at once | "Unreachable — check VPN or network" (network error) / "Unreachable — no answer within 5 s" / "The server closed the connection" / "Connection refused by the server" (RFB-level, with its reason) / "Authentication failed" / "Unsupported security type (n, …)" / "This Mac needs a user name and password" / "This server needs a password" / "User name or password too long (63 bytes max)" / "Not a VNC / Screen Sharing server" / "Unexpected response from the server" | — |
 | Cancel | Esc | — | — | Sheet closes without changes; a running test is cancelled | — | Library Window |
+
+Anthropic VM: no user field (a user name typed under another kind is not saved), and a note under the password: "Leave empty when the VNC server has no password: Anthropic's reference computer use container has none (x11vnc -nopw)."
 
 Changing kind, host, port, user or password clears a Test result (and cancels a running test): it no longer applies to the fields.
 

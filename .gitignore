@@ -39,3 +39,6 @@ TODOS.md
 # ── Project tracking (DevApps convention) ──
 CHANGES.md
 *.zip
+
+# Real RFB captures stay local (never committed)
+Packages/RFBKit/Tests/RFBKitTests/Captures/new/

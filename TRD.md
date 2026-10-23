@@ -23,7 +23,7 @@
 
 No app accounts and no roles: single local user (see PRD). Remote authentication is per machine:
 - **ARD / macOS Screen Sharing:** RFB security type 30 (Apple Diffie-Hellman, macOS user name + password).
-- **VNC:** security type 2 (VNC password) and type 1 (none), for Anthropic VMs and generic VNC servers.
+- **VNC:** security type 2 (VNC password) and type 1 (none), for Anthropic VMs and generic VNC servers. An empty password is no password: type 2 is chosen only with a password, type 1 otherwise; a type-2-only server with no password fails with `credentialsRequired` ("This server needs a password" + Edit credentials).
 - **Anthropic API:** API key entered in Settings Window, stored in Keychain.
 
 ## External services and APIs
@@ -31,7 +31,7 @@ No app accounts and no roles: single local user (see PRD). Remote authentication
 | Provider | Usage | Limits / quotas | Credential owner |
 |---|---|---|---|
 | Remote Macs (RFB/ARD, TCP 5900) | Screen Session | LAN or VPN only | Vincent (macOS accounts on each Mac) |
-| Anthropic computer use environments (VNC, TCP 5900 by default) | Anthropic VM Connect | Reachable endpoint required (local Docker or tunnel) | Vincent |
+| Anthropic computer use environments (VNC, TCP 5900 by default) | Anthropic VM Connect. Reference container ([anthropic-quickstarts/computer-use-demo](https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo), read 2026-10-23): Ubuntu 22.04, Xvfb `:1` at 1024 × 768 × 24, mutter + tint2, `x11vnc -display $DISPLAY -forever -shared -wait 50 -rfbport 5900 -nopw` ([`image/x11vnc_startup.sh`](https://github.com/anthropics/anthropic-quickstarts/blob/main/computer-use-demo/image/x11vnc_startup.sh)), so no VNC password: security type 1 expected (*inferred from `-nopw`, to confirm with `rfb-probe`*). Ports 5900 (VNC), 6080 (noVNC), 8501 (Streamlit), 8080 (combined UI). `ANTHROPIC_API_KEY` is passed to the container, but `image/entrypoint.sh` never checks it. The scripts suggest the desktop starts without it; this is not observed, since the container was not run. The agent loop needs the key. Image `ghcr.io/anthropics/anthropic-quickstarts:computer-use-demo-latest`, about 1.2 GB compressed (index digest `sha256:b608f419…`, arm64 1.16 GB / amd64 1.20 GB, layer sizes summed from the GHCR manifests on 2026-10-23). How to run it: `Packages/RFBKit/Tests/RFBKitTests/Captures/README.md`. | Reachable endpoint required (local Docker or tunnel). The README publishes `-p 5900:5900` on every interface with an unauthenticated VNC: bind it to `127.0.0.1` | Vincent |
 | Anthropic Messages API (computer use tool) | Claude Assistant | Per-account rate limits and token billing; screenshots ≈ 1–2k tokens each *(assumption)* | Vincent (API key) |
 | Apple CloudKit (private DB) | iCloud Sync | Free private-database quota, counted against Vincent's iCloud storage | Vincent (iCloud account) |
 | Apple Bonjour (`_rfb._tcp`, `_net-assistant._udp`) | Bonjour Discovery: one `NWBrowser` per type while the Discovery Panel is open; each service resolved with `DNSServiceResolve` (SRV target `<name>.local` and port, no connection to the host); results merged per host. `_net-assistant._udp` is the ARD agent (port 3283), never the RFB port: a host advertising only it gets 5900. Kind guess: Remote Management advertised → Mac ARD, else VNC (an `_rfb._tcp` record carries no TXT telling Apple's server apart, measured 2026-10-22). | LAN multicast only; needs the Local Network privilege (macOS 15+, TN3179) | — |
@@ -103,7 +103,7 @@ flowchart LR
 ## Environments and release
 
 - **Environments:** development (Xcode Debug, separate bundle id `.dev` and CloudKit development environment) and production (Release, CloudKit production). No staging: solo tool.
-- **Test hosts:** one local Mac with Remote Management enabled, plus the Anthropic computer use reference container running locally in Docker.
+- **Test hosts:** one local Mac with Remote Management enabled, plus the Anthropic computer use reference container running locally in Docker (host port 5901 → container 5900, since the dev Mac's own Screen Sharing holds 5900). Without Docker, `AnthropicVMLoopbackTests` (RFBKit) plays an x11vnc-shaped server: `RFB 003.008`, type [1] (and a [2]-only variant), ServerInit 1024 × 768, one update, then checks the KeyEvent bytes typed with the `.x11` profile.
 - **CI:** GitHub Actions on `macos-latest` running `xcodebuild test` for `RFBKit` and the app.
 - **Release:** `Scripts/release.sh` → signed, notarized and stapled DMG in `release/` → `appcast.xml` → GitHub Release.
 
