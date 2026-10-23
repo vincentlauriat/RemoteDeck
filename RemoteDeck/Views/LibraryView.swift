@@ -23,11 +23,17 @@ struct LibraryView: View {
     /// Set when the on-disk store could not be opened (the library then runs in memory, and a
     /// persistent banner says so).
     let storeError: String?
+    /// Whether this launch may show the Onboarding Sheet, and what answers its notification button.
+    let onboardingLaunch: OnboardingLaunch
+    let notificationAuthorizer: any NotificationAuthorizing
 
     @State private var editorRequest: EditorRequest?
     @State private var discoveryRequest: DiscoveryRequest?
     /// The row whose "Add" closed the Discovery Panel: the editor opens once the panel is gone.
     @State private var pendingDiscovered: DiscoveredMachine?
+    @State private var onboarding: OnboardingModel?
+    /// The model of the sheet on screen, kept until its dismissal (`onboarding` is nil by then).
+    @State private var presentedOnboarding: OnboardingModel?
     @State private var pendingDelete: Machine?
     @State private var pendingGroupDelete: MachineGroup?
     @FocusState private var searchFocused: Bool
@@ -39,7 +45,8 @@ struct LibraryView: View {
         } detail: {
             detail
         }
-        .safeAreaInset(edge: .top, spacing: 0) {
+        // At the bottom of the window: at the top, the sidebar's search field was drawn over it.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if let storeError { storeBanner(storeError) }
         }
         .searchable(text: $model.searchText, placement: .sidebar, prompt: settings.t("search_placeholder"))
@@ -47,6 +54,11 @@ struct LibraryView: View {
         .toolbar { toolbar }
         .navigationTitle(settings.t("app_name"))
         .frame(minWidth: 720, minHeight: 480)
+        .sheet(item: $onboarding, onDismiss: onboardingDismissed) { model in
+            OnboardingSheetView(model: model) { _ in
+                onboarding = nil
+            }
+        }
         .sheet(item: $discoveryRequest, onDismiss: openPendingDiscovered) { request in
             DiscoveryPanelView(model: request.model, libraryKeys: Set(machines.map(\.normalizedKey))) { found in
                 pendingDiscovered = found
@@ -89,6 +101,11 @@ struct LibraryView: View {
             find: { searchFocused = true }
         ))
         .onAppear {
+            // First launch (AppFlow › First use); never under tests or the other debug modes.
+            if onboarding == nil {
+                onboarding = onboardingLaunch.makeModel(settings: settings, authorizer: notificationAuthorizer)
+                presentedOnboarding = onboarding
+            }
             #if DEBUG
             if LibraryDemo.opensEditor { openEditor(for: machines.sorted { $0.name < $1.name }.first) }
             if LibraryDemo.opensDiscovery { openDiscovery() }
@@ -204,6 +221,7 @@ struct LibraryView: View {
     }
 
     private func openEditor(for machine: Machine?, discovered: DiscoveredMachine? = nil) {
+        guard onboarding == nil else { return }
         editorRequest = EditorRequest(model: MachineEditorModel(
             machine: machine, context: model.context, passwords: model.passwords,
             tester: tester, defaultSharedClipboard: settings.defaultSharedClipboard, discovered: discovered
@@ -212,8 +230,18 @@ struct LibraryView: View {
 
     /// AppFlow › Discover (⌘D, toolbar, empty library): opens the Discovery Panel.
     private func openDiscovery() {
-        guard discoveryRequest == nil, editorRequest == nil else { return }
+        guard discoveryRequest == nil, editorRequest == nil, onboarding == nil else { return }
         discoveryRequest = DiscoveryRequest(model: makeDiscovery())
+    }
+
+    /// The Onboarding Sheet went away. Dismissed without a button (window closed) counts as Later;
+    /// after the last page, the Discovery Panel opens (first-time main path). A quit never gets here,
+    /// so quitting mid-onboarding shows the sheet again at the next launch.
+    private func onboardingDismissed() {
+        guard let model = presentedOnboarding else { return }
+        presentedOnboarding = nil
+        model.later()   // no-op once ended
+        if model.opensDiscovery { openDiscovery() }
     }
 
     /// AppFlow › Discovery Panel › Add: Machine Editor pre-filled, after the panel has closed.

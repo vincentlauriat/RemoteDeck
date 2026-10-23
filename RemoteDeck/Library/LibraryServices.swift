@@ -219,10 +219,12 @@ enum LibraryStore {
     /// The container, whether it is in memory (requested, or the on-disk store failed), and the
     /// error if the on-disk store could not be opened. In that case the library runs on an empty
     /// in-memory store so the app stays usable, and the window says so in a persistent banner.
-    static func open(inMemory: Bool) -> (container: ModelContainer, isInMemory: Bool, error: (any Error)?) {
+    /// `onDisk` is injectable so tests can reach the fallback.
+    static func open(inMemory: Bool, onDisk: () throws -> ModelContainer = { try RemoteDeckSchema.makeContainer() })
+        -> (container: ModelContainer, isInMemory: Bool, error: (any Error)?) {
         if !inMemory {
             do {
-                return (try RemoteDeckSchema.makeContainer(), false, nil)
+                return (try onDisk(), false, nil)
             } catch {
                 return (inMemoryContainer(), true, error)
             }

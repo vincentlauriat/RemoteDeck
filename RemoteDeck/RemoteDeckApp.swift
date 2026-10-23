@@ -9,6 +9,8 @@ struct RemoteDeckApp: App {
     @State private var sessions: SessionManager
     private let container: ModelContainer
     private let storeError: String?
+    private let onboardingLaunch: OnboardingLaunch
+    private let notificationAuthorizer: any NotificationAuthorizing
     private let tester: any ConnectionTester
     private let makeDiscovery: @MainActor () -> DiscoveryService
 
@@ -20,7 +22,16 @@ struct RemoteDeckApp: App {
         #endif
         let (container, isInMemory, error) = LibraryStore.open(inMemory: inMemory)
         self.container = container
-        storeError = error.map { String(describing: $0) }
+        var storeError = error.map { String(describing: $0) }
+        var demoMode: String?
+        var framebufferDebugMode: String?
+        #if DEBUG
+        demoMode = LibraryDemo.mode
+        framebufferDebugMode = FramebufferDebug.mode
+        #endif
+        onboardingLaunch = OnboardingLaunch.resolve(isRunningTests: LibraryStore.isRunningTests(),
+                                                    demoMode: demoMode, framebufferDebugMode: framebufferDebugMode)
+        var notificationAuthorizer: any NotificationAuthorizing = UserNotificationAuthorizer()
         let passwords = LibraryStore.passwordStore(isInMemory: isInMemory)
         _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords))
         var tester: any ConnectionTester = RFBConnectionTester()
@@ -32,7 +43,9 @@ struct RemoteDeckApp: App {
         }
         #if DEBUG
         if LibraryDemo.isEnabled {
-            LibraryDemo.seed(container.mainContext)
+            if LibraryDemo.seedsLibrary { LibraryDemo.seed(container.mainContext) }
+            if LibraryDemo.simulatesStoreError { storeError = LibraryDemo.storeError }
+            notificationAuthorizer = LibraryDemo.NotificationAuthorizer()   // never the system prompt
             tester = LibraryDemo.Tester()
             makeConnection = LibraryDemo.connection   // never the network: the sample hosts are not real
             makeDiscovery = LibraryDemo.discovery
@@ -41,13 +54,16 @@ struct RemoteDeckApp: App {
         #endif
         self.tester = tester
         self.makeDiscovery = makeDiscovery
+        self.storeError = storeError
+        self.notificationAuthorizer = notificationAuthorizer
         _sessions = State(initialValue: SessionManager(context: container.mainContext, passwords: passwords,
                                                        tester: tester, makeConnection: makeConnection))
     }
 
     var body: some Scene {
         Window(settings.t("app_name"), id: LibraryWindow.id) {
-            LibraryView(model: library, tester: tester, makeDiscovery: makeDiscovery, storeError: storeError)
+            LibraryView(model: library, tester: tester, makeDiscovery: makeDiscovery, storeError: storeError,
+                        onboardingLaunch: onboardingLaunch, notificationAuthorizer: notificationAuthorizer)
                 .environment(settings)
                 .environment(sessions)
                 .preferredColorScheme(settings.appearance.colorScheme)

@@ -6,7 +6,7 @@
 - Menu Bar Extra: quick-connect list of favorite and recent machines.
 - URL scheme `remotedeck://connect?id=<machine-id>`, plus `vnc://host` URLs registered as a handler: opens a session directly. *(assumption)*
 - Status Notifications: clicking an "online again" notification opens a session on that machine.
-- First launch: Onboarding Sheet over the Library Window.
+- First launch: Onboarding Sheet over the Library Window, until it is finished or skipped (AppSettings `onboardingCompleted`); never under the hosted tests, `-FramebufferDebug` or a `-LibraryDemo` mode other than `onboarding`. No menu item reopens it.
 
 ## Screen list
 
@@ -33,7 +33,7 @@ First-time variant: `Onboarding Sheet -> Discovery Panel -> Add -> Machine Edito
 - **Cancel connection:** press Esc, or the "Cancel" button while connecting. The tab closes and the SessionRecord is saved with outcome `cancelled`.
 - **Edit credentials after failure:** the auth error banner shows an "Edit credentials" button, which opens the Machine Editor; after saving, the session retries.
 - **Back to library:** ⌘0 brings the Library Window forward. Sessions stay connected.
-- **Skip onboarding:** the "Later" button. Permissions are requested when first needed.
+- **Skip onboarding:** the "Later" button (Esc) on the first two pages; the sheet dismissed any other way (Library Window closed) counts as Later. The last page has no Esc: "Not now" is the way out there. Permissions are requested when first needed, and the Discovery Panel does not open. Quitting the app before the sheet ends records nothing: it shows again at the next launch.
 - **Close a tab:** ⌘W disconnects that session only. Closing the last tab closes the Session Window.
 
 ## Action details
@@ -155,18 +155,22 @@ Accessibility prompt flow (system combos):
 3. Once granted, the next capture (click, or focus coming back) takes the system combos, without a restart *(expected; not yet verified live)*. If access is revoked while captured, the app drops the tap as soon as macOS announces the change; revoking with a tap active is a known macOS risk (system input can become unresponsive, Apple bug FB24619068, TRD › Input), so releasing the capture (⌃⌥⌘R) first is safer.
 ## Empty and blocked states
 
-- **Library in memory** (the on-disk store could not be opened): persistent orange banner at the top of the Library Window, "The library could not be opened — The library runs in memory: nothing you do now is saved, passwords included."
+Each state can be reproduced: by a hosted test through its model, or with a Debug `-LibraryDemo` mode (`empty`, `store-error`, `discovery-empty`, `discovery-blocked`, `discovery-failed`; `session` for the auth-failure banner). States marked with a later task are not built yet.
+
+- **Library in memory** (the on-disk store could not be opened): persistent orange banner across the bottom of the Library Window (at the top, the sidebar's search field covered it), "The library could not be opened — The library runs in memory: nothing you do now is saved, passwords included."
 - **Empty library:** illustration-free message "No machines yet", with two buttons: "Discover on network" (opens the Discovery Panel) and "Add manually".
 - **Discovery found nothing:** "No Mac with Screen Sharing found. Enable it in System Settings › General › Sharing on the remote Mac.", with a Retry button.
 - **Local network permission denied:** "Local network access is off", explanation plus a button that opens System Settings › Privacy & Security › Local Network. Detected when a browser waits with kDNSServiceErr_PolicyDenied (TN3179); the browser keeps running, so granting access brings the rows without Retry.
-- **Offline / host unreachable:** session banner "Unreachable — check VPN or network", with a Retry button. Watched machines show a grey dot in the sidebar.
-- **No Anthropic API key:** the Claude Assistant Panel shows "Add your API key in Settings to use Claude", with a button.
-- **iCloud signed out:** the sync section shows "Sign in to iCloud to sync your library". The app keeps working locally.
-- **Empty Session History:** "Sessions you open will appear here."
+- **Offline / host unreachable:** session banner "Unreachable — check VPN or network", with a Retry button. Watched machines show a grey dot in the sidebar (T4.5).
+- **No Anthropic API key** (T4.4): the Claude Assistant Panel shows "Add your API key in Settings to use Claude", with a button.
+- **iCloud signed out** (T4.3): the sync section shows "Sign in to iCloud to sync your library". The app keeps working locally.
+- **Empty Session History** (T4.6): "Sessions you open will appear here."
 
 ## First use
 
 No account creation. Onboarding Sheet in 3 steps:
 1. Welcome and what the app does.
-2. Permissions: Local Network (triggered by a first Bonjour browse) and Notifications.
-3. "Sync your library with iCloud?" (Enable / Not now). Then the Discovery Panel opens automatically.
+2. Permissions: Local Network (explained only: the system prompt comes with the first Bonjour browse, from the Discovery Panel at the end) and Notifications ("Allow notifications" button; the request is sent on that click only, never at launch or on a page change; the answer is shown: allowed, off with a pointer to System Settings › Notifications, or failed).
+3. "Sync your library with iCloud?" (Enable / Not now). Until iCloud Sync ships (T4.3), Enable is disabled with "iCloud Sync comes in a later version", and nothing is turned on. "Not now" ends the sheet, then the Discovery Panel opens automatically.
+
+Finishing or skipping sets `onboardingCompleted` once; the sheet is never shown again. Quitting before either shows it again at the next launch. On the notification row, a failed request offers Retry; a "no" is final there (System Settings › Notifications).

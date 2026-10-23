@@ -13,6 +13,13 @@ import RFBKit
 /// sample hosts are not real machines). `discovery` opens the Discovery Panel on fake Bonjour results
 /// (`LibraryDemo.discovery`; the demo never browses the network, in any mode). The Accessibility
 /// prompt is never shown in demo mode.
+///
+/// Empty and blocked states (T3.8, AppFlow › Empty and blocked states): `empty` (no sample machines:
+/// "No machines yet"), `store-error` (the in-memory library banner, with a simulated error),
+/// `discovery-empty` (nothing found, after 2 s), `discovery-blocked` (Local Network denied),
+/// `discovery-failed` (a browser failure with its code), and `onboarding` (the Onboarding Sheet over an
+/// empty library; nothing is persisted, the notification button answers "allowed" without the system
+/// prompt, and its last page opens the fake Discovery Panel). Every other mode never shows onboarding.
 enum LibraryDemo {
     struct Tester: ConnectionTester {
         func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
@@ -28,11 +35,42 @@ enum LibraryDemo {
     static var isEnabled: Bool { mode != nil }
     static var opensEditor: Bool { mode == "editor" }
     static var opensSessions: Bool { mode == "session" }
-    static var opensDiscovery: Bool { mode == "discovery" }
+    static var opensDiscovery: Bool { mode == "discovery" || discoveryScenario != .lan }
+    /// `empty` and `onboarding` start from an empty library, as on a first launch.
+    static var seedsLibrary: Bool { mode != "empty" && mode != OnboardingLaunch.demoMode }
+    static var simulatesStoreError: Bool { mode == "store-error" }
+    static let storeError = "Demo: simulated SwiftData error (the on-disk store could not be opened)"
+
+    /// Answers "allowed" after half a second: the demo never shows the system prompt.
+    struct NotificationAuthorizer: NotificationAuthorizing {
+        func requestAuthorization() async -> NotificationAuthorization {
+            try? await Task.sleep(for: .milliseconds(500))
+            return .granted
+        }
+    }
+
+    /// What the fake browsers report.
+    enum DiscoveryScenario {
+        case lan, empty, blocked, failed
+    }
+
+    static var discoveryScenario: DiscoveryScenario {
+        switch mode {
+        case "discovery-empty": .empty
+        case "discovery-blocked": .blocked
+        case "discovery-failed": .failed
+        default: .lan
+        }
+    }
+
+    /// kDNSServiceErr_ServiceNotRunning, shown as the failed state's code.
+    static let failureCode = -65563
 
     /// Fake Bonjour LAN: "Mac mini" (already in the sample library), an iMac with Remote
     /// Management, a VNC-only Raspberry Pi on port 5901; results arrive after 0.6 s.
     struct Browsers: BonjourBrowserFactory {
+        var scenario: DiscoveryScenario = .lan
+
         static let endpoints: [BonjourService: BonjourEndpoint] = [
             BonjourService(name: "Mac mini", type: .rfb, domain: "local."): BonjourEndpoint(host: "mini.local", port: 5900),
             BonjourService(name: "Mac mini", type: .netAssistant, domain: "local."): BonjourEndpoint(host: "mini.local", port: 3283),
@@ -43,6 +81,18 @@ enum LibraryDemo {
 
         func events(for type: BonjourServiceType) -> AsyncStream<BonjourBrowseEvent> {
             AsyncStream { continuation in
+                switch scenario {
+                case .lan: break
+                case .empty:
+                    continuation.yield(.ready)
+                    return
+                case .blocked:
+                    continuation.yield(.waiting(.permissionDenied))
+                    return
+                case .failed:
+                    continuation.yield(.failed(.error(code: LibraryDemo.failureCode)))
+                    return
+                }
                 continuation.yield(.ready)
                 let task = Task {
                     try? await Task.sleep(for: .milliseconds(600))
@@ -61,7 +111,9 @@ enum LibraryDemo {
 
     @MainActor
     static func discovery() -> DiscoveryService {
-        DiscoveryService(browsers: Browsers(), resolver: Resolver())
+        let scenario = discoveryScenario
+        return DiscoveryService(browsers: Browsers(scenario: scenario), resolver: Resolver(),
+                                emptyAfter: scenario == .empty ? .seconds(2) : DiscoveryService.defaultEmptyAfter)
     }
     /// The machines `session` opens, in order. "Mac mini" twice: the second Connect must bring its
     /// window forward, not open a second window or connection.
