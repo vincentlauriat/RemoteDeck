@@ -109,6 +109,7 @@ struct LibraryView: View {
             #if DEBUG
             if LibraryDemo.opensEditor { openEditor(for: machines.sorted { $0.name < $1.name }.first) }
             if LibraryDemo.opensDiscovery { openDiscovery() }
+            if LibraryDemo.scriptsAssistant { connect(machines.first { $0.name == "Mac mini" }) }
             if LibraryDemo.opensSessions {
                 LibraryDemo.sessionMachineNames.forEach { name in connect(machines.first { $0.name == name }) }
                 // AC6: what ⌘2 does (the same call as the menu item), once the tabs are up.

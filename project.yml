@@ -9,6 +9,8 @@ packages:
     path: Packages/RFBKit
   RemoteDeckCore:
     path: Packages/RemoteDeckCore
+  ClaudeKit:
+    path: Packages/ClaudeKit
 
 # Explicit scheme (otherwise xcodegen generates none → scheme lost on every regeneration).
 schemes:
@@ -24,6 +26,7 @@ schemes:
         - RemoteDeckTests
         - package: RFBKit/RFBKitTests
         - package: RemoteDeckCore/RemoteDeckCoreTests
+        - package: ClaudeKit/ClaudeKitTests
 
 targets:
   RemoteDeck:
@@ -38,6 +41,7 @@ targets:
     dependencies:
       - package: RFBKit
       - package: RemoteDeckCore
+      - package: ClaudeKit
     settings:
       base:
         PRODUCT_NAME: RemoteDeck

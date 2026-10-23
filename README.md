@@ -16,6 +16,7 @@ xcodebuild -project RemoteDeck.xcodeproj -scheme RemoteDeck build
 xcodebuild -project RemoteDeck.xcodeproj -scheme RemoteDeck test   # runs RFBKit tests
 cd Packages/RFBKit && swift test                    # RFBKit tests alone (faster)
 cd Packages/RemoteDeckCore && swift test            # models / Keychain / validation
+cd Packages/ClaudeKit && swift test                 # Claude Assistant: Messages API, computer use toolset (fake HTTP)
 ```
 
 ## Project layout
@@ -24,6 +25,7 @@ cd Packages/RemoteDeckCore && swift test            # models / Keychain / valida
 RemoteDeck/            # app target (SwiftUI + AppKit)
 Packages/RFBKit/       # RFB/VNC protocol library, no UI dependency
 Packages/RemoteDeckCore/ # SwiftData models, Keychain store, validation
+Packages/ClaudeKit/    # Claude Assistant protocol side: Messages API client, computer use toolset, screenshots
 RemoteDeckTests/       # hosted app tests
 Scripts/               # release.sh, icon and DMG background generators
 project.yml            # XcodeGen config

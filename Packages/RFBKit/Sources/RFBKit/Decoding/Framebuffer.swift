@@ -40,6 +40,18 @@ public struct Framebuffer: Equatable, Sendable {
         pixels = [UInt32](repeating: Self.black, count: width * height)
     }
 
+    /// A framebuffer holding `pixels` (row-major, exactly `width × height` of them): test images and
+    /// the Debug demo.
+    public init(width: Int, height: Int, pixels: [UInt32]) throws(RFBError) {
+        try Self.validate(width: width, height: height)
+        guard pixels.count == width * height else {
+            throw .protocolViolation("\(pixels.count) pixels for a \(width)x\(height) framebuffer")
+        }
+        self.width = width
+        self.height = height
+        self.pixels = pixels
+    }
+
     static func validate(width: Int, height: Int) throws(RFBError) {
         guard (1...maxDimension).contains(width), (1...maxDimension).contains(height),
               width * height <= maxPixelCount else {

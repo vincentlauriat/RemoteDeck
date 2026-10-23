@@ -44,7 +44,10 @@ final class FramebufferView: NSView {
 
     var scalingMode: ScalingMode {
         get { redraw.scalingMode }
-        set { redraw.setScalingMode(newValue) }
+        set {
+            redraw.setScalingMode(newValue)
+            updateHighlight()
+        }
     }
 
     /// Top-left of the visible part in `actual` mode when the framebuffer is larger than the view
@@ -68,7 +71,14 @@ final class FramebufferView: NSView {
     /// The display link runs (a frame is owed and the window is visible).
     var isDisplayLinkRunning: Bool { displayLink.map { !$0.isPaused } ?? false }
 
+    /// Remote pixels of the action the Claude Assistant waits to have confirmed (AppFlow: "Action
+    /// highlighted on the framebuffer"): purple rings over the remote screen.
+    var highlight: [PointerLocation] = [] {
+        didSet { if highlight != oldValue { updateHighlight() } }
+    }
+
     private let metalLayer = CAMetalLayer()
+    private let highlightLayer = CAShapeLayer()
     private var displayLink: CADisplayLink?
     private var keyMonitor: Any?
     private var windowObservers: [any NSObjectProtocol] = []
@@ -88,6 +98,10 @@ final class FramebufferView: NSView {
         metalLayer.contentsGravity = .topLeft
         wantsLayer = true
         layerContentsRedrawPolicy = .duringViewResize
+        highlightLayer.fillColor = NSColor.systemPurple.withAlphaComponent(0.25).cgColor
+        highlightLayer.strokeColor = NSColor.systemPurple.cgColor
+        highlightLayer.lineWidth = 2
+        metalLayer.addSublayer(highlightLayer)
         input.onCaptureChange = { [weak self] capturing in
             self?.updateSystemShortcutTap()
             self?.onCaptureChange?(capturing)
@@ -113,6 +127,28 @@ final class FramebufferView: NSView {
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         updateDrawableSize()
+        updateHighlight()
+    }
+
+    /// Rings at `highlight`, placed with the current geometry (also after a scaling change).
+    private func updateHighlight() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        highlightLayer.frame = bounds
+        guard let geometry, !highlight.isEmpty else {
+            highlightLayer.path = nil
+            return
+        }
+        let path = CGMutablePath()
+        for location in highlight {
+            // The centre of the remote pixel, in the view's flipped coordinates; the layer is flipped
+            // too unless AppKit left its geometry unflipped.
+            let point = geometry.viewPoint(forRemotePoint: CGPoint(x: Double(location.x) + 0.5, y: Double(location.y) + 0.5))
+            let y = metalLayer.isGeometryFlipped ? point.y : bounds.height - point.y
+            path.addEllipse(in: CGRect(x: point.x - 11, y: y - 11, width: 22, height: 22))
+        }
+        highlightLayer.path = path
     }
 
     override func viewDidChangeBackingProperties() {
@@ -346,6 +382,8 @@ struct FramebufferViewRepresentable: NSViewRepresentable {
     var modifierProfile: ModifierProfile = .appleRemoteDesktop
     /// Receives the input messages, in order (e.g. `InputSender.enqueue`).
     var onInput: (([ClientMessage]) -> Void)?
+    /// The Claude Assistant's pending target (remote pixels).
+    var highlight: [PointerLocation] = []
     /// Called once with the created view (e.g. to read its counters).
     var onCreate: ((FramebufferView) -> Void)?
 
@@ -365,5 +403,6 @@ struct FramebufferViewRepresentable: NSViewRepresentable {
         view.scalingMode = scalingMode
         view.input.profile = modifierProfile
         view.input.onInput = onInput
+        view.highlight = highlight
     }
 }

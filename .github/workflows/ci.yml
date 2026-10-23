@@ -33,6 +33,10 @@ jobs:
         working-directory: Packages/RemoteDeckCore
         run: swift test
 
+      - name: ClaudeKit tests
+        working-directory: Packages/ClaudeKit
+        run: swift test
+
       - name: Generate Xcode project
         run: xcodegen generate
 

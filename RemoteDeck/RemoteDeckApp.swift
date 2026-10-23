@@ -1,10 +1,11 @@
 import SwiftUI
 import SwiftData
+import ClaudeKit
 import RemoteDeckCore
 
 @main
 struct RemoteDeckApp: App {
-    @State private var settings = AppSettings()
+    @State private var settings: AppSettings
     @State private var library: MachineLibraryModel
     @State private var sessions: SessionManager
     private let container: ModelContainer
@@ -13,6 +14,7 @@ struct RemoteDeckApp: App {
     private let notificationAuthorizer: any NotificationAuthorizing
     private let tester: any ConnectionTester
     private let makeDiscovery: @MainActor () -> DiscoveryService
+    private let apiKeyChecker: any APIKeyChecking
 
     init() {
         // The hosted RemoteDeckTests run inside this app: never open the user's on-disk store then.
@@ -31,6 +33,9 @@ struct RemoteDeckApp: App {
         #endif
         onboardingLaunch = OnboardingLaunch.resolve(isRunningTests: LibraryStore.isRunningTests(),
                                                     demoMode: demoMode, framebufferDebugMode: framebufferDebugMode)
+        // The hosted tests and the demo never read or write the user's API key.
+        var apiKeys: any APIKeyStore = inMemory ? InMemoryAPIKeyStore() : KeychainAPIKeyStore()
+        var claudeClient = MessagesClient()
         var notificationAuthorizer: any NotificationAuthorizing = UserNotificationAuthorizer()
         let passwords = LibraryStore.passwordStore(isInMemory: isInMemory)
         _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords))
@@ -53,15 +58,25 @@ struct RemoteDeckApp: App {
             pasteboard = InMemoryPasteboard()         // nor the user's clipboard
             makeDiscovery = LibraryDemo.discovery
             LibraryDemo.suppressAccessibilityPrompt()
+            if LibraryDemo.scriptsAssistant {
+                apiKeys = InMemoryAPIKeyStore(key: LibraryDemo.assistantKey)
+                claudeClient = LibraryDemo.assistantClient()   // scripted answers: never the API
+            }
         }
         #endif
+        let settings = AppSettings(apiKeys: apiKeys)
+        _settings = State(initialValue: settings)
+        apiKeyChecker = claudeClient
         self.tester = tester
         self.makeDiscovery = makeDiscovery
         self.storeError = storeError
         self.notificationAuthorizer = notificationAuthorizer
         _sessions = State(initialValue: SessionManager(context: container.mainContext, passwords: passwords,
                                                        tester: tester, makeConnection: makeConnection,
-                                                       pasteboard: pasteboard))
+                                                       pasteboard: pasteboard,
+                                                       makeAssistant: { [claudeClient] session in
+            AssistantModel(port: session, client: claudeClient, apiKey: { settings.anthropicAPIKey })
+        }))
     }
 
     var body: some Scene {
@@ -105,7 +120,7 @@ struct RemoteDeckApp: App {
 
         // Réglages via la scène native macOS (⌘,).
         Settings {
-            SettingsView()
+            SettingsView(apiKeyChecker: apiKeyChecker)
                 .environment(settings)
         }
 

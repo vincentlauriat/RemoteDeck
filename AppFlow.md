@@ -17,7 +17,7 @@
 | Machine Editor | Create or edit a machine: name, kind (Mac ARD / VNC / Anthropic VM), host, port, user, password, group (or "New Group…"), watch, favorite, scaling, shared clipboard (new machines default to AppSettings `defaultSharedClipboard`) | Machine, MachineGroup, KeychainCredential, AppSettings |
 | Discovery Panel | Sheet listing the hosts found on the LAN through Bonjour (`_rfb._tcp` and `_net-assistant._udp`, merged per host; this Mac is left out), with "Add" per row | Live Bonjour results, Machine (for "Already added") |
 | Session Window | Remote framebuffer with tabs, toolbar (scaling, clipboard, Ctrl-Alt-Del equivalents, Claude, disconnect) | Machine, KeychainCredential, SessionRecord |
-| Claude Assistant Panel | Inspector beside the Session Window: prompt field, answers, proposed actions with Confirm/Skip, token counter | AssistantAction, KeychainCredential |
+| Claude Assistant Panel | Inspector beside the Session Window (320 pt): token counter and New Conversation at the top, transcript (prompts, progress notes, answers, actions with Confirm/Skip), prompt field with Ask/Stop at the bottom | AssistantAction, KeychainCredential, SessionRecord.assistantTokens |
 | Session History View | Table of past sessions and a 30-day summary | SessionRecord |
 | Settings Window | General, iCloud Sync, Claude (API key, model), Notifications, Shared Clipboard default | AppSettings, KeychainCredential |
 | Menu Bar Extra | Favorites and recents, "Open Library" | Machine, SessionRecord |
@@ -81,7 +81,7 @@ Changing kind, host, port, user or password clears a Test result (and cancels a 
 | Receive clipboard | Text copied on the remote (Shared Clipboard on) | Plain text ≤ 1 MiB | — | Local clipboard holds the text (also when the window is not key) | — (too large or malformed: ignored) | — |
 | Toggle Shared Clipboard | Toolbar `doc.on.clipboard` toggle | — | — | On/off for this session only (Machine.sharedClipboard is the starting value and is not changed); off, nothing is read, written or sent | — | — |
 | Switch tab | ⌘1…⌘9 / click tab | — | — | Tab shown | — | — |
-| Open Claude | ⌘K / toolbar sparkle icon | API key present | — | Claude Assistant Panel opens | No key → link to Settings Window › Claude | Claude Assistant Panel |
+| Open Claude | Toolbar sparkle toggle (always) / ⌘K (keyboard released: while captured, ⌘K goes to the remote like every combo but ⌘1…⌘9) | — | — | Claude Assistant Panel opens with the prompt field focused, which takes the keyboard from the remote (capture off, everything held released) | No key → "Add your API key in Settings to use Claude" + "Open Settings…" | Claude Assistant Panel |
 | Disconnect | ⌘W (keyboard released) / toolbar "Disconnect" / window close button | — | — | Tab closes, SessionRecord saved | — | Library Window if no tab is left |
 
 #### Session errors (T3.5)
@@ -102,9 +102,11 @@ The banner sits at the top of the Session Window (32 pt, red bar, one button); t
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
-| Ask | Return in the prompt field | Prompt 1–2000 chars | "Claude is looking…" + pulsing indicator | Text answer and/or a list of proposed actions | API error message, with Retry | — |
-| Confirm action | "Confirm" (⌘Return) | Session still connected | Action highlighted on the framebuffer | Action sent; Claude continues with a new screenshot | "Session disconnected" → actions cancelled | — |
-| Skip / Stop | "Skip" / "Stop" (⌘.) | — | — | Loop stops; remaining actions are marked `rejected` | — | — |
+| Ask | Return in the prompt field / "Ask" | Prompt 1–2000 chars ("At most 2000 characters."); API key present; session connected ("The session is not connected.") | "Claude is looking…" + pulsing purple dot; a screenshot of the framebuffer goes with the prompt | Progress notes, a text answer and/or proposed actions. Screenshot, zoom, cursor position and wait run without asking (rows marked ✓) | API error message (invalid key, rate limited, overloaded, server error, no connection, conversation too large…), with Retry (same request again). Refusal: "Claude declined this request." + the API's explanation. Cut off (`max_tokens`): "Claude's answer was cut off. Ask again to continue." | — |
+| Confirm action | "Confirm" (⌘Return, keyboard released: the capture is released when an action waits). Enabled 400 ms after the proposal appears; a key repeat or a click meant for an earlier proposal does nothing | Session still connected | The proposal is highlighted in purple in the panel and as purple rings on the framebuffer; then "Running the action…" | Action sent through the session's input; Claude continues (often with a new screenshot) | "Session disconnected — actions cancelled" | — |
+| Skip | "Skip" | — | — | The action is not run, the rest of Claude's turn is not run either ("Not run"); Claude is told and answers | — | — |
+| Stop | "Stop" (⌘., keyboard released) | — | "Stopping…" (no Ask) until the loop has ended | The request in flight and the loop stop ("Stopped."); pending actions are marked `cancelled`; Claude hears of it with the next Ask | — | — |
+| New conversation | Toolbar of the panel (`square.and.pencil`) | Not busy | — | Transcript and conversation cleared; the token counter keeps the session total | — | — |
 
 ### Session History View
 
@@ -118,7 +120,8 @@ The banner sits at the top of the Session Window (32 pt, red bar, one button); t
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
-| Save API key | Paste the key, "Save" | Starts with `sk-ant-`, test call OK | "Checking…" | "Key valid" ✓ | "Invalid key" | — |
+| Save API key | Paste the key, "Save" (or Return). Typing only edits a draft: nothing is written before Save | Starts with `sk-ant-` ("An Anthropic API key starts with sk-ant-.", nothing sent), then a test request (`GET /v1/models`, no tokens billed) | "Checking…" | "Key valid" ✓; the field is emptied and the section says "An API key is stored." (the key is never shown back) | "Invalid key" (401/403); "The key could not be checked, nothing was saved: …" (network, rate limit, server); Keychain refusal with its status. Nothing is saved in any of them | — |
+| Remove API key | "Remove Key" | A key is stored | — | "Key removed." | Keychain error with its status | — |
 | Toggle iCloud Sync | Switch | iCloud account signed in | "Syncing…" | Last-sync timestamp shown | "iCloud unavailable" | — |
 | Toggle notifications | Switch | Permission granted | — | — | Permission denied → button that opens System Settings | — |
 
@@ -165,7 +168,7 @@ Each state can be reproduced: by a hosted test through its model, or with a Debu
 - **Discovery found nothing:** "No Mac with Screen Sharing found. Enable it in System Settings › General › Sharing on the remote Mac.", with a Retry button.
 - **Local network permission denied:** "Local network access is off", explanation plus a button that opens System Settings › Privacy & Security › Local Network. Detected when a browser waits with kDNSServiceErr_PolicyDenied (TN3179); the browser keeps running, so granting access brings the rows without Retry.
 - **Offline / host unreachable:** session banner "Unreachable — check VPN or network", with a Retry button. Watched machines show a grey dot in the sidebar (T4.5).
-- **No Anthropic API key** (T4.4): the Claude Assistant Panel shows "Add your API key in Settings to use Claude", with a button.
+- **No Anthropic API key** (T4.4): the Claude Assistant Panel shows "Add your API key in Settings to use Claude", with an "Open Settings…" button. All Claude Assistant Panel states can be reproduced with the Debug `-LibraryDemo assistant` mode (one session, the panel open, an in-memory demo key and scripted API answers: a progress note, an answer, a click and a typing proposal) or by the hosted `AssistantModelTests`.
 - **iCloud signed out** (T4.3): the sync section shows "Sign in to iCloud to sync your library". The app keeps working locally.
 - **Empty Session History** (T4.6): "Sessions you open will appear here."
 

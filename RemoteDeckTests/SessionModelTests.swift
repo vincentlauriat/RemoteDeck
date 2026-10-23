@@ -95,6 +95,11 @@ actor FakeSessionConnection: SessionConnection {
 
     var hasEvents: Bool { continuation != nil }
 
+    /// What `framebufferSnapshot` returns (the Claude Assistant's screenshot).
+    var snapshot: Framebuffer?
+    func framebufferSnapshot() -> Framebuffer? { snapshot }
+    func setSnapshot(_ framebuffer: Framebuffer?) { snapshot = framebuffer }
+
     func emit(_ event: RFBEvent) { continuation?.yield(event) }
 
     func fail(_ error: RFBError) {

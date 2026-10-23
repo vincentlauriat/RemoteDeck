@@ -23,7 +23,7 @@ private actor FakeAuthorizer: NotificationAuthorizing {
 struct OnboardingTests {
     let suiteName = "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)"
     let defaults: UserDefaults
-    let keychain = KeychainStore(service: "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)")
+    let keychain = InMemoryAPIKeyStore()
 
     init() throws {
         defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -34,7 +34,7 @@ struct OnboardingTests {
     }
 
     private func makeSettings() -> AppSettings {
-        AppSettings(defaults: defaults, keychain: keychain)
+        AppSettings(defaults: defaults, apiKeys: keychain)
     }
 
     // MARK: When it shows
