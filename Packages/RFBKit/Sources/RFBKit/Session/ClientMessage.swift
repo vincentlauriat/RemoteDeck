@@ -12,6 +12,8 @@ public enum Encoding {
     public static let cursor: Int32 = -239
     /// Multi-screen variant of `desktopSize` (rfbproto, ExtendedDesktopSize).
     public static let extendedDesktopSize: Int32 = -308
+    /// UTF-8 clipboard through extended cut text messages (rfbproto, Extended Clipboard, 0xC0A1E5CE).
+    public static let extendedClipboard: Int32 = -1063131698
 
     /// Tight JPEG quality pseudo-encoding, level 0 (lowest) … 9 (highest): −32 … −23. Servers based
     /// on libvncserver use Tight's JPEG mode only when the client advertises one of these.
@@ -22,7 +24,8 @@ public enum Encoding {
 
     /// What `RFBConnection.startSession` advertises by default, by preference: Tight, ZRLE, CopyRect,
     /// Raw, then the pseudo-encodings. No JPEG quality level, so Tight stays lossless.
-    public static let preferred: [Int32] = [tight, zrle, copyRect, raw, extendedDesktopSize, desktopSize, cursor]
+    public static let preferred: [Int32] = [tight, zrle, copyRect, raw, extendedDesktopSize, desktopSize, cursor,
+                                            extendedClipboard]
 }
 
 extension PixelFormat {
@@ -43,6 +46,10 @@ public enum ClientMessage: Equatable, Sendable {
     case keyEvent(down: Bool, key: UInt32)
     /// `buttonMask` bit 0 = left, 1 = middle, 2 = right, 3/4 = wheel up/down.
     case pointerEvent(buttonMask: UInt8, x: UInt16, y: UInt16)
+    /// ClientCutText (RFC 6143 §7.5.6): Latin-1 bytes, LF line ends (`ClipboardText.latin1Bytes`).
+    case clientCutText([UInt8])
+    /// Extended ClientCutText (Extended Clipboard): negative length, U32 flags, then `payload`.
+    case extendedClientCutText(flags: UInt32, payload: [UInt8])
 
     public var wireBytes: [UInt8] {
         switch self {
@@ -59,6 +66,12 @@ public enum ClientMessage: Equatable, Sendable {
             return [4, down ? 1 : 0, 0, 0] + Self.u32(key)
         case .pointerEvent(let buttonMask, let x, let y):
             return [5, buttonMask] + Self.u16(x) + Self.u16(y)
+        case .clientCutText(let text):
+            precondition(text.count <= Int(UInt32.max), "cut text too long")
+            return [6, 0, 0, 0] + Self.u32(UInt32(text.count)) + text
+        case .extendedClientCutText(let flags, let payload):
+            precondition(payload.count <= Int(Int32.max) - 4, "extended cut text too long")
+            return [6, 0, 0, 0] + Self.u32(UInt32(bitPattern: -Int32(4 + payload.count))) + Self.u32(flags) + payload
         }
     }
 

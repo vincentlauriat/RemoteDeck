@@ -29,7 +29,7 @@ SwiftData + CloudKit rule: every synced property is optional or has a default, a
 | isFavorite | Bool | yes | false | |
 | isWatched | Bool | yes | false | Drives Status Notifications |
 | scalingMode | String (`fit`, `actual`) | yes | `fit` | |
-| sharedClipboard | Bool | yes | true | |
+| sharedClipboard | Bool | yes | true | Starting value of the session's Shared Clipboard toggle (not written back by the toolbar) |
 | lastConnectedAt | Date? | no | nil | |
 | createdAt | Date | yes | now | |
 

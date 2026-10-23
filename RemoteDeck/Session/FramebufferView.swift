@@ -22,6 +22,10 @@ final class FramebufferView: NSView {
     /// Called when the keyboard capture starts or stops (for the toolbar's "Keyboard captured" pill).
     var onCaptureChange: ((Bool) -> Void)?
 
+    /// Called when the view's window becomes or stops being key (and with `false` when the view leaves
+    /// it), for the Shared Clipboard, which reads the local pasteboard only while the window is key.
+    var onWindowKeyChange: ((Bool) -> Void)?
+
     /// `false` while the system-shortcut tap cannot run (no Accessibility permission): T3.5's toolbar
     /// shows "System shortcuts need Accessibility access — Open Settings"
     /// (`SystemShortcutTap.openAccessibilitySettings()`).
@@ -199,6 +203,7 @@ extension FramebufferView {
         keyMonitor = nil
         windowObservers.forEach(NotificationCenter.default.removeObserver)
         windowObservers = []
+        onWindowKeyChange?(false)
         input.setFocus(false)
         input.releaseHeld()   // a button held with the keyboard already released
         systemShortcuts.tearDown()
@@ -253,6 +258,7 @@ extension FramebufferView {
     private func updateFocus() {
         input.setFocus(window?.isKeyWindow == true && window?.firstResponder === self)
         updateSystemShortcutTap()
+        onWindowKeyChange?(window?.isKeyWindow == true)
     }
 
     /// The tap runs only while capturing in the key window; removed at once otherwise.

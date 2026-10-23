@@ -76,7 +76,7 @@ struct ClientMessageTests {
     }
 
     @Test func preferredEncodingOrder() {
-        #expect(Encoding.preferred == [7, 16, 1, 0, -308, -223, -239])
+        #expect(Encoding.preferred == [7, 16, 1, 0, -308, -223, -239, -1063131698])
         #expect(Encoding.tightJPEGQuality(0) == -32)
         #expect(Encoding.tightJPEGQuality(9) == -23)
     }

@@ -22,3 +22,15 @@ e.g. Homebrew `jpeg-turbo`), independently of RFBKit, and is deterministic. Rege
 ```bash
 python3 Tests/RFBKitTests/Vectors/generate_decoder_vectors.py > Tests/RFBKitTests/DecoderVectors.swift
 ```
+
+# Clipboard test vectors
+
+`generate_clipboard_vectors.py` produces `../ClipboardVectors.swift`: legacy ServerCutText /
+ClientCutText (Latin-1, LF) and Extended Clipboard messages (caps, notify, request, peek, provide as a
+complete and as a sync-flushed zlib stream, text + HTML, plus hostile ones: zlib bomb, size past the
+end, truncated caps, corrupt zlib), written from RFC 6143 and the rfbproto Extended Clipboard section
+with Python's `zlib`, independently of RFBKit. Regenerate from `Packages/RFBKit`:
+
+```bash
+python3 Tests/RFBKitTests/Vectors/generate_clipboard_vectors.py > Tests/RFBKitTests/ClipboardVectors.swift
+```

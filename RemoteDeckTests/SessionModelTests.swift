@@ -75,6 +75,24 @@ actor FakeSessionConnection: SessionConnection {
 
     var receivedByteCount: Int64 { bytes }
 
+    private(set) var clipboardSharing: [Bool] = []
+    private(set) var sharedTexts: [String] = []
+
+    func setClipboardSharing(_ on: Bool) { clipboardSharing.append(on) }
+
+    /// A share that never returns, as on a frozen peer (not even when closed).
+    var shareHangs = false
+
+    /// Like `RFBConnection`: refused (nothing sent) unless sharing was turned on first.
+    func shareClipboard(_ text: String) async throws(RFBError) -> ClipboardShare {
+        guard clipboardSharing.last == true else { return .notSharing }
+        sharedTexts.append(text)
+        while shareHangs { try? await Task.sleep(for: .milliseconds(5)) }
+        return .sent(echo: text)
+    }
+
+    func setShareHangs(_ hangs: Bool) { shareHangs = hangs }
+
     var hasEvents: Bool { continuation != nil }
 
     func emit(_ event: RFBEvent) { continuation?.yield(event) }
@@ -144,10 +162,11 @@ struct SessionModelTests {
     }
 
     /// A session whose connections are `fakes` (one per attempt, in order).
-    private func session(_ fakes: [FakeSessionConnection]) -> (SessionModel, FakeSurface, Counter) {
+    private func session(_ fakes: [FakeSessionConnection], pasteboard: InMemoryPasteboard = InMemoryPasteboard())
+        -> (SessionModel, FakeSurface, Counter) {
         let counter = Counter()
         let model = SessionModel(machine: machine, context: context, passwords: passwords, display: nil,
-                                 clock: clock.clock) { _ in
+                                 clock: clock.clock, pasteboard: pasteboard, clipboardPollInterval: nil) { _ in
             defer { counter.value += 1 }
             return fakes[min(counter.value, fakes.count - 1)]
         }
@@ -217,6 +236,75 @@ struct SessionModelTests {
         model.connect()
         #expect(await waitUntilAsync { await fake.credentials != nil })
         #expect(await fake.credentials?.password == "local-only")
+    }
+
+    // MARK: Shared Clipboard (T4.1)
+
+    /// Machine.sharedClipboard on: the connection is told before its events start, remote text lands
+    /// on the (fake) pasteboard, and local text goes out only once the window is key.
+    @Test func sharedClipboardBothWays() async throws {
+        let pasteboard = InMemoryPasteboard()
+        pasteboard.content = .text("local")
+        let fake = FakeSessionConnection(log: log)
+        let (model, _, _) = session([fake], pasteboard: pasteboard)
+        try await connectToFirstFrame(model, fake)
+        #expect(await fake.clipboardSharing == [true])
+        #expect(pasteboard.reads == 0)   // window not key yet
+
+        model.windowKeyChanged(true)
+        #expect(await waitUntilAsync { await fake.sharedTexts == ["local"] })
+
+        await fake.emit(.serverCutText("from remote"))
+        #expect(await waitUntil { pasteboard.content == .text("from remote") })
+        model.clipboard.poll()   // the text just written is not sent back
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await fake.sharedTexts == ["local"])
+        await model.close()
+    }
+
+    @Test func sharedClipboardOffExchangesNothing() async throws {
+        machine.sharedClipboard = false
+        let pasteboard = InMemoryPasteboard()
+        pasteboard.content = .text("local")
+        let fake = FakeSessionConnection(log: log)
+        let (model, _, _) = session([fake], pasteboard: pasteboard)
+        try await connectToFirstFrame(model, fake)
+        #expect(await fake.clipboardSharing == [false])
+        model.windowKeyChanged(true)
+        await fake.emit(.serverCutText("from remote"))
+        await fake.emit(frame)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(pasteboard.content == .text("local"))
+        #expect(pasteboard.reads == 0)
+        #expect(await fake.sharedTexts.isEmpty)
+
+        // The toolbar toggle turns it on for this session only.
+        model.clipboardSharing = true
+        #expect(await waitUntilAsync { await fake.sharedTexts == ["local"] })
+        #expect(await fake.clipboardSharing == [false, true])
+        #expect(machine.sharedClipboard == false)
+        await model.close()
+    }
+
+    /// A share stuck on a frozen peer does not hold up the next connection (each connect starts a
+    /// fresh clipboard chain).
+    @Test func stuckShareDoesNotDelayTheNextConnection() async throws {
+        let pasteboard = InMemoryPasteboard()
+        pasteboard.content = .text("local")
+        let first = FakeSessionConnection(log: log)
+        let second = FakeSessionConnection(log: log)
+        await first.setShareHangs(true)
+        let (model, _, _) = session([first, second], pasteboard: pasteboard)
+        try await connectToFirstFrame(model, first)
+        model.windowKeyChanged(true)
+        #expect(await waitUntilAsync { await first.sharedTexts == ["local"] })   // and stuck there
+        await first.fail(.network("gone"))
+        #expect(await waitUntil { model.failure == .connectionLost })
+        model.connect()
+        #expect(await waitUntilAsync { await second.hasEvents })
+        #expect(await second.clipboardSharing == [true])
+        await first.setShareHangs(false)
+        await model.close()
     }
 
     // MARK: Teardown order (TRD › Input)
@@ -536,7 +624,7 @@ struct SessionManagerTests {
                                      makeConnection: { _ in
                                          made += 1
                                          return FakeSessionConnection(log: log, hangs: true)
-                                     }, makeDisplay: { nil })
+                                     }, makeDisplay: { nil }, pasteboard: InMemoryPasteboard())
 
         let first = try #require(manager.session(for: machine.id))
         let again = try #require(manager.session(for: machine.id))
@@ -567,7 +655,8 @@ struct SessionManagerTests {
         let center = NotificationCenter()
         let manager = SessionManager(context: context, passwords: FakePasswordStore(), tester: FakeConnectionTester(),
                                      makeConnection: { _ in FakeSessionConnection(log: SessionLog(), hangs: true) },
-                                     makeDisplay: { nil }, notificationCenter: center)
+                                     makeDisplay: { nil }, pasteboard: InMemoryPasteboard(),
+                                     notificationCenter: center)
         _ = try #require(manager.session(for: connecting.id))
         _ = try #require(manager.session(for: closing.id))
 
@@ -597,7 +686,7 @@ struct SessionManagerTests {
                                      makeConnection: { _ in
                                          made += 1
                                          return FakeSessionConnection(log: SessionLog(), hangs: true)
-                                     }, makeDisplay: { nil })
+                                     }, makeDisplay: { nil }, pasteboard: InMemoryPasteboard())
 
         #expect(manager.requestWindow(for: machine.id))   // open a window
         let session = try #require(manager.sessions[machine.id])

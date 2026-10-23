@@ -20,12 +20,15 @@ final class SessionManager {
     @ObservationIgnored private let clock: SessionClock
     @ObservationIgnored private let makeConnection: @MainActor (SessionTarget) -> any SessionConnection
     @ObservationIgnored private let makeDisplay: @MainActor () -> SessionDisplayModel?
+    @ObservationIgnored private let pasteboard: any ClipboardPasteboard
 
     init(context: ModelContext, passwords: any MachinePasswordStore, tester: any ConnectionTester,
          clock: SessionClock = .live,
          makeConnection: @escaping @MainActor (SessionTarget) -> any SessionConnection = SessionManager.rfbConnection,
          makeDisplay: @escaping @MainActor () -> SessionDisplayModel? = SessionManager.metalDisplay,
+         pasteboard: any ClipboardPasteboard,
          notificationCenter: NotificationCenter = .default) {
+        self.pasteboard = pasteboard
         self.context = context
         self.passwords = passwords
         self.tester = tester
@@ -65,7 +68,7 @@ final class SessionManager {
         guard let machine = try? context.fetch(FetchDescriptor<Machine>(predicate: #Predicate { $0.id == machineID }))
             .first else { return nil }
         let session = SessionModel(machine: machine, context: context, passwords: passwords, display: makeDisplay(),
-                                   clock: clock, makeConnection: makeConnection)
+                                   clock: clock, pasteboard: pasteboard, makeConnection: makeConnection)
         sessions[machineID] = session
         session.connect()
         return session

@@ -19,6 +19,11 @@ protocol SessionConnection: AnyObject, Sendable {
     func close() async
     /// Bytes received from the server so far (SessionRecord.bytesReceived).
     var receivedByteCount: Int64 { get async }
+    /// Shared Clipboard on or off (`RFBConnection.setClipboardSharing`); off until set.
+    func setClipboardSharing(_ on: Bool) async
+    /// Local clipboard text to the server (`RFBConnection.shareClipboard`).
+    @discardableResult
+    func shareClipboard(_ text: String) async throws(RFBError) -> ClipboardShare
 }
 
 extension RFBConnection: SessionConnection {
@@ -186,6 +191,19 @@ final class SessionModel {
     private(set) var isCapturing = false
     /// The system-shortcut tap can run (Accessibility access).
     private(set) var systemShortcutsAvailable = true
+    /// Shared Clipboard for this session (toolbar toggle); starts from Machine.sharedClipboard, not
+    /// saved back. Off: nothing is read from or written to the local pasteboard, nothing is sent.
+    var clipboardSharing: Bool {
+        didSet {
+            guard clipboardSharing != oldValue else { return }
+            // The connection hears of it before the bridge can send (same serial chain), so the text
+            // the bridge sends at once when turned on is not refused.
+            if let connection { applyClipboardSharing(to: connection) }
+            clipboard.isEnabled = clipboardSharing
+        }
+    }
+    /// "Clipboard too large" toast, for 2 s.
+    private(set) var clipboardTooLarge = false
 
     /// The record of the current attempt (one per connect, BackendSchema › SessionRecord).
     @ObservationIgnored private(set) var record: SessionRecord?
@@ -212,17 +230,28 @@ final class SessionModel {
     @ObservationIgnored var stopTimeout: Duration = .seconds(2)
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var startUptime: TimeInterval = 0
+    /// Local pasteboard ↔ remote (TRD › Clipboard).
+    @ObservationIgnored let clipboard: ClipboardBridge
+    /// Clipboard sends run one after the other, in order.
+    @ObservationIgnored private var clipboardSend: Task<Void, Never>?
+    @ObservationIgnored private var toastTask: Task<Void, Never>?
 
     init(machine: Machine, context: ModelContext, passwords: any MachinePasswordStore,
          display: SessionDisplayModel?, clock: SessionClock = .live,
+         pasteboard: any ClipboardPasteboard, clipboardPollInterval: Duration? = .milliseconds(500),
          makeConnection: @escaping @MainActor (SessionTarget) -> any SessionConnection) {
         target = SessionTarget(machine)
         scalingMode = machine.scalingModeValue
+        clipboardSharing = machine.sharedClipboard
         self.context = context
         self.passwords = passwords
         self.display = display
         self.clock = clock
         self.makeConnection = makeConnection
+        clipboard = ClipboardBridge(pasteboard: pasteboard, isEnabled: machine.sharedClipboard,
+                                    pollInterval: clipboardPollInterval)
+        clipboard.send = { [weak self] text in self?.shareClipboard(text) }
+        clipboard.onTooLarge = { [weak self] in self?.showClipboardTooLarge() }
     }
 
     var isConnecting: Bool { phase == .connecting }
@@ -260,6 +289,8 @@ final class SessionModel {
         let credentials = RFBCredentials(kind: target.kind, username: target.username, password: password)
         let connection = makeConnection(target)
         self.connection = connection
+        // A fresh chain: a share stuck on the previous (frozen) peer must not hold this one up.
+        clipboardSend = nil
         // Untyped closures: a typed-throws `Task` closure crashes the Swift 6.4 compiler (RFBKit note).
         let opening = Task {
             try await connection.connect(credentials: credentials, timeout: Self.openTimeout)
@@ -276,6 +307,9 @@ final class SessionModel {
                 if (error as? RFBError) != .cancelled { await self?.stop(failing: failure, generation: generation) }
                 return
             }
+            // Before the events start, so no clipboard text arrives or leaves while it is off; a toggle
+            // during the connection goes through the same chain after it.
+            await self?.applyClipboardSharing(to: connection).value
             do {
                 events = try await connection.events()
             } catch {
@@ -299,6 +333,7 @@ final class SessionModel {
         for try await event in events {
             guard self.generation == generation else { return }
             display?.handle(event)
+            if case .serverCutText(let text) = event { clipboard.receive(text) }
             if case .framebufferUpdate = event, phase == .connecting { didReceiveFirstFrame() }
         }
     }
@@ -311,6 +346,7 @@ final class SessionModel {
         fetchMachine()?.lastConnectedAt = clock.now()
         save()
         surface?.startCapture()
+        clipboard.sessionStarted()
     }
 
     // MARK: Input
@@ -318,6 +354,49 @@ final class SessionModel {
     /// Input messages from the view, in order. Dropped when no session is running.
     func sendInput(_ messages: [ClientMessage]) {
         sender?.enqueue(messages)
+    }
+
+    /// The Session Window became or stopped being key: the clipboard is read only while it is.
+    func windowKeyChanged(_ key: Bool) {
+        clipboard.windowKeyChanged(key)
+    }
+
+    private func shareClipboard(_ text: String) {
+        guard let connection else { return }
+        enqueueClipboard { [weak self] in
+            // A failed write fails the event loop too, which reports the loss.
+            let outcome = (try? await connection.shareClipboard(text)) ?? .notSharing
+            await self?.clipboard.shared(text, outcome: outcome)
+        }
+    }
+
+    /// Tells the connection the current toggle, in order with the sends.
+    @discardableResult
+    private func applyClipboardSharing(to connection: any SessionConnection) -> Task<Void, Never> {
+        let on = clipboardSharing
+        return enqueueClipboard { await connection.setClipboardSharing(on) }
+    }
+
+    /// Clipboard work for the connection runs one step after the other, in order.
+    @discardableResult
+    private func enqueueClipboard(_ work: @escaping @Sendable () async -> Void) -> Task<Void, Never> {
+        let previous = clipboardSend
+        let task = Task {
+            await previous?.value
+            await work()
+        }
+        clipboardSend = task
+        return task
+    }
+
+    private func showClipboardTooLarge() {
+        clipboardTooLarge = true
+        toastTask?.cancel()
+        toastTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            self?.clipboardTooLarge = false
+        }
     }
 
     func inputStateChanged(capturing: Bool, systemShortcutsAvailable: Bool) {
@@ -377,6 +456,7 @@ final class SessionModel {
     /// Input release → `finish()` → `stopped()` → close. Returns the bytes received.
     private func tearDown(windowClosing: Bool) async -> Int64 {
         if windowClosing { surface?.tearDownInput() } else { surface?.releaseCapture() }
+        clipboard.sessionStopped()
         let sender = self.sender
         let connection = self.connection
         task = nil

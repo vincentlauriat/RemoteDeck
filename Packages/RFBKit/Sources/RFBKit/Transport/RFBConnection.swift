@@ -26,6 +26,9 @@ public actor RFBConnection {
     /// Identity of the current session, set as soon as `startSession` begins.
     private var sessionID: SessionID?
     private var sessionContinuation: AsyncThrowingStream<RFBEvent, any Error>.Continuation?
+    /// Clipboard state of the current session (Extended Clipboard caps, the text last shared). Off
+    /// until `setClipboardSharing(true)`: no clipboard text is sent or delivered before.
+    private var clipboard = ClipboardNegotiation(sharing: false)
 
     /// Whether a connection is currently held (open or being opened).
     var isOpen: Bool { connection != nil }
@@ -132,6 +135,7 @@ public actor RFBConnection {
         // Claimed before the first suspension so a concurrent call sees it (actor reentrancy).
         let id = SessionID()
         sessionID = id
+        clipboard = ClipboardNegotiation(sharing: clipboard.sharing)   // no caps from an earlier session
         let pump = try FramebufferPump(width: Int(serverInit.width), height: Int(serverInit.height))
         self.pump = pump
         let initial = pendingBytes
@@ -169,7 +173,16 @@ public actor RFBConnection {
                 while let received = chunk {
                     if !received.isEmpty {
                         for event in try await pump.receive(received) {
-                            continuation.yield(event)
+                            switch event {
+                            case .serverCutText, .extendedClipboard:
+                                // Answered here (caps, request, peek, notify); only text reaches the consumer.
+                                let (replies, text) = self.clipboard.handle(event)
+                                if !replies.isEmpty { try await connection.sendAll(Data(replies.flatMap(\.wireBytes))) }
+                                if let text { continuation.yield(.serverCutText(text)) }
+                                continue
+                            default:
+                                continuation.yield(event)
+                            }
                             guard requestUpdatesAutomatically, case .desktopResized(let width, let height) = event else {
                                 continue
                             }
@@ -214,6 +227,24 @@ public actor RFBConnection {
         sessionTask = nil
         serverInit = nil
         connection = nil   // the pump stays: `framebufferSnapshot()` still returns the last frame
+    }
+
+    /// Turns the shared clipboard on or off for this connection (Machine.sharedClipboard). Off, nothing
+    /// is sent, the server's requests get no text, and received text is dropped. Turning it off also
+    /// forgets the text last shared.
+    public func setClipboardSharing(_ on: Bool) {
+        clipboard.sharing = on
+    }
+
+    /// Shares local clipboard text with the server: an extended provide (UTF-8), or a notify the
+    /// server answers with a request, when its caps allow; Latin-1 ClientCutText otherwise
+    /// (`ClipboardText.latin1Bytes`). Nothing is sent when sharing is off or the text is too large
+    /// (`ClipboardShare`).
+    @discardableResult
+    public func shareClipboard(_ text: String) async throws(RFBError) -> ClipboardShare {
+        let (messages, outcome) = clipboard.share(text)
+        if !messages.isEmpty { try await send(messages) }
+        return outcome
     }
 
     /// Asks for an update of the whole framebuffer (incremental: only what changed).
