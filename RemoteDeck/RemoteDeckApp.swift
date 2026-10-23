@@ -12,6 +12,9 @@ struct RemoteDeckApp: App {
     @State private var reachability: ReachabilityMonitor
     @State private var notificationRouter: StatusNotificationRouter
     @State private var notificationPermission: NotificationPermissionModel
+    @State private var history = SessionHistoryModel(exporter: SavePanelExporter())
+    /// The Menu Bar Extra; never inserted while the hosted tests run.
+    @State private var showsMenuBarExtra = !LibraryStore.isRunningTests()
     /// `UNUserNotificationCenter` keeps its delegate weakly.
     private let notificationDelegate: StatusNotificationDelegate?
     private let watchFeed: WatchTargetFeed
@@ -58,6 +61,7 @@ struct RemoteDeckApp: App {
         #if DEBUG
         if LibraryDemo.isEnabled {
             if LibraryDemo.seedsLibrary { LibraryDemo.seed(container.mainContext) }
+            if LibraryDemo.showsHistory { LibraryDemo.seedHistory(container.mainContext, now: .now) }
             if LibraryDemo.simulatesStoreError { storeError = LibraryDemo.storeError }
             notificationAuthorizer = LibraryDemo.NotificationAuthorizer()   // never the system prompt
             tester = LibraryDemo.Tester()
@@ -73,6 +77,11 @@ struct RemoteDeckApp: App {
         #endif
         let settings = AppSettings(apiKeys: apiKeys)
         _settings = State(initialValue: settings)
+        // Retention (BackendSchema › Retention and deletion): only the on-disk store, so never under the
+        // hosted tests or a demo mode (both in memory). Best effort: a failure leaves the rows for next time.
+        if !isInMemory {
+            _ = try? HistoryRetention.purge(container.mainContext, now: .now, historyDays: settings.historyRetentionDays)
+        }
         apiKeyChecker = claudeClient
         self.tester = tester
         self.makeDiscovery = makeDiscovery
@@ -178,6 +187,27 @@ struct RemoteDeckApp: App {
         // Accessibility prompt) without the user asking.
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(.suppressed)
+
+        // Session History View (T4.6): Window › Session History (⌘Y), or the Menu Bar Extra.
+        Window(settings.t("history_title"), id: HistoryWindow.id) {
+            SessionHistoryView(model: history)
+                .environment(settings)
+                .environment(sessions)
+                .preferredColorScheme(settings.appearance.colorScheme)
+        }
+        .modelContainer(container)
+        .defaultSize(width: 1000, height: 600)
+        // `-LibraryDemo history` opens it from the Library Window.
+        .defaultLaunchBehavior(.suppressed)
+
+        // Menu Bar Extra (T4.6): favorites and recent machines, Open Library, Session History, Quit.
+        MenuBarExtra(settings.t("app_name"), systemImage: "display.2", isInserted: $showsMenuBarExtra) {
+            MenuBarContentView()
+                .environment(settings)
+                .environment(sessions)
+                .modelContainer(container)
+        }
+        .menuBarExtraStyle(.menu)
 
         // Réglages via la scène native macOS (⌘,).
         Settings {

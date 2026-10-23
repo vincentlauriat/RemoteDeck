@@ -115,7 +115,10 @@ struct LibraryView: View {
             #if DEBUG
             if LibraryDemo.opensEditor { openEditor(for: machines.sorted { $0.name < $1.name }.first) }
             if LibraryDemo.opensDiscovery { openDiscovery() }
-            if LibraryDemo.scriptsAssistant { connect(machines.first { $0.name == "Mac mini" }) }
+            if LibraryDemo.scriptsAssistant || LibraryDemo.showsHistory {
+                connect(machines.first { $0.name == "Mac mini" })
+            }
+            if LibraryDemo.showsHistory { openWindow(id: HistoryWindow.id) }
             if LibraryDemo.opensSessions {
                 LibraryDemo.sessionMachineNames.forEach { name in connect(machines.first { $0.name == name }) }
                 // AC6: what ⌘2 does (the same call as the menu item), once the tabs are up.
@@ -267,8 +270,9 @@ struct LibraryView: View {
     /// Single entry point for Connect (double-click, Return, toolbar, detail pane): opens the
     /// machine's Session Window, or brings it forward if it is already open (AppFlow › Connect).
     private func connect(_ machine: Machine?) {
-        guard let machine, canConnect(machine), sessions.requestWindow(for: machine.id) else { return }
-        openWindow(id: SessionWindow.id, value: machine.id)
+        SessionLauncher.connect(machine, sessions: sessions) { id in
+            openWindow(id: SessionWindow.id, value: id)
+        }
     }
 
     private func canConnect(_ machine: Machine?) -> Bool {
@@ -351,7 +355,7 @@ extension FocusedValues {
     }
 }
 
-/// AppFlow shortcuts: ⌘N Add machine, ⌘F Search, ⌘D Discover, ⌘0 Library.
+/// AppFlow shortcuts: ⌘N Add machine, ⌘F Search, ⌘D Discover, ⌘0 Library, ⌘Y Session History.
 struct LibraryCommands: Commands {
     let settings: AppSettings
     @FocusedValue(\.libraryActions) private var actions
@@ -374,6 +378,8 @@ struct LibraryCommands: Commands {
         CommandGroup(before: .windowList) {
             Button(settings.t("menu_library")) { openWindow(id: LibraryWindow.id) }
                 .keyboardShortcut("0")
+            Button(settings.t("menu_session_history")) { openWindow(id: HistoryWindow.id) }
+                .keyboardShortcut("y")
             Divider()
         }
     }

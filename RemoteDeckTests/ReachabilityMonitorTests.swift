@@ -498,8 +498,11 @@ extension ReachabilityMonitorTests {
         monitor.start()
         #expect(await waitUntil { probe.calls.count == 4 && clock.pending(Self.timeout) == 4 })
         clock.fire(Self.timeout)   // the four never return, but their slots are free
-        #expect(await waitUntil { probe.calls.count == 5 })
-        #expect(monitor.states[targets[0].machineID]?.consecutiveFailures == 1)
+        // Wait on the state, not on the call count: the fifth probe can start before the timed-out
+        // results are recorded (the review saw `consecutiveFailures` 0 once).
+        let timedOut = { targets.filter { monitor.states[$0.machineID]?.consecutiveFailures == 1 }.count }
+        #expect(await waitUntil { probe.calls.count == 5 && timedOut() == 4 })
+        #expect(probe.calls.count == 5)
     }
 
     /// L1: after wake, a path that flaps back to satisfied during the grace starts no probe.
