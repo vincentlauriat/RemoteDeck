@@ -3,7 +3,7 @@
 ## Entry points
 
 - Launching the app (Dock, Spotlight): opens the Library Window, at every launch (also after a killed run). Session Windows are never restored at launch: reopening one would reconnect to a host without the user asking.
-- Menu Bar Extra: quick-connect list of favorite and recent machines.
+- Menu Bar Extra (T4.6): quick-connect list of favorite and recent machines (see Menu Bar Extra below).
 - URL scheme `remotedeck://connect?id=<machine-id>`, plus `vnc://host` URLs registered as a handler: opens a session directly. *(assumption)*
 - Status Notifications (T4.5): clicking a notification brings the app forward with the Library Window, the machine selected; an "online again" notification also opens a session on that machine (the Connect path: its tab is selected if already open). A machine deleted since is ignored.
 - First launch: Onboarding Sheet over the Library Window, until it is finished or skipped (AppSettings `onboardingCompleted`); never under the hosted tests, `-FramebufferDebug` or a `-LibraryDemo` mode other than `onboarding`. No menu item reopens it.
@@ -20,7 +20,7 @@
 | Claude Assistant Panel | Inspector beside the Session Window (320 pt): token counter and New Conversation at the top, transcript (prompts, progress notes, answers, actions with Confirm/Skip), prompt field with Ask/Stop at the bottom | AssistantAction, KeychainCredential, SessionRecord.assistantTokens |
 | Session History View | Table of past sessions and a 30-day summary | SessionRecord |
 | Settings Window | General, iCloud Sync, Claude (API key, model), Notifications, Shared Clipboard default | AppSettings, KeychainCredential |
-| Menu Bar Extra | Favorites and recents, "Open Library" | Machine, SessionRecord |
+| Menu Bar Extra | Favorites and recents, "Open Library…", "Session History…", "Quit RemoteDeck" | Machine, SessionRecord |
 
 ## Main path
 
@@ -131,9 +131,25 @@ Rules:
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
-| Open | Menu Window › Session History (⌘Y) | — | — | Table sorted by date, newest first | — | — |
-| Reconnect | Double-click a row | Machine still exists | — | Session Window tab | "Machine deleted" | Session Window |
-| Export CSV | "Export…" | — | — | Save panel → CSV file | Write error alert | — |
+| Open | Menu Window › Session History (⌘Y), or "Session History…" in the Menu Bar Extra | — | — | Table sorted by date, newest first | — | — |
+| Sort | Click a column header | — | — | Rows reordered (no first frame sorts after every connect time; in progress after every duration, unknown last) | — | — |
+| Filter / search | Toolbar pickers "All machines" / "All outcomes", search field (machine name, case- and accent-insensitive) | — | — | Rows filtered live; the summary is not filtered | "No results" | — |
+| Reconnect | Double-click a row, or Reconnect in its context menu | Machine still exists and has a host and port | — | The Connect path (a new tab, or the machine's open tab brought forward) | "Machine deleted" alert; a machine without a valid address: "Cannot connect" alert | Session Window |
+| Export CSV | "Export…" (toolbar) | At least one record | — | Save panel as a sheet on the History window (`RemoteDeck History <date>.csv`) → every record, whatever the filters, as CSV (BackendSchema › Export) | Write error alert with the error | — |
+
+Columns (DesignBrief): Machine (the record's name snapshot, so a deleted or renamed machine keeps the name it had), Started, Connect time (ms; "—" without a first frame), Duration (`endedAt − startedAt`; "In progress" when the record's session is open now; "Unknown" when the record has no end and no open session, i.e. the run was killed: no end time is ever guessed), Outcome (the stored one, except a record with no end and no first frame, which still holds the `cancelled` it was created with: "Connecting…" while its session is open, "Interrupted" otherwise, in red; the outcome filter and the counts use the same values), Received (bytes; "—" for none), Claude tokens (empty for none).
+
+30-day summary strip (over every record started in the last 30 × 24 h, absolute interval, whatever the filters): Sessions (attempts with a first frame; tooltip with the attempt count), First frame ≤ 5 s (fast sessions over sessions plus attempts that ended without a first frame after more than 5 s; floored to 0.1 %, orange under 90 %; PRD › Success metric), Connect p50 and p90 (nearest rank, ms), Connected time (sum of the sessions' durations with an end), then the failures per outcome (authentication failed, unreachable, connection lost, interrupted) and cancelled, the in-progress and unknown-duration counts (as the Duration column), and the note that Apple Remote Desktop / Screen Sharing launches are not counted. "By machine…" opens a popover: per machine id (newest name), sessions, attempts, connected time.
+
+### Menu Bar Extra (T4.6)
+
+| Action | Trigger | Validation | Loading | Success | Error | Next |
+|---|---|---|---|---|---|---|
+| Connect | Click a machine | Machine still exists, has host and port (greyed otherwise) | — | App forward; the Connect path (a new tab, or the open tab brought forward) | — (errors are shown in the session) | Session Window |
+| Open Library… / Session History… | Click | — | — | App forward, that window opens | — | Library Window / Session History View |
+| Quit RemoteDeck | Click, ⌘Q | — | — | The app quits (sessions get their end, as ⌘Q) | — | — |
+
+Content: Favorites (by name), then Recent: the 5 most recent other machines (distinct, by their newest attempt of any outcome; a favorite is listed once, under Favorites), only machines still in the library, read from the newest 200 records; with no row: "No machines yet" for an empty library, else "No favorites or recent machines yet". Always shown (no setting).
 
 ### Settings Window
 
@@ -146,7 +162,7 @@ Rules:
 
 ## Navigation rules
 
-- One Library Window, one Session Window containing native macOS window tabs (one per open machine, each with its own connection), and one Settings Window (⌘,). A tab can be moved to its own window or windows merged back (Window menu); a new session joins the frontmost Session Window (visible and not minimised; else the one opened last). The tab bar's "+" brings the Library Window forward, where the next machine is picked. Switching tabs, minimising and full screen never disconnect; only closing a tab does.
+- One Library Window, one Session History View window, one Session Window containing native macOS window tabs (one per open machine, each with its own connection), and one Settings Window (⌘,). A tab can be moved to its own window or windows merged back (Window menu); a new session joins the frontmost Session Window (visible and not minimised; else the one opened last). The tab bar's "+" brings the Library Window forward, where the next machine is picked. Switching tabs, minimising and full screen never disconnect; only closing a tab does.
 - ⌘0 Library, ⌘1…⌘9 session tabs (Window › Session Tabs; the physical top-row keys, so AZERTY's ⌘& ⌘é… too, captured or not), ⌘K Claude Assistant Panel, ⌘Y Session History View.
 - Only the selected tab of the key window captures the keyboard, runs the system-shortcut tap and reads the local clipboard; leaving a tab releases every key held on its remote, and a background tab stops drawing but stays connected and up to date.
 - While a session has the keyboard captured, key combos go to the remote machine, with the exceptions in Keyboard capture below.
@@ -180,7 +196,7 @@ Accessibility prompt flow (system combos):
 3. Once granted, the next capture (click, or focus coming back) takes the system combos, without a restart *(expected; not yet verified live)*. If access is revoked while captured, the app drops the tap as soon as macOS announces the change; revoking with a tap active is a known macOS risk (system input can become unresponsive, Apple bug FB24619068, TRD › Input), so releasing the capture (⌃⌥⌘R) first is safer.
 ## Empty and blocked states
 
-Each state can be reproduced: by a hosted test through its model, or with a Debug `-LibraryDemo` mode (`empty`, `store-error`, `discovery-empty`, `discovery-blocked`, `discovery-failed`; `session` for the auth-failure banner; `watch` for the status dots and Status Notifications: three watched sample machines on fake probes every 3 s, "NAS" going offline and back, notifications printed on stderr instead of posted). States marked with a later task are not built yet.
+Each state can be reproduced: by a hosted test through its model, or with a Debug `-LibraryDemo` mode (`empty`, `store-error`, `discovery-empty`, `discovery-blocked`, `discovery-failed`; `session` for the auth-failure banner; `watch` for the status dots and Status Notifications: three watched sample machines on fake probes every 3 s, "NAS" going offline and back, notifications printed on stderr instead of posted; `history` for the Session History View: fixed past records of every outcome, one older than 30 days, one left open by a "killed run", two of deleted machines, and a live "Mac mini" session in progress). States marked with a later task are not built yet.
 
 - **Library in memory** (the on-disk store could not be opened): persistent orange banner across the bottom of the Library Window (at the top, the sidebar's search field covered it), "The library could not be opened — The library runs in memory: nothing you do now is saved, passwords included."
 - **Empty library:** illustration-free message "No machines yet", with two buttons: "Discover on network" (opens the Discovery Panel) and "Add manually".
@@ -189,7 +205,7 @@ Each state can be reproduced: by a hosted test through its model, or with a Debu
 - **Offline / host unreachable:** session banner "Unreachable — check VPN or network", with a Retry button. A watched machine that stops answering shows a red dot ("Offline — not answering") in the sidebar and the detail pane; grey while its status is not known yet or when this Mac has no network (T4.5).
 - **No Anthropic API key** (T4.4): the Claude Assistant Panel shows "Add your API key in Settings to use Claude", with an "Open Settings…" button. All Claude Assistant Panel states can be reproduced with the Debug `-LibraryDemo assistant` mode (one session, the panel open, an in-memory demo key and scripted API answers: a progress note, an answer, a click and a typing proposal) or by the hosted `AssistantModelTests`.
 - **iCloud signed out** (T4.3): the sync section shows "Sign in to iCloud to sync your library". The app keeps working locally.
-- **Empty Session History** (T4.6): "Sessions you open will appear here."
+- **Empty Session History** (T4.6): "Sessions you open will appear here." (no summary, no table); a search or filter with no match: "No results". The filled view, with an in-progress and an unknown-duration row, is reproduced with `-LibraryDemo history`.
 
 ## First use
 

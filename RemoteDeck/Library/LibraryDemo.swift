@@ -26,6 +26,12 @@ import RFBKit
 /// every 3 s by `WatchProbe` (no network): "Mac mini" always answers, "NAS" answers twice then fails
 /// three times (so it goes offline and comes back), "Build server" never answers. Notifications go to
 /// `WatchPoster`, which prints them on stderr: Notification Center is never used in any demo mode.
+///
+/// `history` (T4.6, Session History): the sample library plus a fixed set of past records
+/// (`seedHistory`, placed relative to launch: every outcome, slow and fast connects, a record older than
+/// the 30-day window, one left without an end by a "killed run", two of machines deleted since, one
+/// with a comma and quotes in its name), and the Session History window open at launch; "Mac mini" is
+/// connected on the fake connection, so its newest row is in progress.
 enum LibraryDemo {
     struct Tester: ConnectionTester {
         func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
@@ -46,6 +52,7 @@ enum LibraryDemo {
     static var seedsLibrary: Bool { mode != "empty" && mode != OnboardingLaunch.demoMode }
     static var simulatesStoreError: Bool { mode == "store-error" }
     static var watchesMachines: Bool { mode == "watch" }
+    static var showsHistory: Bool { mode == "history" }
     static let storeError = "Demo: simulated SwiftData error (the on-disk store could not be opened)"
 
     /// Answers "allowed" after half a second: the demo never shows the system prompt.
@@ -289,6 +296,60 @@ enum LibraryDemo {
         var policy = AccessibilityPromptPolicy()
         _ = policy.shouldPrompt(captureStarted: true, trusted: false)
         SystemShortcutTap.promptPolicy = policy
+    }
+
+    // MARK: Session History (`-LibraryDemo history`)
+
+    /// One past attempt: days before launch, connect time, length in minutes (nil: no end), outcome.
+    private struct PastAttempt {
+        let machine: String
+        let daysAgo: Double
+        let connectMillis: Int?
+        let minutes: Double?
+        let outcome: SessionOutcome
+        var tokens = 0
+    }
+
+    private static let pastAttempts: [PastAttempt] = [
+        PastAttempt(machine: "Mac mini", daysAgo: 0.1, connectMillis: 640, minutes: 35, outcome: .connected, tokens: 6044),
+        PastAttempt(machine: "Mac mini", daysAgo: 1.2, connectMillis: 710, minutes: 92, outcome: .connected),
+        PastAttempt(machine: "Mac mini", daysAgo: 2.4, connectMillis: 1320, minutes: 8, outcome: .connected),
+        PastAttempt(machine: "Mac mini", daysAgo: 4.0, connectMillis: nil, minutes: 0.05, outcome: .cancelled),
+        PastAttempt(machine: "Mac mini", daysAgo: 6.5, connectMillis: 880, minutes: 121, outcome: .connected),
+        PastAttempt(machine: "Mac mini", daysAgo: 9.0, connectMillis: 2400, minutes: 14, outcome: .connected),
+        PastAttempt(machine: "Mac mini", daysAgo: 13.3, connectMillis: 760, minutes: 47, outcome: .connected),
+        PastAttempt(machine: "Mac mini", daysAgo: 45.0, connectMillis: 9100, minutes: 20, outcome: .connected),
+        PastAttempt(machine: "NAS", daysAgo: 0.8, connectMillis: 6200, minutes: 12, outcome: .connected),
+        PastAttempt(machine: "NAS", daysAgo: 3.1, connectMillis: 4980, minutes: 25, outcome: .connected),
+        PastAttempt(machine: "NAS", daysAgo: 5.2, connectMillis: 1900, minutes: 3, outcome: .dropped),
+        PastAttempt(machine: "NAS", daysAgo: 7.7, connectMillis: nil, minutes: 0.17, outcome: .unreachable),
+        PastAttempt(machine: "Studio", daysAgo: 2.0, connectMillis: nil, minutes: 0.02, outcome: .authFailed),
+        PastAttempt(machine: "Studio", daysAgo: 2.0, connectMillis: nil, minutes: 0.03, outcome: .authFailed),
+        PastAttempt(machine: "Build server", daysAgo: 3.0, connectMillis: 1800, minutes: nil, outcome: .connected),
+        PastAttempt(machine: "Build server", daysAgo: 11.0, connectMillis: 1050, minutes: 66, outcome: .connected),
+        PastAttempt(machine: "Old iMac", daysAgo: 10.0, connectMillis: 1500, minutes: 30, outcome: .connected),
+        PastAttempt(machine: "Old iMac", daysAgo: 20.0, connectMillis: 7300, minutes: 18, outcome: .connected),
+        PastAttempt(machine: "Lab, \"rack 2\"", daysAgo: 16.0, connectMillis: 1100, minutes: 9, outcome: .connected),
+    ]
+
+    /// The past records; "Old iMac" and the lab machine are not in the library (deleted since).
+    @MainActor
+    static func seedHistory(_ context: ModelContext, now: Date) {
+        let library = (try? context.fetch(FetchDescriptor<Machine>())) ?? []
+        var ids = Dictionary(library.map { ($0.name, $0.id) }, uniquingKeysWith: { first, _ in first })
+        for attempt in pastAttempts {
+            let machineID = ids[attempt.machine] ?? UUID()
+            ids[attempt.machine] = machineID
+            let start = now.addingTimeInterval(-attempt.daysAgo * 86_400)
+            context.insert(SessionRecord(
+                machineID: machineID, machineName: attempt.machine, startedAt: start,
+                connectMillis: attempt.connectMillis,
+                endedAt: attempt.minutes.map { start.addingTimeInterval($0 * 60) },
+                outcome: attempt.outcome,
+                bytesReceived: attempt.connectMillis == nil ? 0 : Int64((attempt.minutes ?? 10) * 9_000_000),
+                assistantTokens: attempt.tokens))
+        }
+        try? context.save()
     }
 
     @MainActor
