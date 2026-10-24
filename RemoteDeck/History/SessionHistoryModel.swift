@@ -27,7 +27,7 @@ extension SessionManager {
         Set(sessions.values.compactMap { session in
             switch session.phase {
             case .connecting, .connected: session.record?.id
-            case .idle, .failed, .closed: nil
+            case .idle, .failed, .waiting, .closed: nil
             }
         })
     }

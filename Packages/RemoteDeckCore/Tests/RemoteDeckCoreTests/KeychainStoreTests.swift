@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 import Testing
 @testable import RemoteDeckCore
@@ -23,6 +24,18 @@ struct KeychainStoreTests {
         #expect(query[kSecAttrService as String] as? String == "fr.vincentlauriat.remotedeck")
         #expect(query[kSecAttrAccount as String] as? String == "machine.\(id.uuidString)")
         #expect(query[kSecAttrSynchronizable as String] as? Bool == true)
+    }
+
+    /// An automatic reconnect (T5.1) reads with no dialog allowed; a user's attempt as before.
+    @Test func readWithoutInteractionCarriesANonInteractiveContext() {
+        let store = KeychainStore()
+        let quiet = store.readQuery(for: .machine(UUID()), synchronizable: true, allowsInteraction: false)
+        let context = quiet[kSecUseAuthenticationContext as String] as? LAContext
+        #expect(context?.interactionNotAllowed == true)
+        #expect(quiet[kSecReturnData as String] as? Bool == true)
+        let normal = store.readQuery(for: .machine(UUID()), synchronizable: true, allowsInteraction: true)
+        #expect(normal[kSecUseAuthenticationContext as String] == nil)
+        #expect(normal[kSecReturnData as String] as? Bool == true)
     }
 
     @Test func apiKeyQueryIsLocalOnly() {

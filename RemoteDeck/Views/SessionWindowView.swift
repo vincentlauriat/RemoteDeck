@@ -96,13 +96,13 @@ struct SessionWindowView: View {
                     Task { @MainActor in attach(view, to: session) }   // not during the view update
                 }
             )
-            if session.phase != .connected {
+            if session.phase != .connected || session.overlay != nil {
                 // Takes the clicks, so the view cannot capture the keyboard before the first frame.
-                Color.black.opacity(session.isConnecting ? 0.6 : 0.35)
+                Color.black.opacity(session.overlay != nil ? 0.6 : 0.35)
                     .contentShape(Rectangle())
                     .onTapGesture {}
             }
-            if session.isConnecting { connectingOverlay(session) }
+            if let overlay = session.overlay { connectingOverlay(overlay, session: session) }
             if session.clipboardTooLarge { clipboardToast }
         }
         .background(.black)
@@ -157,17 +157,31 @@ struct SessionWindowView: View {
 
     // MARK: Overlay and banner
 
-    /// DesignBrief: 15 pt medium, white on 60 % black; Esc cancels.
-    private func connectingOverlay(_ session: SessionModel) -> some View {
+    /// DesignBrief: 15 pt medium, white on 60 % black; Esc cancels (closes the tab). Also over the
+    /// last frame while the session reconnects or waits for the network (T5.1).
+    private func connectingOverlay(_ overlay: SessionModel.Overlay, session: SessionModel) -> some View {
         VStack(spacing: 12) {
             ProgressView().controlSize(.large).tint(.white)
-            Text(settings.t("session_connecting", session.target.name))
+            Text(overlayText(overlay, session: session))
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(.white)
+            if overlay == .waitingForNetwork {
+                Text(settings.t("session_waiting_network_detail"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
             Button(settings.t("cancel")) { dismissWindow() }
                 .keyboardShortcut(.cancelAction)
         }
         .padding(20)
+    }
+
+    private func overlayText(_ overlay: SessionModel.Overlay, session: SessionModel) -> String {
+        switch overlay {
+        case .connecting: settings.t("session_connecting", session.target.name)
+        case .reconnecting: settings.t("session_reconnecting", session.target.name)
+        case .waitingForNetwork: settings.t("session_waiting_network")
+        }
     }
 
     /// DesignBrief › Toasts: bottom-center, 2 s (the model clears it).

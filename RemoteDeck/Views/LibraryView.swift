@@ -119,6 +119,9 @@ struct LibraryView: View {
                 connect(machines.first { $0.name == "Mac mini" })
             }
             if LibraryDemo.showsHistory { openWindow(id: HistoryWindow.id) }
+            if LibraryDemo.simulatesDrops {
+                LibraryDemo.resilienceMachineNames.forEach { name in connect(machines.first { $0.name == name }) }
+            }
             if LibraryDemo.opensSessions {
                 LibraryDemo.sessionMachineNames.forEach { name in connect(machines.first { $0.name == name }) }
                 // AC6: what ⌘2 does (the same call as the menu item), once the tabs are up.

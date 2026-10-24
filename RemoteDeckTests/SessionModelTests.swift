@@ -115,12 +115,15 @@ final class FakeSurface: SessionSurface {
     let log: SessionLog
     weak var session: SessionModel?
     static let release: [ClientMessage] = [.keyEvent(down: false, key: Keysym.altL)]
+    /// Runs as the release starts (the assistant's state at that moment, T5.1).
+    var onRelease: (() -> Void)?
 
     init(log: SessionLog) { self.log = log }
 
     func startCapture() { log.append("capture") }
 
     func releaseCapture() {
+        onRelease?()
         log.append("release")
         session?.sendInput(Self.release)
     }
@@ -153,6 +156,8 @@ struct SessionModelTests {
     let machine: Machine
     /// `SessionModel.surface` is weak, as the real view owns itself: the test keeps its fakes alive.
     let surfaces = SurfaceHolder()
+    /// The reconnect delay (T5.1) only ends when a test fires it.
+    let reconnectClock = FakeReachabilityClock()
 
     @MainActor final class SurfaceHolder { var all: [FakeSurface] = [] }
 
@@ -171,7 +176,8 @@ struct SessionModelTests {
         -> (SessionModel, FakeSurface, Counter) {
         let counter = Counter()
         let model = SessionModel(machine: machine, context: context, passwords: passwords, display: nil,
-                                 clock: clock.clock, pasteboard: pasteboard, clipboardPollInterval: nil) { _ in
+                                 clock: clock.clock, pasteboard: pasteboard, clipboardPollInterval: nil,
+                                 reconnectClock: reconnectClock) { _ in
             defer { counter.value += 1 }
             return fakes[min(counter.value, fakes.count - 1)]
         }
@@ -304,8 +310,8 @@ struct SessionModelTests {
         model.windowKeyChanged(true)
         #expect(await waitUntilAsync { await first.sharedTexts == ["local"] })   // and stuck there
         await first.fail(.network("gone"))
-        #expect(await waitUntil { model.failure == .connectionLost })
-        model.connect()
+        #expect(await waitUntil { model.phase == .waiting(.retryDelay) && reconnectClock.pendingCount == 1 })
+        reconnectClock.fire(.seconds(2))   // the automatic attempt (T5.1)
         #expect(await waitUntilAsync { await second.hasEvents })
         #expect(await second.clipboardSharing == [true])
         await first.setShareHangs(false)
@@ -335,24 +341,29 @@ struct SessionModelTests {
         #expect(await fake.sent.count == 1)
     }
 
-    @Test func connectionLostReleasesBeforeClosingAndOffersReconnect() async throws {
+    /// A drop releases the input before closing, records `dropped`, and waits for the automatic
+    /// attempt (T5.1) without a banner; Reconnect from there starts a new connection and record.
+    @Test func connectionLostReleasesBeforeClosingAndWaitsToReconnect() async throws {
         let first = FakeSessionConnection(log: log)
         let second = FakeSessionConnection(log: log)
         let (model, _, counter) = session([first, second])
         try await connectToFirstFrame(model, first)
 
         await first.fail(.connectionClosed)
-        #expect(await waitUntil { model.failure == .connectionLost })
+        #expect(await waitUntil { model.phase == .waiting(.retryDelay) })
         #expect(await waitUntil { log.all.last == "close" })
         #expect(log.all == ["connect", "capture", "release", "send 1", "close"])
-        #expect(model.failure?.action == .reconnect)
-        #expect(model.failure?.message(english) == "Connection lost")
+        #expect(model.failure == nil)
+        #expect(model.overlay == .reconnecting)
+        #expect(SessionFailure.connectionLost.action == .reconnect)
+        #expect(SessionFailure.connectionLost.message(english) == "Connection lost")
         #expect(try records().first?.outcomeValue == .dropped)
         #expect(await waitUntil { (try? records().first?.bytesReceived) == 4242 })
 
-        // Reconnect: a new connection and a new record.
-        model.connect()
-        #expect(counter.value == 2)
+        // The automatic attempt (the overlay offers no Reconnect): a new connection and a new record.
+        #expect(await waitUntil { reconnectClock.pending(.seconds(2)) == 1 })
+        reconnectClock.fire(.seconds(2))
+        #expect(await waitUntil { counter.value == 2 })
         #expect(await waitUntilAsync { await second.hasEvents })
         await second.emit(frame)
         #expect(await waitUntil { model.phase == .connected })
@@ -365,7 +376,8 @@ struct SessionModelTests {
         let (model, _, _) = session([fake])
         try await connectToFirstFrame(model, fake)
         await fake.close()   // the stream finishes with nil, but the user did not ask
-        #expect(await waitUntil { model.failure == .connectionLost })
+        #expect(await waitUntil { model.phase == .waiting(.retryDelay) })
+        #expect(try records().first?.outcomeValue == .dropped)
     }
 
     // MARK: Cancel
@@ -446,16 +458,19 @@ struct SessionModelTests {
         #expect(await fake.sent.isEmpty)
     }
 
-    /// Retry while the failed attempt is still tearing down: the failed record still gets its bytes.
+    /// Reconnect from the banner while the failed attempt is still tearing down: the failed record
+    /// still gets its bytes. (A loss before the first frame, so the banner shows at once: after it,
+    /// the automatic attempt comes first, T5.1.)
     @Test func retryDuringTheFailureTeardownKeepsTheBytes() async throws {
         let first = FakeSessionConnection(log: log, sendDelay: .milliseconds(300))
         let second = FakeSessionConnection(log: log, hangs: true)
         let (model, _, _) = session([first, second])
-        try await connectToFirstFrame(model, first)
+        model.connect()
+        #expect(await waitUntilAsync { await first.hasEvents })
         await first.fail(.connectionClosed)
         #expect(await waitUntil { model.failure == .connectionLost })
         clock.now += 1
-        model.connect()   // before the release has been written
+        model.connect()   // the banner's Reconnect, before the release has been written
         #expect(!log.all.contains("close"))
         #expect(await waitUntil { log.all.contains("close") })
         // The bytes are read from the connection after its close: poll for them (fails if never set).

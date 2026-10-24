@@ -21,8 +21,17 @@ final class FakePasswordStore: MachinePasswordStore {
     var deleteError: KeychainError?
     private(set) var log: [String] = []
 
+    /// Thrown by reads that may not show a dialog (as the Keychain does with
+    /// errSecInteractionNotAllowed when the item would need one).
+    var interactionRequiredError: KeychainError?
+
     func password(for machineID: UUID, scope: PasswordScope) throws(KeychainError) -> String? {
-        log.append("read.\(scope)")
+        try password(for: machineID, scope: scope, allowsInteraction: true)
+    }
+
+    func password(for machineID: UUID, scope: PasswordScope, allowsInteraction: Bool) throws(KeychainError) -> String? {
+        log.append(allowsInteraction ? "read.\(scope)" : "read.\(scope).noUI")
+        if !allowsInteraction, let interactionRequiredError { throw interactionRequiredError }
         if let readError { throw readError }
         if scope == .synced, let syncedReadError { throw syncedReadError }
         return scope == .synced ? items[machineID] : localItems[machineID]
