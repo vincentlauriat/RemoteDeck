@@ -34,3 +34,11 @@ with Python's `zlib`, independently of RFBKit. Regenerate from `Packages/RFBKit`
 ```bash
 python3 Tests/RFBKitTests/Vectors/generate_clipboard_vectors.py > Tests/RFBKitTests/ClipboardVectors.swift
 ```
+
+# Fuzz seeds
+
+`ParserFuzzTests` (T5.5) uses `DecoderVectors.all`, `ClipboardVectors.server` and `AuthVectors.appleDH`
+as its seed corpus: `StreamIndex` maps the fields of each valid stream so they can be mutated one by
+one. Regenerating a vector changes the fuzz inputs derived from it, so a seed printed before may no
+longer replay the same input; inputs the fuzzer found are kept as literal bytes in
+`FuzzRegressionTests.swift` for that reason.

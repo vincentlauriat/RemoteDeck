@@ -9,6 +9,11 @@ import Foundation
 /// against a limit as soon as it is parsed, before its payload is awaited, so the buffer never grows
 /// beyond the largest valid rectangle (bounded by the framebuffer size) plus one chunk.
 ///
+/// The region copies one `receive` call returns add up to at most `maxCopiedFramebuffersPerCall`
+/// framebuffers: a hostile server can repaint the whole screen in 20 bytes, so a 64 KiB chunk of
+/// such updates would otherwise return thousands of framebuffer copies at once. Past three
+/// framebuffers' worth, the updates of the call are merged into one, handed out when the call ends.
+///
 /// The decoder assumes the server sends `PixelFormat.bgra32`, which `RFBConnection.startSession`
 /// requests before any update. It is not `Sendable` (it holds zlib state): keep it on one thread.
 public struct ServerMessageDecoder {
@@ -45,6 +50,24 @@ public struct ServerMessageDecoder {
     /// Bytes received but not yet parsed.
     var bufferedCount: Int { buffer.count - readIndex }
 
+    /// Changed rectangles decoded but not yet handed out in an update.
+    var pendingRegionCount: Int { dirty.count }
+
+    /// The region pixels one `receive` call returns add up to at most this many framebuffers (of the
+    /// largest size the framebuffer had during the call): three framebuffers of updates as they come
+    /// (a server answering a few queued requests at once), then at most one merged update.
+    static let maxCopiedFramebuffersPerCall = 4
+
+    // Per-call copy budget (see the type's documentation).
+    /// Region pixels handed out so far by the current `receive` call.
+    private var copiedThisCall = 0
+    /// Largest pixel count the framebuffer had during the current call.
+    private var largestThisCall = 0
+    /// A FramebufferUpdate completed past the budget: its regions wait in `dirty` for the merged update.
+    private var mergedMessageCompleted = false
+    /// Regions were dropped at a resize past the budget: the merged update repaints the whole framebuffer.
+    private var repaintAll = false
+
     /// Processes bytes from the server. After an error, every later call throws it again.
     public mutating func receive(_ bytes: some Sequence<UInt8>) throws(RFBError) -> [RFBEvent] {
         if case .failed(let error) = state { throw error }
@@ -54,8 +77,11 @@ public struct ServerMessageDecoder {
         }
         buffer.append(contentsOf: bytes)
         var events: [RFBEvent] = []
+        copiedThisCall = 0
+        largestThisCall = framebuffer.width * framebuffer.height
         do throws(RFBError) {
             while try advance(&events) {}
+            flushMergedUpdate(&events)
         } catch {
             state = .failed(error)
             buffer = []
@@ -123,7 +149,11 @@ public struct ServerMessageDecoder {
 
         case .rectangleHeader(let remaining):
             guard remaining > 0 else {
-                events.append(.framebufferUpdate(takeUpdate()))
+                if isMerging || !withinBudget(dirtyArea) {
+                    mergedMessageCompleted = true   // handed out when the call ends
+                } else {
+                    events.append(.framebufferUpdate(takeUpdate()))
+                }
                 state = .messageType
                 return true
             }
@@ -273,10 +303,42 @@ public struct ServerMessageDecoder {
 
     private mutating func resize(width: Int, height: Int, _ events: inout [RFBEvent]) throws(RFBError) {
         guard width != framebuffer.width || height != framebuffer.height else { return }
-        // Regions decoded so far refer to the old size: hand them out first.
-        if !dirty.isEmpty { events.append(.framebufferUpdate(takeUpdate(completesMessage: false))) }
+        // Regions decoded so far refer to the old size: hand them out first, or, past the budget,
+        // drop them and repaint the whole framebuffer in the merged update.
+        if !dirty.isEmpty {
+            if isMerging || !withinBudget(dirtyArea) {
+                dirty.removeAll(keepingCapacity: true)
+                dirtyArea = 0
+                repaintAll = true
+            } else {
+                events.append(.framebufferUpdate(takeUpdate(completesMessage: false)))
+            }
+        }
         try framebuffer.resize(width: width, height: height)
+        largestThisCall = max(largestThisCall, width * height)
         events.append(.desktopResized(width: width, height: height))
+    }
+
+    private var isMerging: Bool { mergedMessageCompleted || repaintAll }
+
+    /// Whether `area` more pixels can be handed out as they come, keeping one framebuffer of the
+    /// budget for the merged update.
+    private func withinBudget(_ area: Int) -> Bool {
+        copiedThisCall + area <= (Self.maxCopiedFramebuffersPerCall - 1) * largestThisCall
+    }
+
+    /// Ends a call that went past the budget with one update holding everything merged (the whole
+    /// framebuffer after a dropped resize). It completes a message if a merged one did, so the
+    /// consumer asks for the next update.
+    private mutating func flushMergedUpdate(_ events: inout [RFBEvent]) {
+        guard isMerging else { return }
+        if repaintAll {
+            dirty = [RFBRect(x: 0, y: 0, width: framebuffer.width, height: framebuffer.height)]
+            dirtyArea = framebuffer.width * framebuffer.height
+        }
+        events.append(.framebufferUpdate(takeUpdate(completesMessage: mergedMessageCompleted)))
+        mergedMessageCompleted = false
+        repaintAll = false
     }
 
     /// Records a changed rectangle. A hostile server can repaint the whole screen many times in one
@@ -305,6 +367,7 @@ public struct ServerMessageDecoder {
 
     private mutating func takeUpdate(completesMessage: Bool = true) -> FramebufferUpdate {
         let regions = dirty.map { FramebufferUpdate.Region(rect: $0, pixels: framebuffer.copyPixels(in: $0)) }
+        copiedThisCall += dirtyArea
         dirty.removeAll(keepingCapacity: true)
         dirtyArea = 0
         return FramebufferUpdate(width: framebuffer.width, height: framebuffer.height, regions: regions,
