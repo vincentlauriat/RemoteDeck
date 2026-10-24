@@ -99,10 +99,10 @@ struct LibraryStoreTests {
 
     @MainActor
     @Test func inMemoryOpenUsesNoFile() {
-        let (container, isInMemory, error) = LibraryStore.open(inMemory: true)
-        #expect(error == nil)
-        #expect(isInMemory)
-        let inMemory = container.configurations.map(\.isStoredInMemoryOnly)
+        let opened = LibraryStore.open(inMemory: true)
+        #expect(opened.error == nil)
+        #expect(opened.isInMemory)
+        let inMemory = opened.container.configurations.map(\.isStoredInMemoryOnly)
         #expect(inMemory == [true, true])
     }
 }

@@ -14,7 +14,7 @@ protocol APIKeyStore {
 }
 
 struct KeychainAPIKeyStore: APIKeyStore {
-    var keychain = KeychainStore()
+    var keychain = KeychainStore.app
 
     func readKey() throws(KeychainError) -> String? { try keychain.read(.anthropicAPIKey) }
     func saveKey(_ key: String) throws(KeychainError) { try keychain.save(key, for: .anthropicAPIKey) }

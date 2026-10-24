@@ -1,16 +1,21 @@
 import Foundation
 import SwiftData
 
-/// Migration plan for the SwiftData schema. Empty until V2; CloudKit-synced changes
-/// must stay additive (BackendSchema › Migrations).
+/// Migration plan for the SwiftData schema. CloudKit-synced changes must stay additive
+/// (BackendSchema › Migrations): V1 → V2 only adds the optional `Machine.modifiedAt`.
 public enum RemoteDeckMigrationPlan: SchemaMigrationPlan {
-    public static var schemas: [any VersionedSchema.Type] { [RemoteDeckSchemaV1.self] }
-    public static var stages: [MigrationStage] { [] }
+    public static var schemas: [any VersionedSchema.Type] { [RemoteDeckSchemaV1.self, RemoteDeckSchemaV2.self] }
+    public static var stages: [MigrationStage] {
+        [.lightweight(fromVersion: RemoteDeckSchemaV1.self, toVersion: RemoteDeckSchemaV2.self)]
+    }
 }
 
 /// Builds the app's single `ModelContainer` with two stores: synced and local.
 public enum RemoteDeckSchema {
     public static let syncedConfigurationName = "Synced"
+    /// The one CloudKit container of both apps (Vincent, 2026-10-25): Debug builds reach its
+    /// Development environment, Release builds its Production one.
+    public static let cloudKitContainerIdentifier = "iCloud.fr.vincentlauriat.remotedeck"
     public static let localConfigurationName = "Local"
 
     /// Models stored in the CloudKit-synced store.
@@ -33,7 +38,30 @@ public enum RemoteDeckSchema {
 
     /// One container, two `ModelConfiguration`s. `inMemory` is for tests and previews; otherwise
     /// both stores live in `storeDirectory` (created if needed) under app-specific file names.
-    public static func makeContainer(inMemory: Bool = false, storeDirectory: URL? = nil) throws -> ModelContainer {
+    ///
+    /// `cloudKitContainer` non-nil mirrors the Library store (Machine, MachineGroup) to that
+    /// container's private database (iCloud Sync, T4.3); the History store never leaves this Mac.
+    /// Only a process entitled to the container may pass it (the app, when the setting is on): an
+    /// unentitled one fails to open the store. Ignored in memory.
+    public static func makeContainer(inMemory: Bool = false, storeDirectory: URL? = nil,
+                                     cloudKitContainer: String? = nil) throws -> ModelContainer {
+        try makeContainer(versionedSchema: RemoteDeckSchemaV2.self, syncedModels: syncedModels,
+                          localModels: localModels, inMemory: inMemory, storeDirectory: storeDirectory,
+                          cloudKitContainer: cloudKitContainer)
+    }
+
+    /// The Library store's CloudKit setting: the container's private database, or none. Always explicit:
+    /// `.automatic` would pick the first iCloud container of an entitled process even with sync off.
+    static func libraryCloudKitDatabase(_ container: String?) -> ModelConfiguration.CloudKitDatabase {
+        container.map { .private($0) } ?? .none
+    }
+
+    /// Any schema version's container, with the migration plan: the migration tests write V1 stores.
+    static func makeContainer(versionedSchema: any VersionedSchema.Type,
+                              syncedModels: [any PersistentModel.Type],
+                              localModels: [any PersistentModel.Type],
+                              inMemory: Bool, storeDirectory: URL?,
+                              cloudKitContainer: String?) throws -> ModelContainer {
         let synced: ModelConfiguration
         let local: ModelConfiguration
         if inMemory {
@@ -57,9 +85,7 @@ public enum RemoteDeckSchema {
                 syncedConfigurationName,
                 schema: Schema(syncedModels),
                 url: directory.appending(path: syncedStoreFileName),
-                // Off until T4.3: the iCloud container and its provisioning profile do not exist yet.
-                // T4.3 switches this to `.private("iCloud.…")`.
-                cloudKitDatabase: .none
+                cloudKitDatabase: libraryCloudKitDatabase(cloudKitContainer)
             )
             local = ModelConfiguration(
                 localConfigurationName,
@@ -70,7 +96,7 @@ public enum RemoteDeckSchema {
             )
         }
         return try ModelContainer(
-            for: Schema(versionedSchema: RemoteDeckSchemaV1.self),
+            for: Schema(versionedSchema: versionedSchema),
             migrationPlan: RemoteDeckMigrationPlan.self,
             configurations: [synced, local]
         )

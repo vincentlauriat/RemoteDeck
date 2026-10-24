@@ -142,4 +142,111 @@ struct KeychainStoreTests {
         try store.delete(account, synchronizable: false)
         #expect(try store.read(account, synchronizable: false) == nil)
     }
+
+    // MARK: Data-protection keychain (T4.3)
+
+    @Test func fileKeychainByDefault() {
+        let store = KeychainStore()
+        #expect(!store.usesDataProtectionKeychain)
+        #expect(store.query(for: .anthropicAPIKey)[kSecUseDataProtectionKeychain as String] == nil)
+        // `swift test` runs unsigned: no keychain access group, so the app's rule keeps the file keychain.
+        #expect(!KeychainStore.processHasKeychainAccessGroup)
+    }
+
+    @Test(arguments: [KeychainAccount.machine(UUID()), .anthropicAPIKey])
+    func dataProtectionStoreMarksEveryQuery(_ account: KeychainAccount) {
+        let store = KeychainStore(usesDataProtectionKeychain: true)
+        for synchronizable in [false, true] {
+            #expect(store.query(for: account, synchronizable: synchronizable)[kSecUseDataProtectionKeychain as String] as? Bool == true)
+            let read = store.readQuery(for: account, synchronizable: synchronizable, allowsInteraction: false)
+            #expect(read[kSecUseDataProtectionKeychain as String] as? Bool == true)
+            #expect(store.addAttributes(for: account, synchronizable: synchronizable, data: Data())[kSecUseDataProtectionKeychain as String] as? Bool == true)
+        }
+        #expect(store.deleteQuery(for: account)[kSecUseDataProtectionKeychain as String] as? Bool == true)
+        // The copy an older build left in the file keychain: same identity, without the flag.
+        let legacy = store.legacyQuery(for: account, synchronizable: false)
+        #expect(legacy[kSecUseDataProtectionKeychain as String] == nil)
+        #expect(legacy[kSecAttrAccount as String] as? String == account.name)
+        #expect(legacy[kSecAttrSynchronizable as String] as? Bool == false)
+    }
+
+    /// Without the data-protection keychain there is nothing to migrate (and nothing is touched).
+    @Test func fileKeychainStoreHasNoLegacyItemToMigrate() throws {
+        let store = KeychainStore(service: "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)")
+        defer { try? store.delete(.anthropicAPIKey) }
+        try store.save("sk-ant-x", for: .anthropicAPIKey)
+        #expect(try store.migrateLegacyItem(.anthropicAPIKey) == false)
+        #expect(try store.read(.anthropicAPIKey) == "sk-ant-x")
+    }
+
+    /// Review M3: the file-keychain fallback read carries the non-interactive context too.
+    @Test func legacyFallbackReadCanBeNonInteractive() {
+        let store = KeychainStore(usesDataProtectionKeychain: true)
+        let quiet = store.legacyReadQuery(for: .anthropicAPIKey, allowsInteraction: false)
+        #expect((quiet[kSecUseAuthenticationContext as String] as? LAContext)?.interactionNotAllowed == true)
+        #expect(quiet[kSecUseDataProtectionKeychain as String] == nil)
+        #expect(quiet[kSecReturnData as String] as? Bool == true)
+        #expect(store.legacyReadQuery(for: .anthropicAPIKey, allowsInteraction: true)[kSecUseAuthenticationContext as String] == nil)
+    }
+
+    /// Review 6: Debug takes items from the shared service; the source copy goes only when asked.
+    @Test func adoptCopiesThenRemovesTheSourceOnlyWhenAsked() throws {
+        let source = KeychainStore(service: "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)")
+        let target = KeychainStore(service: "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString).dev")
+        let machine = KeychainAccount.machine(UUID())
+        defer {
+            for store in [source, target] {
+                try? store.delete(machine)
+                try? store.delete(.anthropicAPIKey)
+            }
+        }
+        try source.save("pw", for: machine, synchronizable: false)
+        try source.save("sk-ant-k", for: .anthropicAPIKey)
+
+        #expect(try target.adopt(machine, from: source, removingSource: true))
+        #expect(try target.read(machine, synchronizable: false) == "pw")
+        #expect(try source.read(machine, synchronizable: false) == nil)
+
+        #expect(try target.adopt(.anthropicAPIKey, from: source, removingSource: false))
+        #expect(try target.read(.anthropicAPIKey) == "sk-ant-k")
+        #expect(try source.read(.anthropicAPIKey) == "sk-ant-k")
+
+        // An item the target already has is never overwritten.
+        try source.save("other", for: .anthropicAPIKey)
+        #expect(try target.adopt(.anthropicAPIKey, from: source, removingSource: true) == false)
+        #expect(try target.read(.anthropicAPIKey) == "sk-ant-k")
+        #expect(try source.read(.anthropicAPIKey) == "other")
+    }
+
+    // MARK: Local → synced migration rules (shared by the app and its tests)
+
+    @Test func migrationRules() {
+        var local: [UUID: String] = [:]
+        var synced: [UUID: String] = [:]
+        var dropsWrites = false
+        let moved = UUID(), kept = UUID(), already = UUID()
+        local[moved] = "m"; local[kept] = "k"; local[already] = "old"; synced[already] = "new"
+        func run(_ ids: [UUID]) -> [UUID] {
+            LocalPasswordMigration.migrate(ids,
+                readLocal: { local[$0] }, readSynced: { synced[$0] },
+                writeSynced: { secret, id in if !dropsWrites { synced[id] = secret } },
+                deleteLocal: { local[$0] = nil })
+        }
+        #expect(run([moved, already]) == [moved, already])
+        #expect(synced[moved] == "m" && local[moved] == nil)
+        #expect(synced[already] == "new" && local[already] == nil)
+        dropsWrites = true
+        #expect(run([kept]).isEmpty)
+        #expect(local[kept] == "k")
+    }
+
+    /// Unentitled (`swift test`): the synced save fails, so nothing moves and the local item stays.
+    @Test func liveMigrationKeepsLocalItemsWithoutTheEntitlement() throws {
+        let store = KeychainStore(service: "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)")
+        let id = UUID()
+        defer { try? store.delete(.machine(id)) }
+        try store.save("pw", for: .machine(id), synchronizable: false)
+        #expect(store.migrateLocalMachinePasswordsToSynced([id]).isEmpty)
+        #expect(try store.read(.machine(id), synchronizable: false) == "pw")
+    }
 }

@@ -146,8 +146,8 @@ struct OnboardingTests {
         #expect(await failing.calls == 2)
     }
 
-    /// iCloud Sync is T4.3: the offer is shown disabled, and finishing never turns sync on.
-    @Test func finishingLeavesICloudSyncOff() throws {
+    /// "Not now" on the iCloud page leaves iCloud Sync off.
+    @Test func notNowLeavesICloudSyncOff() throws {
         defer { cleanUp() }
         let settings = makeSettings()
         let model = try #require(OnboardingLaunch.firstRun.makeModel(settings: settings, authorizer: FakeAuthorizer()))
@@ -156,6 +156,38 @@ struct OnboardingTests {
         model.next()
         #expect(model.outcome == .finished)
         #expect(!settings.iCloudSyncEnabled)
+        #expect(!model.enabledSync)
+    }
+
+    /// "Enable" (T4.3) turns iCloud Sync on, persisted, and finishes like "Not now".
+    @Test func enableTurnsICloudSyncOnAndFinishes() throws {
+        defer { cleanUp() }
+        let settings = makeSettings()
+        let model = try #require(OnboardingLaunch.firstRun.makeModel(settings: settings, authorizer: FakeAuthorizer()))
+        model.enableSync()   // not on the iCloud page yet: nothing
+        #expect(!settings.iCloudSyncEnabled && model.outcome == nil)
+        model.next()
+        model.next()
+        model.enableSync()
+        #expect(model.outcome == .finished)
+        #expect(model.opensDiscovery)
+        #expect(model.enabledSync)
+        #expect(settings.iCloudSyncEnabled)
+        #expect(settings.onboardingCompleted)
+        #expect(AppSettings(defaults: defaults, apiKeys: keychain).iCloudSyncEnabled)
+    }
+
+    /// `-LibraryDemo onboarding` writes nothing, Enable included.
+    @Test func demoEnableWritesNothing() throws {
+        defer { cleanUp() }
+        let settings = makeSettings()
+        let model = try #require(OnboardingLaunch.demo.makeModel(settings: settings, authorizer: FakeAuthorizer()))
+        model.next()
+        model.next()
+        model.enableSync()
+        #expect(model.outcome == .finished)
+        #expect(!settings.iCloudSyncEnabled)
+        #expect(defaults.object(forKey: AppSettings.Key.iCloudSyncEnabled) == nil)
     }
 }
 
@@ -165,10 +197,58 @@ struct LibraryStoreFallbackTests {
     struct DiskFailure: Error {}
 
     @Test func failingOnDiskStoreFallsBackToMemoryWithTheError() {
-        let (container, isInMemory, error) = LibraryStore.open(inMemory: false, onDisk: { throw DiskFailure() })
-        #expect(isInMemory)
-        #expect(error is DiskFailure)
-        #expect(container.configurations.map(\.isStoredInMemoryOnly) == [true, true])
-        #expect(LibraryStore.passwordStore(isInMemory: isInMemory) is InMemoryPasswordStore)
+        let opened = LibraryStore.open(inMemory: false, onDisk: { _ in throw DiskFailure() })
+        #expect(opened.isInMemory)
+        #expect(opened.error is DiskFailure)
+        #expect(!opened.syncsWithICloud)
+        #expect(opened.container.configurations.map(\.isStoredInMemoryOnly) == [true, true])
+        #expect(LibraryStore.passwordStore(isInMemory: opened.isInMemory) is InMemoryPasswordStore)
+    }
+
+    /// iCloud Sync (T4.3): a CloudKit store that fails to open falls back to the same files without
+    /// CloudKit (not to the in-memory banner), and says why.
+    @Test func failingCloudKitStoreOpensTheLocalStore() throws {
+        let directory = URL.temporaryDirectory.appending(path: "RemoteDeckSyncOpen-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var asked: [String?] = []
+        let opened = LibraryStore.open(inMemory: false, cloudKitContainer: "iCloud.example") { container in
+            asked.append(container)
+            if container != nil { throw DiskFailure() }
+            return try RemoteDeckSchema.makeContainer(storeDirectory: directory)
+        }
+        #expect(asked == ["iCloud.example", nil])
+        #expect(!opened.isInMemory && opened.error == nil)
+        #expect(!opened.syncsWithICloud)
+        #expect(opened.syncError is DiskFailure)
+        #expect(opened.container.configurations.map(\.isStoredInMemoryOnly) == [false, false])
+    }
+
+    @Test func cloudKitStoreOpensWhenItCan() throws {
+        let directory = URL.temporaryDirectory.appending(path: "RemoteDeckSyncOpen-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var asked: [String?] = []
+        // The stand-in opens a local store: this test process must never open a CloudKit one.
+        let opened = LibraryStore.open(inMemory: false, cloudKitContainer: "iCloud.example") { container in
+            asked.append(container)
+            return try RemoteDeckSchema.makeContainer(storeDirectory: directory)
+        }
+        #expect(asked == ["iCloud.example"])
+        #expect(opened.syncsWithICloud && opened.syncError == nil && !opened.isInMemory)
+    }
+
+    /// The store syncs only with the setting on, on disk, in a build signed with the container.
+    @Test func cloudKitContainerNeedsTheSettingTheDiskAndTheEntitlement() {
+        let id = RemoteDeckSchema.cloudKitContainerIdentifier
+        #expect(LibraryStore.cloudKitContainer(syncEnabled: true, isInMemory: false, isEntitled: true) == id)
+        #expect(LibraryStore.cloudKitContainer(syncEnabled: false, isInMemory: false, isEntitled: true) == nil)
+        #expect(LibraryStore.cloudKitContainer(syncEnabled: true, isInMemory: true, isEntitled: true) == nil)
+        #expect(LibraryStore.cloudKitContainer(syncEnabled: true, isInMemory: false, isEntitled: false) == nil)
+    }
+
+    /// The hosted tests run in memory, so the app they host never opened a CloudKit store.
+    @Test func inMemoryNeverSyncs() {
+        let opened = LibraryStore.open(inMemory: true, cloudKitContainer: RemoteDeckSchema.cloudKitContainerIdentifier,
+                                       onDisk: { _ in Issue.record("on-disk store opened"); throw DiskFailure() })
+        #expect(opened.isInMemory && !opened.syncsWithICloud && opened.error == nil)
     }
 }
