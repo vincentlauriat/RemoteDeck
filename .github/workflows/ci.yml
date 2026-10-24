@@ -1,9 +1,8 @@
 name: CI
 
+# Manual only: PRs merge on green local suites (no paid macOS runners).
 on:
-  pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 # Least privilege (T5.3 L5): the job only reads the repository.
 permissions:

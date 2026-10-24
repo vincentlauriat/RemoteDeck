@@ -154,7 +154,7 @@ Sources: the computer use tool, thinking, prompt caching, stop reasons, refusals
 
 - **Environments:** development (Xcode Debug, separate bundle id `.dev` and CloudKit development environment) and production (Release, CloudKit production). No staging: solo tool.
 - **Test hosts:** one local Mac with Remote Management enabled, plus the Anthropic computer use reference container running locally in Docker (host port 5901 → container 5900, since the dev Mac's own Screen Sharing holds 5900). Without Docker, `AnthropicVMLoopbackTests` (RFBKit) plays an x11vnc-shaped server: `RFB 003.008`, type [1] (and a [2]-only variant), ServerInit 1024 × 768, one update, then checks the KeyEvent bytes typed with the `.x11` profile.
-- **CI:** GitHub Actions on `macos-latest` running `swift test` for `RFBKit`, `RemoteDeckCore` and `ClaudeKit`, then `xcodebuild test` for the app scheme.
+- **CI:** GitHub Actions on `macos-latest` running `swift test` for `RFBKit`, `RemoteDeckCore` and `ClaudeKit`, then `xcodebuild test` for the app scheme. Manual only (`workflow_dispatch`) since 2026-10-24: paid macOS runners are not used, and a PR merges once those same four suites pass locally after a rebase on `main`.
 - **Release:** `Scripts/release.sh` → signed, notarized and stapled DMG in `release/` → `appcast.xml` → GitHub Release.
 
 ## Key technical decisions and trade-offs
