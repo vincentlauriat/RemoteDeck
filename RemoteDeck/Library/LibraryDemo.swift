@@ -435,5 +435,48 @@ enum LibraryDemo {
     /// then, after Connect anyway, the orange toolbar badge and the shared clipboard off.
     static var showsPublicAddress: Bool { mode == "public" }
     static let publicMachineName = "Cloud Mac"
+
+    // MARK: iCloud Sync (`-LibraryDemo sync | sync-signed-out`)
+
+    /// `sync` (T4.3): the Settings Window opens on a library that syncs (account available, a
+    /// "Syncing…" import, then "Last synced"); `sync-signed-out`: no iCloud account, sync off and the
+    /// switch disabled ("Sign in to iCloud to sync your library"). The account status is fake, no
+    /// `CKContainer` is ever made, the store stays in memory and the settings live in a throwaway
+    /// defaults domain, so the Debug app's real iCloud Sync setting is never written.
+    static var showsSync: Bool { mode == "sync" || mode == "sync-signed-out" }
+    static var syncsInDemo: Bool { mode == "sync" }
+    static let syncDefaultsSuite = "fr.vincentlauriat.remotedeck.demo.sync"
+
+    /// A fresh defaults domain for the sync modes, with the setting each one shows.
+    static func syncDefaults() -> UserDefaults {
+        let defaults = UserDefaults(suiteName: syncDefaultsSuite) ?? .standard
+        defaults.removePersistentDomain(forName: syncDefaultsSuite)
+        defaults.set(syncsInDemo, forKey: AppSettings.Key.iCloudSyncEnabled)
+        defaults.set(true, forKey: AppSettings.Key.onboardingCompleted)
+        return defaults
+    }
+
+    struct AccountStatus: CloudAccountStatusProviding {
+        let status: CloudAccountStatus
+
+        func accountStatus() async -> CloudAccountStatus {
+            try? await Task.sleep(for: .milliseconds(500))
+            return status
+        }
+    }
+
+    static var accountStatus: AccountStatus { AccountStatus(status: syncsInDemo ? .available : .noAccount) }
+
+    /// `sync`: one import that runs 2 s, then ends: "Syncing…", then "Last synced".
+    static func simulateSync(_ sync: LibrarySync) {
+        guard syncsInDemo else { return }
+        let id = UUID()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            sync.handle(SyncEvent(id: id, kind: .import, endDate: nil, succeeded: false))
+            try? await Task.sleep(for: .seconds(2))
+            sync.handle(SyncEvent(id: id, kind: .import, endDate: .now, succeeded: true))
+        }
+    }
 }
 #endif

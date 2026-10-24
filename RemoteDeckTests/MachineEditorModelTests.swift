@@ -38,6 +38,22 @@ struct MachineEditorModelTests {
 
     // MARK: Create (PRD acceptance criterion 1)
 
+    /// T4.3: every save stamps `modifiedAt`, which orders duplicates in the iCloud Sync merge.
+    @Test func saveStampsModifiedAt() throws {
+        let model = editor()
+        fill(model)
+        let before = Date.now
+        let machine = try #require(model.save())
+        let created = try #require(machine.modifiedAt)
+        #expect(created >= before)
+
+        let edit = editor(machine)
+        edit.name = "Mini 2"
+        _ = try #require(edit.save())
+        #expect(try #require(machine.modifiedAt) >= created)
+        #expect(try machines().first?.modifiedAt == machine.modifiedAt)
+    }
+
     @Test func createSavesMachineAndPutsPasswordInKeychainOnly() throws {
         let model = editor()
         fill(model, name: "  Mini  ", host: " mini.local ")

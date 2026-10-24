@@ -65,16 +65,17 @@ extension MachinePasswordStore {
         return .synced
     }
 
-    /// T4.3 hook: once the entitlement exists, moves every local password to iCloud Keychain.
-    /// Returns the migrated ids; a machine whose synced save still fails keeps its local item.
+    /// T4.3: moves local passwords (the -34018 fallback of an unentitled build) to iCloud Keychain,
+    /// with the rules of `LocalPasswordMigration` (read back before any delete; an existing synced
+    /// item wins).
     @discardableResult
     func migrateLocalPasswordsToSynced(machineIDs: [UUID]) -> [UUID] {
-        machineIDs.filter { id in
-            guard let local = try? password(for: id, scope: .local) else { return false }
-            guard (try? setPassword(local, for: id, scope: .synced)) != nil else { return false }
-            try? deletePassword(for: id, scope: .local)
-            return true
-        }
+        LocalPasswordMigration.migrate(
+            machineIDs,
+            readLocal: { id throws(KeychainError) in try password(for: id, scope: .local) },
+            readSynced: { id throws(KeychainError) in try password(for: id, scope: .synced) },
+            writeSynced: { secret, id throws(KeychainError) in try setPassword(secret, for: id, scope: .synced) },
+            deleteLocal: { id throws(KeychainError) in try deletePassword(for: id, scope: .local) })
     }
 }
 
@@ -247,8 +248,29 @@ enum TestConnectionState: Equatable, Sendable {
 
 // MARK: - Store
 
-/// Opens the app's SwiftData container (two stores, CloudKit off until T4.3).
+/// Opens the app's SwiftData container (two stores; the Library one mirrored to CloudKit when iCloud
+/// Sync is on, T4.3).
 enum LibraryStore {
+    /// What `open` produced.
+    struct Opened {
+        let container: ModelContainer
+        /// In memory: requested, or the on-disk store failed (`error`).
+        let isInMemory: Bool
+        /// Why the on-disk store could not be opened at all.
+        let error: (any Error)?
+        /// The Library store mirrors to `cloudKitContainer`.
+        let syncsWithICloud: Bool
+        /// Why the CloudKit store failed to open, when the local one then opened instead.
+        let syncError: (any Error)?
+    }
+
+    /// The CloudKit container the Library store opens with: only with the setting on, an on-disk
+    /// library, and a signature carrying the container (never under the hosted tests, a demo mode,
+    /// an ad-hoc or CI build).
+    static func cloudKitContainer(syncEnabled: Bool, isInMemory: Bool, isEntitled: Bool) -> String? {
+        syncEnabled && !isInMemory && isEntitled ? RemoteDeckSchema.cloudKitContainerIdentifier : nil
+    }
+
     /// True when the process is an XCTest / Swift Testing host. The hosted `RemoteDeckTests` run
     /// inside the app, whose `App.init` would otherwise open the user's on-disk store.
     static func isRunningTests(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
@@ -257,26 +279,40 @@ enum LibraryStore {
             || environment["XCTestBundlePath"] != nil
     }
 
-    /// The container, whether it is in memory (requested, or the on-disk store failed), and the
-    /// error if the on-disk store could not be opened. In that case the library runs on an empty
-    /// in-memory store so the app stays usable, and the window says so in a persistent banner.
-    /// `onDisk` is injectable so tests can reach the fallback.
-    static func open(inMemory: Bool, onDisk: () throws -> ModelContainer = { try RemoteDeckSchema.makeContainer() })
-        -> (container: ModelContainer, isInMemory: Bool, error: (any Error)?) {
-        if !inMemory {
+    /// Opens the on-disk stores, with CloudKit when `cloudKitContainer` is set. If the CloudKit store
+    /// fails, the same files open without it (`syncError`: Settings shows "iCloud unavailable"); if
+    /// the on-disk store cannot be opened at all, the library runs on an empty in-memory store so the
+    /// app stays usable, and the window says so in a persistent banner. `onDisk` (given the CloudKit
+    /// container or nil) is injectable so tests can reach both fallbacks.
+    static func open(inMemory: Bool, cloudKitContainer: String? = nil,
+                     onDisk: (String?) throws -> ModelContainer = { try RemoteDeckSchema.makeContainer(cloudKitContainer: $0) })
+        -> Opened {
+        guard !inMemory else {
+            return Opened(container: inMemoryContainer(), isInMemory: true, error: nil, syncsWithICloud: false, syncError: nil)
+        }
+        var syncError: (any Error)?
+        if let cloudKitContainer {
             do {
-                return (try onDisk(), false, nil)
+                return Opened(container: try onDisk(cloudKitContainer), isInMemory: false, error: nil,
+                              syncsWithICloud: true, syncError: nil)
             } catch {
-                return (inMemoryContainer(), true, error)
+                syncError = error
             }
         }
-        return (inMemoryContainer(), true, nil)
+        do {
+            return Opened(container: try onDisk(nil), isInMemory: false, error: nil, syncsWithICloud: false,
+                          syncError: syncError)
+        } catch {
+            return Opened(container: inMemoryContainer(), isInMemory: true, error: error, syncsWithICloud: false,
+                          syncError: syncError)
+        }
     }
 
     /// Passwords follow the library: an in-memory library gets an in-memory password store,
-    /// otherwise its machines would leave orphaned Keychain items behind.
+    /// otherwise its machines would leave orphaned Keychain items behind. The on-disk library uses
+    /// the data-protection keychain when the signature allows it (T4.3).
     static func passwordStore(isInMemory: Bool) -> any MachinePasswordStore {
-        isInMemory ? InMemoryPasswordStore() : KeychainStore()
+        isInMemory ? InMemoryPasswordStore() : KeychainStore.app
     }
 
     private static func inMemoryContainer() -> ModelContainer {
@@ -315,5 +351,42 @@ extension KeychainError {
     func passwordMessage(deleting: Bool, _ t: (String) -> String) -> String {
         t(deleting ? "password_delete_failed" : "password_save_failed")
             .replacingOccurrences(of: "%@", with: String(status))
+    }
+}
+
+extension KeychainStore {
+    /// The Keychain service of this build: Debug (`….remotedeck.dev`) never reads or writes the Release
+    /// app's items, which share the keychain access group (T4.3 review).
+    static var appService: String {
+        #if DEBUG
+        KeychainStore.defaultService + ".dev"
+        #else
+        KeychainStore.defaultService
+        #endif
+    }
+
+    /// The app's store: the data-protection keychain when this build is signed with a keychain access
+    /// group (T4.3), the file keychain otherwise (ad-hoc or CI builds).
+    static var app: KeychainStore {
+        KeychainStore(service: appService, usesDataProtectionKeychain: KeychainStore.processHasKeychainAccessGroup)
+    }
+
+    /// Launch migration of the on-disk app (T4.3), run detached: no read may hold the main actor on a
+    /// file-keychain prompt. The API key and local machine passwords an older build left in the file
+    /// keychain move to the data-protection keychain, local machine passwords to iCloud Keychain; each
+    /// item is deleted only after its new copy is read back. Debug first takes its own machines'
+    /// items from the shared service it used before T4.3 (moved: those machines are Debug's), and a
+    /// copy of the API key (left in place: it may be the Release app's). Without a keychain access
+    /// group (ad-hoc, CI) nothing moves.
+    func migrateAtLaunch(machineIDs: [UUID]) {
+        guard usesDataProtectionKeychain else { return }
+        if service != KeychainStore.defaultService {
+            // Data-protection store of the old service: also finds (and deletes) its file-keychain copies.
+            let shared = KeychainStore(usesDataProtectionKeychain: true)
+            for id in machineIDs { _ = try? adopt(.machine(id), from: shared, removingSource: true) }
+            _ = try? adopt(.anthropicAPIKey, from: shared, removingSource: false)
+        }
+        _ = try? migrateLegacyItem(.anthropicAPIKey)
+        _ = migrateLocalMachinePasswordsToSynced(machineIDs)
     }
 }

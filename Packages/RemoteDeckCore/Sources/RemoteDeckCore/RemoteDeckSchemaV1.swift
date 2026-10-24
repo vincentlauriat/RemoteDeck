@@ -1,7 +1,9 @@
 import Foundation
 import SwiftData
 
-/// Version 1 of the SwiftData schema (BackendSchema › Tables).
+/// Version 1 of the SwiftData schema, frozen: the shape of the stores written before T4.3, kept
+/// only so `RemoteDeckMigrationPlan` can open them (lightweight migration to V2). Never edit it;
+/// the app's models are `RemoteDeckSchemaV2`.
 ///
 /// Every stored property is optional or defaulted, relationships are optional and
 /// there is no `@Attribute(.unique)`: CloudKit rules, applied to the local models too.
@@ -190,8 +192,3 @@ public enum RemoteDeckSchemaV1: VersionedSchema {
         }
     }
 }
-
-public typealias Machine = RemoteDeckSchemaV1.Machine
-public typealias MachineGroup = RemoteDeckSchemaV1.MachineGroup
-public typealias SessionRecord = RemoteDeckSchemaV1.SessionRecord
-public typealias AssistantAction = RemoteDeckSchemaV1.AssistantAction

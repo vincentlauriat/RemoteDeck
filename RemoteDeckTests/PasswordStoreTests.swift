@@ -78,6 +78,32 @@ struct PasswordStoreRulesTests {
         #expect(store.items[id] == nil)
     }
 
+    /// T4.3: the local item goes only once its synced copy reads back equal.
+    @Test func migrationKeepsTheLocalPasswordWhenTheCopyDoesNotReadBack() {
+        store.localItems[id] = "one"
+        store.dropsSyncedWrites = true
+        #expect(store.migrateLocalPasswordsToSynced(machineIDs: [id]).isEmpty)
+        #expect(store.localItems[id] == "one")
+    }
+
+    /// A synced password already there (maybe newer, from another Mac) is kept; the local copy goes.
+    @Test func migrationNeverOverwritesAnExistingSyncedPassword() {
+        store.localItems[id] = "old-local"
+        store.items[id] = "newer-synced"
+        #expect(store.migrateLocalPasswordsToSynced(machineIDs: [id]) == [id])
+        #expect(store.items[id] == "newer-synced")
+        #expect(store.localItems[id] == nil)
+        #expect(!store.writes.contains("save.synced"))
+    }
+
+    @Test func migrationKeepsTheLocalPasswordWhenTheSyncedReadFails() {
+        store.localItems[id] = "one"
+        store.syncedReadError = .missingEntitlement
+        #expect(store.migrateLocalPasswordsToSynced(machineIDs: [id]).isEmpty)
+        #expect(store.localItems[id] == "one")
+        #expect(store.writes.isEmpty)
+    }
+
     @Test func inMemoryStoreKeepsScopesApart() throws {
         let memory = InMemoryPasswordStore()
         try memory.setPassword("s", for: id, scope: .synced)
@@ -89,21 +115,34 @@ struct PasswordStoreRulesTests {
     }
 }
 
-/// The real Keychain, with a throwaway service: in this ad-hoc-signed test host the synced save is
-/// refused with -34018, so the password must land in a local item; with the entitlement it is synced.
+/// The real Keychain, with a throwaway service, as the app builds it (`KeychainStore` in the
+/// data-protection keychain when the signature has a keychain access group). The test host is the
+/// Debug app signed with the team's Development profile (T4.3), so the synced save succeeds; a build
+/// without the entitlement (ad-hoc, `CODE_SIGNING_ALLOWED=NO`) gets -34018 and the local item.
 /// Either way it reads back, survives a migration attempt, and is gone after delete.
 @MainActor
 struct LiveKeychainFallbackTests {
+    let service = "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)"
+    var entitled: Bool { KeychainStore.processHasKeychainAccessGroup }
+
     @Test func machinePasswordRoundTripThroughTheFallback() throws {
-        let keychain = KeychainStore(service: "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)")
+        let keychain = KeychainStore(service: service, usesDataProtectionKeychain: entitled)
         let id = UUID()
         defer { try? keychain.delete(.machine(id)) }
 
         let scope = try keychain.storePassword("live-secret", for: id)
-        print("KEYCHAIN_FALLBACK_PROBE scope=\(scope)")
+        print("KEYCHAIN_FALLBACK_PROBE scope=\(scope) entitled=\(entitled)")
+        // M4 (T4.3 review): gated on the entitlement, the item is really synchronizable.
+        #expect(scope == (entitled ? .synced : .local))
         let stored = try #require(try keychain.storedPassword(for: id))
         #expect(stored.password == "live-secret")
         #expect(stored.scope == scope)
+        if entitled {
+            let attributes = try #require(try itemAttributes(service: service, account: .machine(id), synchronizable: true))
+            #expect(attributes[kSecAttrSynchronizable as String] as? Bool == true)
+            #expect(attributes[kSecAttrAccessible as String] as? String == kSecAttrAccessibleAfterFirstUnlock as String)
+            #expect(attributes[kSecAttrAccessGroup as String] as? String == "KFLACS69T9.fr.vincentlauriat.remotedeck")
+        }
 
         let migrated = keychain.migrateLocalPasswordsToSynced(machineIDs: [id])
         print("KEYCHAIN_FALLBACK_PROBE migrated=\(migrated.count)")
@@ -112,6 +151,72 @@ struct LiveKeychainFallbackTests {
         try keychain.deletePassword(for: id)
         #expect(try keychain.password(for: id, scope: .local) == nil)
         #expect(try keychain.storedPassword(for: id) == nil)
+    }
+}
+
+extension LiveKeychainFallbackTests {
+    /// M3 (T4.3 review): a local item of the entitled app lives in the data-protection keychain, where
+    /// `ThisDeviceOnly` applies; an item an older build left in the file keychain moves there (read
+    /// back first) and leaves the file keychain.
+    @Test(.enabled(if: KeychainStore.processHasKeychainAccessGroup))
+    func localItemsMoveToTheDataProtectionKeychain() throws {
+        let legacy = KeychainStore(service: service)
+        let current = KeychainStore(service: service, usesDataProtectionKeychain: true)
+        defer {
+            try? current.delete(.anthropicAPIKey)
+            try? legacy.delete(.anthropicAPIKey)
+        }
+        try legacy.save("sk-ant-legacy", for: .anthropicAPIKey)
+        // Readable before the move (fallback to the file keychain).
+        #expect(try current.read(.anthropicAPIKey) == "sk-ant-legacy")
+
+        #expect(try current.migrateLegacyItem(.anthropicAPIKey))
+        #expect(try legacy.read(.anthropicAPIKey) == nil)
+        #expect(try current.read(.anthropicAPIKey) == "sk-ant-legacy")
+        let attributes = try #require(try itemAttributes(service: service, account: .anthropicAPIKey,
+                                                     synchronizable: false, dataProtection: true))
+        #expect(attributes[kSecAttrAccessible as String] as? String
+            == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+        #expect(try current.migrateLegacyItem(.anthropicAPIKey) == false)   // nothing left to move
+
+        try current.delete(.anthropicAPIKey)
+        #expect(try current.read(.anthropicAPIKey) == nil)
+    }
+
+    /// A local machine password of an unentitled build (file keychain) migrates to iCloud Keychain.
+    @Test(.enabled(if: KeychainStore.processHasKeychainAccessGroup))
+    func legacyLocalMachinePasswordMigratesToSynced() throws {
+        let legacy = KeychainStore(service: service)
+        let current = KeychainStore(service: service, usesDataProtectionKeychain: true)
+        let id = UUID()
+        defer {
+            try? current.delete(.machine(id))
+            try? legacy.delete(.machine(id))
+        }
+        try legacy.save("old-local", for: .machine(id), synchronizable: false)
+
+        #expect(current.migrateLocalPasswordsToSynced(machineIDs: [id]) == [id])
+        #expect(try current.storedPassword(for: id)?.scope == .synced)
+        #expect(try current.storedPassword(for: id)?.password == "old-local")
+        #expect(try legacy.read(.machine(id), synchronizable: false) == nil)
+    }
+
+    func itemAttributes(service: String, account: KeychainAccount, synchronizable: Bool,
+                        dataProtection: Bool = false) throws -> [String: Any]? {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account.name,
+            kSecAttrSynchronizable as String: synchronizable,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        if dataProtection { query[kSecUseDataProtectionKeychain as String] = true }
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else { throw KeychainError(status: status) }
+        return result as? [String: Any]
     }
 }
 
@@ -143,6 +248,17 @@ struct PasswordNotInStoreTests {
         for file in files { bytes += try Data(contentsOf: directory.appending(path: file)) }
         #expect(bytes.range(of: Data("mini.local".utf8)) != nil)
         #expect(bytes.range(of: Data(secret.utf8)) == nil)
+    }
+}
+
+/// Review 6: the Debug build (this test host) has its own Keychain service, so it never touches the
+/// Release app's items in the shared access group.
+@MainActor
+struct KeychainServiceTests {
+    @Test func debugBuildUsesItsOwnService() {
+        #expect(KeychainStore.appService == "fr.vincentlauriat.remotedeck.dev")
+        #expect(KeychainStore.app.service == KeychainStore.appService)
+        #expect(KeychainStore.appService != KeychainStore.defaultService)
     }
 }
 

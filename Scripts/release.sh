@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Build → sign (Developer ID + Hardened Runtime) → DMG → notarize → staple.
-# Generic macOS release pipeline (no Sparkle auto-update).
+# Archive → export with Developer ID (Xcode automatic signing, embedded profile with iCloud) →
+# check the signature and entitlements → DMG → notarize → staple. No Sparkle auto-update.
 #
-# Usage:   ./Scripts/release.sh <version>
-# Example: ./Scripts/release.sh 1.0.0
+# Usage:   CLOUDKIT_SCHEMA_DEPLOYED=1 ./Scripts/release.sh <version>
+# Example: CLOUDKIT_SCHEMA_DEPLOYED=1 ./Scripts/release.sh 1.0.0
+#
+# CLOUDKIT_SCHEMA_DEPLOYED=1 says the CloudKit schema of this build was deployed to Production in
+# CloudKit Console (T6.2, iCloud.fr.vincentlauriat.remotedeck): a release whose record types or
+# fields are missing in Production cannot sync. The script refuses to run without it.
 #
 # Reuses Vincent's shared Apple credentials (same account for all Mac apps):
 #   - Developer ID Application: Vincent LAURIAT (KFLACS69T9)
@@ -12,12 +16,17 @@
 #   xcrun notarytool store-credentials "AppliMacVincentGithub" \
 #     --apple-id "vincent@lauriat.fr" --team-id "KFLACS69T9"
 #
-# Overridable via env: APP_NAME, SCHEME, PROJECT, SIGNING_IDENTITY, NOTARY_PROFILE
+# Overridable via env: APP_NAME, SCHEME, PROJECT, SIGNING_IDENTITY (checked, not chosen: the export
+# uses the team's Developer ID Application identity), NOTARY_PROFILE
 set -euo pipefail
 
 VERSION="${1:-}"
 if [ -z "$VERSION" ]; then
   echo "usage: $0 <version>   (e.g. $0 1.0.0)" >&2
+  exit 1
+fi
+if [ "${CLOUDKIT_SCHEMA_DEPLOYED:-}" != "1" ]; then
+  echo "✗ Deploy the CloudKit schema to Production first (CloudKit Console, T6.2), then rerun with CLOUDKIT_SCHEMA_DEPLOYED=1" >&2
   exit 1
 fi
 
@@ -44,44 +53,50 @@ echo "▶︎ Releasing $APP_NAME $VERSION (build $BUILD_NUMBER)"
 echo "▶︎ xcodegen generate"
 xcodegen generate >/dev/null
 
-# 2. Build Release. CODE_SIGNING_ALLOWED=NO avoids the macOS Sequoia
-#    com.apple.provenance xattr that breaks CLI codesign; we sign manually below.
-echo "▶︎ xcodebuild Release"
-xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
-  -derivedDataPath build \
-  MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
-  CODE_SIGNING_ALLOWED=NO \
-  build >/dev/null
-APP="$ROOT/build/Build/Products/Release/$APP_NAME.app"
-[ -d "$APP" ] || { echo "✗ App not found: $APP" >&2; exit 1; }
-
-# 3. Stage to a clean dir, stripping extended attributes
+# 2. Archive Release, then export it for Developer ID (T4.3). Xcode's automatic signing provisions
+#    the App ID (iCloud/CloudKit, push, keychain group) and the Developer ID profile that iCloud
+#    needs: a manual `codesign` of the raw entitlements file would leave `$(AppIdentifierPrefix)`
+#    unexpanded and no embedded profile, and the app would be killed at launch.
 STAGING_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGING_DIR"' EXIT
-STAGING="$STAGING_DIR/$APP_NAME.app"
-ditto --norsrc --noextattr --noacl "$APP" "$STAGING"
+ARCHIVE="$STAGING_DIR/$APP_NAME.xcarchive"
+echo "▶︎ xcodebuild archive (Release)"
+xcodebuild -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
+  -derivedDataPath build -archivePath "$ARCHIVE" \
+  MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  -allowProvisioningUpdates archive >/dev/null
 
-# 4. Codesign the app with Hardened Runtime + secure timestamp (retry: Apple TS is flaky)
-codesign_ts() {
-  local target="$1" i
-  for i in 1 2 3 4 5; do
-    if codesign --force --options runtime --timestamp \
-         --entitlements "$ROOT/RemoteDeck/RemoteDeck.entitlements" \
-         --sign "$SIGNING_IDENTITY" "$target"; then
-      return 0
-    fi
-    echo "  …codesign retry $i/5 (timestamp server) in 5s" >&2
-    sleep 5
-  done
-  echo "✗ codesign failed for $target" >&2
-  return 1
-}
-echo "▶︎ codesign (Developer ID, Hardened Runtime)"
-codesign_ts "$STAGING"
+# 3. Export with Developer ID (Hardened Runtime, secure timestamp, embedded profile).
+echo "▶︎ xcodebuild -exportArchive (developer-id)"
+xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$STAGING_DIR/export" \
+  -exportOptionsPlist "$ROOT/Scripts/ExportOptions-DeveloperID.plist" \
+  -allowProvisioningUpdates >/dev/null
+EXPORTED="$STAGING_DIR/export/$APP_NAME.app"
+[ -d "$EXPORTED" ] || { echo "✗ Exported app not found: $EXPORTED" >&2; exit 1; }
+STAGING="$STAGING_DIR/$APP_NAME.app"
+ditto --norsrc --noextattr --noacl "$EXPORTED" "$STAGING"
+
+# 4. Check the signature: Developer ID, sandbox, iCloud container in Production, embedded profile.
+echo "▶︎ check signature and entitlements"
 codesign --verify --strict --deep --verbose=1 "$STAGING"
+# Captured first: `grep -q` closing the pipe early would SIGPIPE codesign under pipefail.
+SIGNATURE="$(codesign -dvv "$STAGING" 2>&1)"
+grep -q "Authority=$SIGNING_IDENTITY" <<<"$SIGNATURE" \
+  || { echo "✗ not signed with $SIGNING_IDENTITY" >&2; exit 1; }
+[ -f "$STAGING/Contents/embedded.provisionprofile" ] \
+  || { echo "✗ no embedded Developer ID provisioning profile" >&2; exit 1; }
 codesign -d --entitlements - --xml "$STAGING" 2>/dev/null \
   | python3 -I -c 'import plistlib,sys; d=sys.stdin.buffer.read(); sys.exit(0 if d and plistlib.loads(d).get("com.apple.security.app-sandbox") is True else 1)' \
   || { echo "✗ sandbox entitlement missing from signed app" >&2; exit 1; }
+codesign -d --entitlements - --xml "$STAGING" 2>/dev/null \
+  | python3 -I -c 'import plistlib,sys
+d = plistlib.loads(sys.stdin.buffer.read())
+ok = ("iCloud.fr.vincentlauriat.remotedeck" in d.get("com.apple.developer.icloud-container-identifiers", [])
+      and "CloudKit" in d.get("com.apple.developer.icloud-services", [])
+      and d.get("com.apple.developer.icloud-container-environment") == "Production"
+      and d.get("com.apple.developer.aps-environment") == "production")
+sys.exit(0 if ok else 1)' \
+  || { echo "✗ iCloud entitlements (container, CloudKit, Production container, production push) missing from signed app" >&2; exit 1; }
 
 # 5. Build the DMG with a custom Finder layout
 echo "▶︎ build DMG"

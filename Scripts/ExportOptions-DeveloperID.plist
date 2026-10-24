@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Developer ID export (T4.3): Xcode signs with "Developer ID Application" and embeds the
+         Developer ID provisioning profile that carries iCloud (CloudKit, push, keychain group);
+         the iCloud container environment becomes Production. Nothing is uploaded or notarized here. -->
+    <key>method</key>
+    <string>developer-id</string>
+    <key>destination</key>
+    <string>export</string>
+    <key>teamID</key>
+    <string>KFLACS69T9</string>
+    <key>signingStyle</key>
+    <string>automatic</string>
+    <key>iCloudContainerEnvironment</key>
+    <string>Production</string>
+</dict>
+</plist>

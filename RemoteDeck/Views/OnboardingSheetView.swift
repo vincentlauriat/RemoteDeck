@@ -48,10 +48,9 @@ struct OnboardingSheetView: View {
         case .sync:
             VStack(spacing: 16) {
                 header(symbol: "icloud", title: "onboarding_sync_title", text: "onboarding_sync_text")
-                // iCloud Sync is T4.3: offered, but not available yet.
-                Button(settings.t("onboarding_sync_enable")) {}
-                    .disabled(true)
-                Text(settings.t("onboarding_sync_unavailable"))
+                // Turns iCloud Sync on and ends the sheet; the store takes it at the next launch.
+                Button(settings.t("onboarding_sync_enable")) { end { model.enableSync() } }
+                Text(settings.t("onboarding_sync_next_launch"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

@@ -13,6 +13,7 @@ struct RemoteDeckApp: App {
     @State private var reachability: ReachabilityMonitor
     @State private var notificationRouter: StatusNotificationRouter
     @State private var notificationPermission: NotificationPermissionModel
+    @State private var sync: LibrarySync
     @State private var history = SessionHistoryModel(exporter: SavePanelExporter())
     /// The Menu Bar Extra; never inserted while the hosted tests run.
     @State private var showsMenuBarExtra = !LibraryStore.isRunningTests()
@@ -33,9 +34,17 @@ struct RemoteDeckApp: App {
         #if DEBUG
         inMemory = inMemory || LibraryDemo.isEnabled
         #endif
-        let (container, isInMemory, error) = LibraryStore.open(inMemory: inMemory)
+        // iCloud Sync (T4.3): the Library store mirrors to CloudKit when the setting was on at launch
+        // (a change applies at the next launch), only in a build signed with the container.
+        let isEntitled = CloudSyncEntitlement.isPresent
+        let syncContainer = LibraryStore.cloudKitContainer(
+            syncEnabled: UserDefaults.standard.bool(forKey: AppSettings.Key.iCloudSyncEnabled),
+            isInMemory: inMemory, isEntitled: isEntitled)
+        let opened = LibraryStore.open(inMemory: inMemory, cloudKitContainer: syncContainer)
+        let container = opened.container
+        let isInMemory = opened.isInMemory
         self.container = container
-        var storeError = error.map { String(describing: $0) }
+        var storeError = opened.error.map { String(describing: $0) }
         var demoMode: String?
         var framebufferDebugMode: String?
         #if DEBUG
@@ -81,7 +90,11 @@ struct RemoteDeckApp: App {
             }
         }
         #endif
-        let settings = AppSettings(apiKeys: apiKeys)
+        var settingsDefaults = UserDefaults.standard
+        #if DEBUG
+        if LibraryDemo.showsSync { settingsDefaults = LibraryDemo.syncDefaults() }
+        #endif
+        let settings = AppSettings(defaults: settingsDefaults, apiKeys: apiKeys)
         _settings = State(initialValue: settings)
         // Retention (BackendSchema › Retention and deletion): only the on-disk store, so never under the
         // hosted tests or a demo mode (both in memory). Best effort: a failure leaves the rows for next time.
@@ -139,7 +152,43 @@ struct RemoteDeckApp: App {
             notificationsEnabled: { settings.notificationsEnabled },
             sessionState: { [sessions] id in sessions.sessions[id]?.phase.watchedState ?? .noSession })
         _reachability = State(initialValue: reachability)
-        watchFeed = WatchTargetFeed(context: container.mainContext, monitor: reachability)
+        let watchFeed = WatchTargetFeed(context: container.mainContext, monitor: reachability)
+        self.watchFeed = watchFeed
+
+        // The account status only for the real on-disk app (never a `CKContainer` under the hosted
+        // tests, in a demo mode or in an unentitled build); the merge only while the store syncs.
+        var statusProvider: (any CloudAccountStatusProviding)? = !isInMemory && isEntitled
+            ? CloudKitAccountStatusProvider(containerIdentifier: RemoteDeckSchema.cloudKitContainerIdentifier) : nil
+        var syncActive = opened.syncsWithICloud
+        var syncEntitled = isEntitled
+        #if DEBUG
+        if LibraryDemo.showsSync {
+            statusProvider = LibraryDemo.accountStatus
+            syncActive = LibraryDemo.syncsInDemo
+            syncEntitled = true
+        }
+        #endif
+        let merger = opened.syncsWithICloud
+            ? LibraryMerger(context: container.mainContext, passwords: passwords,
+                            hasSession: { [sessions] id in sessions.sessions[id] != nil })
+            : nil
+        let sync = LibrarySync(isActive: syncActive, isEntitled: syncEntitled,
+                               openError: opened.syncError.map { String(describing: $0) },
+                               statusProvider: statusProvider, merger: merger,
+                               onRemoteChange: { [watchFeed] in watchFeed.refresh() })
+        _sync = State(initialValue: sync)
+        if !isRunningTests { sync.start() }
+        #if DEBUG
+        if LibraryDemo.showsSync { LibraryDemo.simulateSync(sync) }
+        #endif
+        // Keychain (T4.3): once the build has a keychain access group, items an older build left in
+        // the file keychain move to the data-protection keychain, local passwords to iCloud Keychain.
+        // Detached: a file-keychain item that asks for its keychain password never holds the main actor.
+        if !isInMemory {
+            let ids = ((try? container.mainContext.fetch(FetchDescriptor<Machine>())) ?? []).map(\.id)
+            let keychain = KeychainStore.app
+            Task.detached(priority: .utility) { keychain.migrateAtLaunch(machineIDs: ids) }
+        }
         let router = StatusNotificationRouter()
         _notificationRouter = State(initialValue: router)
         _notificationPermission = State(initialValue: NotificationPermissionModel(poster: poster,
@@ -225,6 +274,7 @@ struct RemoteDeckApp: App {
             SettingsView(apiKeyChecker: apiKeyChecker)
                 .environment(settings)
                 .environment(notificationPermission)
+                .environment(sync)
         }
 
         #if DEBUG

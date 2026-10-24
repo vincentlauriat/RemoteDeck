@@ -237,6 +237,8 @@ final class MachineEditorModel {
         machine.isWatched = isWatched
         machine.scalingModeValue = scalingMode
         machine.sharedClipboard = sharedClipboard
+        // Orders duplicates when iCloud Sync merges them (T4.3): the last edit, on any Mac, wins.
+        machine.modifiedAt = .now
         switch groupChoice {
         case .none:
             machine.group = nil

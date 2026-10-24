@@ -32,6 +32,7 @@ SwiftData + CloudKit rule: every synced property is optional or has a default, a
 | sharedClipboard | Bool | yes | true | Starting value of the session's Shared Clipboard toggle (not written back by the toolbar). The Machine Editor proposes `defaultSharedClipboard` for a new machine, and false for an Anthropic VM (T5.3); a session whose address is on the public Internet starts with it off |
 | lastConnectedAt | Date? | no | nil | |
 | createdAt | Date | yes | now | |
+| modifiedAt | Date? | no | nil | Schema V2 (T4.3): set by every Machine Editor save, on any Mac; in the iCloud Sync merge the survivor takes the fields of the most recently modified copy. nil for a machine not edited since V1 |
 
 Indexes: `host`, `name` (SwiftData `#Index`).
 
@@ -52,11 +53,11 @@ Store files (TRD › Backend and database): Machine and MachineGroup in `Applica
 
 | Attribute | Value |
 |---|---|
-| service | `fr.vincentlauriat.remotedeck` |
+| service | `fr.vincentlauriat.remotedeck`; Debug builds `fr.vincentlauriat.remotedeck.dev` (T4.3 review: Debug and Release share the keychain access group, and the Debug app must never read or write the Release app's items). At launch the entitled Debug app moves its own machines' items from the shared service and copies the API key (left in place: it may be the Release app's) |
 | account | `machine.<Machine.id>` or `anthropic.apiKey` |
 | data | UTF-8 secret |
-| synchronizable | `true` for machine passwords (iCloud Keychain), `false` for the API key. **Local fallback** (Vincent, 2026-10-22): when the synchronizable save of `machine.<id>` fails with -34018 (`errSecMissingEntitlement`, unsigned and ad-hoc builds until T1.2/T4.3), the password is saved as a non-synchronizable item with the same service and account. Reads try the synced item, then the local one; deletes match either flag (`kSecAttrSynchronizableAny`). A synced save removes a stale local copy. T4.3 calls `migrateLocalPasswordsToSynced(machineIDs:)` once the entitlement exists (local → synced, local deleted). |
-| accessible | Synchronizable items `kSecAttrAccessibleAfterFirstUnlock`; local items (the API key, the machine-password fallback) `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (T5.3), set at each save. macOS honours it only for synchronizable or data-protection-keychain items: the file-keychain local items of an unentitled build carry it without effect until T4.3 |
+| synchronizable | `true` for machine passwords (iCloud Keychain), `false` for the API key. **Local fallback** (Vincent, 2026-10-22): when the synchronizable save of `machine.<id>` fails with -34018 (`errSecMissingEntitlement`, unsigned and ad-hoc builds until T1.2/T4.3), the password is saved as a non-synchronizable item with the same service and account. Reads try the synced item, then the local one; deletes match either flag (`kSecAttrSynchronizableAny`). A synced save removes a stale local copy. Since T4.3 the app calls `migrateLocalPasswordsToSynced(machineIDs:)` after every launch of the on-disk library: local → synced, the local item deleted only once the synced copy reads back equal; a synced item that already exists is kept (it may be newer, from another Mac) and the local copy deleted. Keychain access group (T4.3): `KFLACS69T9.fr.vincentlauriat.remotedeck`, the same for the Debug and Release apps. |
+| accessible | Synchronizable items `kSecAttrAccessibleAfterFirstUnlock`; local items (the API key, the machine-password fallback) `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (T5.3), set at each save. macOS honours it only for synchronizable or data-protection-keychain items: the file-keychain local items of an unentitled build carry it without effect. Since T4.3 the entitled app keeps every item in the data-protection keychain (`kSecUseDataProtectionKeychain`), where the attribute applies; items an older build left in the file keychain are still read (fallback) and moved at launch (written, read back, then deleted from the file keychain). An ad-hoc or unsigned build (CI) keeps the file keychain |
 
 ### SessionRecord (SwiftData, local store only)
 
@@ -96,7 +97,7 @@ Lifecycle (T3.5, `SessionModel`): one record per attempt (Connect, Retry, Reconn
 
 | Key | Type | Default |
 |---|---|---|
-| `iCloudSyncEnabled` | Bool | false |
+| `iCloudSyncEnabled` | Bool | false (T4.3: Settings › iCloud Sync, or "Enable" on the Onboarding Sheet; read when the Library store opens, so a change applies at the next launch) |
 | `notificationsEnabled` | Bool | true (Settings › Notifications › Status notifications; off: nothing is posted, probes and dots go on) |
 | `defaultSharedClipboard` | Bool | true |
 | `claudeModel` | — (not stored) | `claude-opus-5-5`, the constant `ClaudeAPI.defaultModel` (the toolset `computer_toolset_20260801` is the only computer use tool on Opus 5.5). A value left in UserDefaults is ignored. No picker: Settings › Claude shows it |
@@ -138,7 +139,8 @@ No accounts and no roles: the single local user has full read/create/update/dele
 - Machine.name: 1–64 characters, trimmed.
 - Machine.host: a valid DNS name (RFC 1123), IPv4 or IPv6 literal; no scheme or path.
 - Machine.port: 1–65535.
-- Uniqueness: one Machine per lowercase `host:port`. Checked on save; iCloud Sync merges duplicates by keeping the most recently modified one.
+- Uniqueness: one Machine per lowercase `host:port`. Checked on save; iCloud Sync merges duplicates (T4.3, `LibraryDeduplication` in RemoteDeckCore, applied by the app's `LibraryMerger` at launch, after every CloudKit import and when the app becomes active): the survivor is elected from fields that never change (the first created, then the smaller id), so two Macs whose snapshots differ in `modifiedAt` still keep the same machine (an order on a mutable field could make each delete the other's copy and its synced password; review of T4.3). "Most recently modified wins" applies to the content: when the dropped copy that goes has a newer `modifiedAt`, the survivor takes its user-visible fields (name, kind, host, port, user name, group, favorite, watch, scaling, shared clipboard, `modifiedAt`); `lastConnectedAt` keeps the later one. The merge runs only after CloudKit's setup (or a finished import), after an import, when the app becomes active, and never while a mirroring event runs. Passwords: the survivor keeps its own; if it has none on this Mac, the dropped one's is copied to it and read back; the dropped machines' items are deleted only after the model is saved. A machine whose password cannot be read without a dialog, whose copy fails, or that has an open session on this Mac waits for a later merge.
+- MachineGroup names that collide (trimmed, case-insensitive) after a sync fold into the group with the smaller id (`sortOrder` can differ between Macs); their machines move to it.
 - Machine.username: required when `kind == macARD`.
 - MachineGroup.name: 1–40 characters, unique case-insensitive.
 - Anthropic API key: starts with `sk-ant-` and passes a test request (`GET /v1/models?limit=1`, which bills no tokens) before saving; until then it is a draft in the Settings Window, never written to the Keychain (T4.4).
@@ -156,4 +158,4 @@ No accounts and no roles: the single local user has full read/create/update/dele
 ## Migrations and seed data
 
 - No seed data: the library starts empty, and the Onboarding Sheet leads to the Discovery Panel.
-- Schema changes use a SwiftData `VersionedSchema` + `SchemaMigrationPlan`. CloudKit schema changes are additive only (no renames or deletions of synced fields); deploy the CloudKit schema to production before shipping a release that uses new fields.
+- Schema changes use a SwiftData `VersionedSchema` + `SchemaMigrationPlan`. V1 (frozen, `RemoteDeckSchemaV1`) → V2 (`Machine.modifiedAt`, T4.3) is a lightweight stage, tested on an on-disk V1 store. CloudKit schema changes are additive only (no renames or deletions of synced fields); deploy the CloudKit schema to production before shipping a release that uses new fields.

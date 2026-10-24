@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(LibrarySync.self) private var sync
     let apiKeyChecker: any APIKeyChecking
     @State private var editor: APIKeyEditorModel?
 
@@ -28,6 +29,18 @@ struct SettingsView: View {
                 }
                 .labelsHidden()
             }
+
+            // iCloud Sync (T4.3, AppFlow › Settings Window › Toggle iCloud Sync): turning it on needs a
+            // signed-in account; the store takes the change at the next launch.
+            Section(settings.t("settings_icloud")) {
+                Toggle(settings.t("settings_icloud_sync"), isOn: $settings.iCloudSyncEnabled)
+                    .disabled(!settings.iCloudSyncEnabled && !sync.canTurnOn)
+                SyncStatusText(line: sync.statusLine(enabled: settings.iCloudSyncEnabled))
+                Text(settings.t("settings_icloud_help"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .onAppear { sync.refreshAccountStatus() }
 
             // Clé API Anthropic (Keychain, compte `anthropic.apiKey`) : un brouillon, enregistré seulement
             // par « Enregistrer » après le préfixe et la requête de test (APIKeyEditorModel).
@@ -58,8 +71,58 @@ struct SettingsView: View {
             if editor == nil { editor = APIKeyEditorModel(settings: settings, checker: apiKeyChecker) }
         }
         #if os(macOS)
-        .frame(width: 460, height: 520)
+        .frame(width: 460, height: 600)
         #endif
+    }
+}
+
+/// The status line under the iCloud Sync switch.
+private struct SyncStatusText: View {
+    @Environment(AppSettings.self) private var settings
+    let line: LibrarySync.StatusLine
+
+    var body: some View {
+        switch line {
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(settings.t("sync_checking")).font(.caption)
+            }
+        case .syncing:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(settings.t("sync_syncing")).font(.caption)
+            }
+        case .synced(let date):
+            Label(settings.t("sync_last_synced",
+                             date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened)
+                                .locale(Locale(identifier: settings.localeIdentifier)))),
+                  systemImage: "checkmark.icloud")
+                .font(.caption).foregroundStyle(.secondary)
+        case .on:
+            Label(settings.t("sync_on"), systemImage: "icloud").font(.caption).foregroundStyle(.secondary)
+        case .off:
+            Text(settings.t("sync_off")).font(.caption).foregroundStyle(.secondary)
+        case .signedOut:
+            Label(settings.t("sync_signed_out"), systemImage: "person.crop.circle.badge.exclamationmark")
+                .font(.caption).foregroundStyle(.orange)
+        case .restricted:
+            Label(settings.t("sync_restricted"), systemImage: "icloud.slash").font(.caption).foregroundStyle(.orange)
+        case .unavailable:
+            Label(settings.t("sync_unavailable"), systemImage: "icloud.slash").font(.caption).foregroundStyle(.orange)
+        case .notEntitled:
+            Label(settings.t("sync_not_entitled"), systemImage: "icloud.slash").font(.caption).foregroundStyle(.secondary)
+        case .openFailed(let reason):
+            Label(settings.t("sync_open_failed", reason), systemImage: "exclamationmark.icloud")
+                .font(.caption).foregroundStyle(.red)
+        case .failed(let reason):
+            Label(settings.t("sync_failed", reason), systemImage: "exclamationmark.icloud")
+                .font(.caption).foregroundStyle(.red)
+        case .restartToTurnOn:
+            Label(settings.t("sync_restart_on"), systemImage: "arrow.clockwise").font(.caption).foregroundStyle(.orange)
+        case .restartToTurnOff:
+            Label(settings.t("sync_restart_off"), systemImage: "arrow.clockwise").font(.caption).foregroundStyle(.orange)
+        }
     }
 }
 

@@ -55,11 +55,18 @@ targets:
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         MACOSX_DEPLOYMENT_TARGET: "15.0"
+        # One file for both configurations: `aps-environment` development, as the Development profile
+        # that signs Debug builds and Release archives grants; `-exportArchive` (developer-id) rewrites
+        # it and the iCloud environment to production (Scripts/release.sh checks both).
         CODE_SIGN_ENTITLEMENTS: RemoteDeck/RemoteDeck.entitlements
-        # Ad-hoc signing so sandbox entitlements apply in local builds.
-        # Release DMGs are signed with Developer ID by Scripts/release.sh.
-        CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "-"
+        # iCloud Sync (T4.3): automatic signing on Vincent's team, so Xcode provisions the App IDs
+        # (iCloud/CloudKit, push, keychain sharing) and the container iCloud.fr.vincentlauriat.remotedeck
+        # (one for both apps; Debug uses CloudKit's Development environment, Release Production).
+        # Local builds need `-allowProvisioningUpdates` once per new profile. Release DMGs are archived
+        # and exported with Developer ID by Scripts/release.sh.
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: Apple Development
+        DEVELOPMENT_TEAM: KFLACS69T9
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: fr.vincentlauriat.remotedeck.dev
@@ -96,8 +103,12 @@ targets:
         SWIFT_VERSION: "6.0"
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         GENERATE_INFOPLIST_FILE: YES
+        # Manual, no profile: a test bundle needs none, and automatic signing could register a
+        # `.tests` App ID. Same team as the host app, whose hardened runtime refuses to load a bundle
+        # signed by another team (or ad hoc).
         CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_IDENTITY: Apple Development
+        DEVELOPMENT_TEAM: KFLACS69T9
         BUNDLE_LOADER: $(TEST_HOST)
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/RemoteDeck.app/Contents/MacOS/RemoteDeck
       configs:

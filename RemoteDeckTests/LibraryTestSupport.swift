@@ -19,6 +19,8 @@ final class FakePasswordStore: MachinePasswordStore {
     /// Only the synced save fails (e.g. -34018, missing entitlement).
     var syncedSaveError: KeychainError?
     var deleteError: KeychainError?
+    /// A synced save that reports success but stores nothing (a copy that does not read back).
+    var dropsSyncedWrites = false
     private(set) var log: [String] = []
 
     /// Thrown by reads that may not show a dialog (as the Keychain does with
@@ -41,6 +43,7 @@ final class FakePasswordStore: MachinePasswordStore {
         log.append("save.\(scope)")
         if let saveError { throw saveError }
         if scope == .synced, let syncedSaveError { throw syncedSaveError }
+        if scope == .synced, dropsSyncedWrites { return }
         if scope == .synced { items[machineID] = password } else { localItems[machineID] = password }
     }
 

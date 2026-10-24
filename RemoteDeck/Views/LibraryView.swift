@@ -16,6 +16,7 @@ struct LibraryView: View {
     @Environment(ReachabilityMonitor.self) private var reachability
     @Environment(StatusNotificationRouter.self) private var notificationRouter
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @Query private var machines: [Machine]
     @Query private var groups: [MachineGroup]
     @Bindable var model: MachineLibraryModel
@@ -119,6 +120,7 @@ struct LibraryView: View {
                 connect(machines.first { $0.name == "Mac mini" })
             }
             if LibraryDemo.showsHistory { openWindow(id: HistoryWindow.id) }
+            if LibraryDemo.showsSync { openSettings() }
             if LibraryDemo.showsPublicAddress { connect(machines.first { $0.name == LibraryDemo.publicMachineName }) }
             if LibraryDemo.simulatesDrops {
                 LibraryDemo.resilienceMachineNames.forEach { name in connect(machines.first { $0.name == name }) }

@@ -59,14 +59,17 @@ enum OnboardingLaunch: Equatable {
         }
     }
 
-    /// The sheet's model, or `nil` when it must not show. Only `.firstRun` records the completion.
+    /// The sheet's model, or `nil` when it must not show. Only `.firstRun` records the completion
+    /// and turns iCloud Sync on.
     @MainActor
     func makeModel(settings: AppSettings, authorizer: any NotificationAuthorizing) -> OnboardingModel? {
         guard shouldPresent(completed: settings.onboardingCompleted) else { return nil }
         let persists = self == .firstRun
-        return OnboardingModel(authorizer: authorizer) {
+        return OnboardingModel(authorizer: authorizer, turnOnSync: {
+            if persists { settings.iCloudSyncEnabled = true }
+        }, markCompleted: {
             if persists { settings.onboardingCompleted = true }
-        }
+        })
     }
 }
 
@@ -104,11 +107,17 @@ final class OnboardingModel: Identifiable {
     private(set) var notificationStatus: NotificationStatus = .notAsked
     private(set) var outcome: Outcome?
 
+    /// "Enable" on the last page turned iCloud Sync on (it applies at the next launch).
+    private(set) var enabledSync = false
+
     @ObservationIgnored private let authorizer: any NotificationAuthorizing
+    @ObservationIgnored private let turnOnSync: @MainActor () -> Void
     @ObservationIgnored private let markCompleted: @MainActor () -> Void
 
-    init(authorizer: any NotificationAuthorizing, markCompleted: @escaping @MainActor () -> Void) {
+    init(authorizer: any NotificationAuthorizing, turnOnSync: @escaping @MainActor () -> Void = {},
+         markCompleted: @escaping @MainActor () -> Void) {
         self.authorizer = authorizer
+        self.turnOnSync = turnOnSync
         self.markCompleted = markCompleted
     }
 
@@ -126,6 +135,15 @@ final class OnboardingModel: Identifiable {
     }
 
     func later() { end(.skipped) }
+
+    /// "Enable" on the iCloud page: turns iCloud Sync on, then finishes like "Not now" (the Discovery
+    /// Panel opens next). The Library store takes it at the next launch (TRD › Sync).
+    func enableSync() {
+        guard outcome == nil, step == .sync else { return }
+        enabledSync = true
+        turnOnSync()
+        finish()
+    }
 
     func finish() { end(.finished) }
 
