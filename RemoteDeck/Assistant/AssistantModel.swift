@@ -64,8 +64,13 @@ final class AssistantModel {
         /// results to the conversation). Busy, so no Ask starts before it ends; then `stopped` or
         /// `failed(.disconnected)`.
         case stopping
+        /// `maxStepsWithoutAction` turns in a row confirmed no action (T5.3 M3): the loop waits for
+        /// Continue or Stop. The turn's results wait in the conversation (`deferResults`).
+        case paused
 
-        var isBusy: Bool { self == .sending || self == .confirming || self == .running || self == .stopping }
+        var isBusy: Bool {
+            self == .sending || self == .confirming || self == .running || self == .stopping || self == .paused
+        }
     }
 
     struct ActionItem: Equatable {
@@ -113,6 +118,20 @@ final class AssistantModel {
     /// Confirm (button or ⌘Return) is accepted only this long after a proposal is shown, so a held
     /// ⌘Return or a double click cannot confirm the next proposal unseen.
     static let defaultArmDelay: Duration = .milliseconds(400)
+    /// Consecutive API turns without a confirmed action (screenshots, zooms, waits, cursor positions,
+    /// skips, errors) before the loop pauses (T5.3 M3): a task cannot run up tokens unattended.
+    static let maxStepsWithoutAction = 8
+    /// A `type` text longer than this (Unicode scalars, as `ComputerAction.maxTypeLength`) or on several lines (a single trailing line end
+    /// aside) is shown in a block the user must open before Confirm arms (T5.3 M2).
+    nonisolated static let typeRevealThreshold = 80
+
+    /// Whether a proposed `type` text must be opened (shown whole) before it can be confirmed.
+    nonisolated static func typeTextNeedsReveal(_ text: String) -> Bool {
+        // One trailing line end (a command then Return) is still one line, shown whole in the row.
+        var lines = Substring(text)
+        if lines.last?.isNewline == true { lines = lines.dropLast() }
+        return text.unicodeScalars.count > typeRevealThreshold || lines.contains(where: \.isNewline)
+    }
 
     private(set) var phase: Phase = .idle
     private(set) var entries: [Entry] = []
@@ -123,8 +142,15 @@ final class AssistantModel {
     private(set) var highlight: [PointerLocation] = []
     /// The `tool_use` id of the proposal waiting for Confirm or Skip.
     private(set) var awaitingID: String?
-    /// Confirm is accepted (`defaultArmDelay` after the proposal appeared).
+    /// Confirm is accepted (`defaultArmDelay` after the proposal appeared, or after its text was
+    /// opened when it had to be).
     private(set) var confirmArmed = false
+    /// The awaiting proposal is a `type` whose text must be opened first (`typeTextNeedsReveal`).
+    private(set) var awaitingNeedsReveal = false
+    /// The awaiting proposal's full text was opened.
+    private(set) var awaitingRevealed = false
+    /// API turns in a row that confirmed no action (`maxStepsWithoutAction`).
+    private(set) var stepsWithoutAction = 0
 
     @ObservationIgnored weak var port: (any AssistantSessionPort)?
     @ObservationIgnored private let client: MessagesClient
@@ -146,6 +172,8 @@ final class AssistantModel {
     @ObservationIgnored private var generation = 0
     /// Where a `stopping` phase ends.
     @ObservationIgnored private var finalPhase: Phase?
+    /// The user confirmed an action in the turn being run.
+    @ObservationIgnored private var turnConfirmedAnAction = false
 
     init(port: (any AssistantSessionPort)?, client: MessagesClient, apiKey: @escaping @MainActor () -> String,
          model: String = ClaudeAPI.defaultModel, armDelay: Duration = AssistantModel.defaultArmDelay,
@@ -178,6 +206,7 @@ final class AssistantModel {
         let text = trimmedPrompt
         guard canAsk else { return }
         prompt = ""
+        stepsWithoutAction = 0   // the user is here: a new count
         append(.prompt(text))
         if conversation == nil, let port {
             conversation = Conversation(configuration: RequestConfiguration(model: model, desktop: port.assistantDesktop))
@@ -197,6 +226,16 @@ final class AssistantModel {
         guard case .failed(let failure) = phase, failure != .disconnected, conversation?.endsWithUser == true,
               hasAPIKey else { return }
         start { [weak self] in await self?.loop() }
+    }
+
+    /// Continue after a pause: a new count, then the turn's results go out with the next request.
+    func continueAfterPause() {
+        guard phase == .paused, conversation != nil, hasAPIKey else { return }
+        stepsWithoutAction = 0
+        start { [weak self] in
+            self?.conversation?.appendUser([])   // the deferred results, alone
+            await self?.loop()
+        }
     }
 
     /// Stop (⌘.): cancels the request in flight and the loop. Nothing more is sent to the remote,
@@ -234,9 +273,25 @@ final class AssistantModel {
         resolve(.skip)
     }
 
+    /// Opens the full text of the awaiting `type` proposal; Confirm arms `defaultArmDelay` later.
+    func reveal(_ id: String) {
+        guard id == awaitingID, awaitingNeedsReveal, !awaitingRevealed else { return }
+        awaitingRevealed = true
+        arm(id)
+    }
+
+    private func arm(_ id: String) {
+        Task { [weak self, armDelay] in
+            try? await Task.sleep(for: armDelay)
+            if let self, self.awaitingID == id { self.confirmArmed = true }
+        }
+    }
+
     private func resolve(_ value: Decision) {
         awaitingID = nil
         confirmArmed = false
+        awaitingNeedsReveal = false
+        awaitingRevealed = false
         guard let decision else { return }
         self.decision = nil
         decision.resume(returning: value)
@@ -321,9 +376,17 @@ final class AssistantModel {
             switch response.stopReason {
             case .toolUse:
                 show(response, actions: true)
+                turnConfirmedAnAction = false
                 let results = await run(response.toolUses)
                 if Task.isCancelled {
                     self.conversation?.deferResults(results)
+                    return
+                }
+                stepsWithoutAction = turnConfirmedAnAction ? 0 : stepsWithoutAction + 1
+                if stepsWithoutAction >= Self.maxStepsWithoutAction {
+                    // Not sent yet: Continue sends them alone, a Stop leaves them for the next Ask.
+                    self.conversation?.deferResults(results)
+                    setPhase(.paused)
                     return
                 }
                 self.conversation?.appendUser(results)
@@ -444,10 +507,12 @@ final class AssistantModel {
             self.decision = continuation
             self.awaitingID = use.id
             self.confirmArmed = false
-            let id = use.id
-            Task { [weak self, armDelay] in
-                try? await Task.sleep(for: armDelay)
-                if let self, self.awaitingID == id { self.confirmArmed = true }
+            self.awaitingRevealed = false
+            if case .type(let text) = action, Self.typeTextNeedsReveal(text) {
+                self.awaitingNeedsReveal = true   // armed by `reveal`
+            } else {
+                self.awaitingNeedsReveal = false
+                self.arm(use.id)
             }
         }
         highlight = []
@@ -467,6 +532,7 @@ final class AssistantModel {
         case .confirm:
             row?.decisionValue = .confirmed
             port.assistantSave()
+            turnConfirmedAnAction = true
         }
         guard port.assistantCanAct else {
             setStatus(.cancelled, for: use.id)

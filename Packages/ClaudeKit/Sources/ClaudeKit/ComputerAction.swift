@@ -39,6 +39,10 @@ public enum ComputerAction: Sendable, Equatable {
     public static let maxDuration = 300.0
     /// `key` repeats 1…100.
     public static let maxRepeat = 100
+    /// Longest `type` text, in Unicode scalars (T5.3 M2; scalars, since one Character can hold any
+    /// number of them): the whole text is shown before Confirm, and a longer one is answered with
+    /// `is_error`, never proposed.
+    public static let maxTypeLength = 4000
 
     public enum ParseError: Error, Sendable, Equatable {
         /// A member this client does not run (withheld, or unknown): answered with `is_error`.
@@ -113,7 +117,11 @@ public enum ComputerAction: Sendable, Equatable {
             self = .scroll(direction, amount: min(amount, 50), at: try point("coordinate"),
                            modifiers: try text(required: false))
         case "type":
-            self = .type(try text())
+            let typed = try text()
+            guard typed.unicodeScalars.count <= Self.maxTypeLength else {
+                throw .invalidInput("text must be at most \(Self.maxTypeLength) characters")
+            }
+            self = .type(typed)
         case "key":
             let count = input["repeat"]?.intValue ?? 1
             guard (1...Self.maxRepeat).contains(count) else { throw .invalidInput("repeat must be 1…100") }

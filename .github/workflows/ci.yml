@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
 
+# Least privilege (T5.3 L5): the job only reads the repository.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

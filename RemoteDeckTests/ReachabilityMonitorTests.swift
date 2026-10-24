@@ -629,8 +629,9 @@ struct StatusNotificationTests {
         #expect(StatusNotificationPayload.identifier(id) == "status.\(id.uuidString)")
     }
 
-    /// The click (didReceive → userInfo → router): "back online" asks to connect that machine.
-    @Test func clickAsksToConnectTheRightMachine() throws {
+    /// The click (didReceive → userInfo → router): the right machine, selected only (T5.3: "back
+    /// online" no longer connects on its own).
+    @Test func clickSelectsTheRightMachineAndNeverConnects() throws {
         let activations = Counter()
         let libraryOpens = Counter()
         let router = StatusNotificationRouter(activate: { activations.value += 1 })
@@ -639,7 +640,7 @@ struct StatusNotificationTests {
             StatusChange(machineID: id, machineName: "Mac mini", transition: .backOnline))
         let request = try #require(StatusNotificationPayload.request(from: info))
         #expect(request == .init(machineID: id, transition: .backOnline) && request.machineID != other)
-        #expect(request.connects)
+        #expect(request.action == .select)
 
         // Cold launch: the Library Window is not up yet, the request waits for it.
         router.open(request)
@@ -651,7 +652,7 @@ struct StatusNotificationTests {
         // "Offline" selects only.
         router.open(.init(machineID: other, transition: .wentOffline))
         #expect(libraryOpens.value == 1 && activations.value == 2)
-        #expect(router.take()?.connects == false)
+        #expect(router.take()?.action == .select)
 
         #expect(StatusNotificationPayload.request(from: [:]) == nil)
         #expect(StatusNotificationPayload.request(from: ["machineID": "nope", "transition": "online"]) == nil)

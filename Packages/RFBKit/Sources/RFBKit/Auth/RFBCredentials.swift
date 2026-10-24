@@ -8,10 +8,15 @@ public struct RFBCredentials: Sendable, CustomStringConvertible, CustomDebugStri
     public var username: String?
     /// VNC password (type 2) or macOS password (type 30).
     public var password: String?
+    /// The only security type these credentials may be used with, or `nil` for the usual preference
+    /// (30, then 2, then 1). The app sets 30 for a Mac (ARD) with a user name (T5.3 M4): its macOS
+    /// password must never go out as a VNC DES response, nor the session start unauthenticated.
+    public var requiredSecurityType: UInt8?
 
-    public init(username: String? = nil, password: String? = nil) {
+    public init(username: String? = nil, password: String? = nil, requiredSecurityType: UInt8? = nil) {
         self.username = username
         self.password = password
+        self.requiredSecurityType = requiredSecurityType
     }
 
     public static let none = RFBCredentials()

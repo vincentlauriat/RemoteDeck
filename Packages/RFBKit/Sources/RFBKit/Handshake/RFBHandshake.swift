@@ -170,9 +170,17 @@ public struct RFBHandshake: Sendable {
         case .securityTypeChosen:
             guard let type = u32(at: 0) else { return false }
             consume(4)
+            // A 3.3 server imposes the type; with a required one, anything else stops here (type 1
+            // would send ClientInit at once, type 2 the DES response). 0 stays a refusal.
+            if let required = credentials.requiredSecurityType, type != 0, type <= 255, type != UInt32(required) {
+                throw .requiredSecurityTypeMissing(required: required, offered: [UInt8(type)])
+            }
             switch type {
             case 0:
                 state = .refusalReason
+            case UInt32(SecurityType.none) where credentials.password != nil:
+                // A password is configured: never a session without authentication (T5.3).
+                throw .requiredSecurityTypeMissing(required: SecurityType.vncAuthentication, offered: [SecurityType.none])
             case UInt32(SecurityType.none):
                 begin(SecurityType.none, &out)
             case UInt32(SecurityType.vncAuthentication):
@@ -282,15 +290,41 @@ public struct RFBHandshake: Sendable {
     }
 
     /// Picks the security type by preference among those the credentials allow:
-    /// 30 (Apple DH) when a user name and password are set, then 2 (VNC) when a password is set, then 1.
+    /// 30 (Apple DH) when a user name and password are set, then 2 (VNC) when a password is set, then 1
+    /// only when no password is set.
+    /// With `credentials.requiredSecurityType`, that type or an error: never a fallback to 2 or 1.
     package static func selectSecurityType(offered: [UInt8], credentials: RFBCredentials) throws(RFBError) -> UInt8 {
         let hasUser = !(credentials.username ?? "").isEmpty
         let hasPassword = credentials.password != nil
+        if let required = credentials.requiredSecurityType {
+            guard offered.contains(required) else {
+                throw .requiredSecurityTypeMissing(required: required, offered: offered)
+            }
+            switch required {
+            case SecurityType.appleDiffieHellman where !(hasUser && hasPassword),
+                 SecurityType.vncAuthentication where !hasPassword:
+                throw .credentialsRequired(securityType: required)
+            case SecurityType.none, SecurityType.vncAuthentication, SecurityType.appleDiffieHellman:
+                return required
+            default:
+                throw .unsupportedSecurityTypes(offered)
+            }
+        }
         if offered.contains(SecurityType.appleDiffieHellman), hasUser, hasPassword {
             return SecurityType.appleDiffieHellman
         }
         if offered.contains(SecurityType.vncAuthentication), hasPassword {
             return SecurityType.vncAuthentication
+        }
+        // A password is configured: never type 1 (no authentication) in its place (T5.3). A server
+        // offering Apple DH asks for the user name; any other wants no password.
+        if hasPassword {
+            if offered.contains(SecurityType.appleDiffieHellman) {
+                throw .credentialsRequired(securityType: SecurityType.appleDiffieHellman)
+            }
+            if offered.contains(SecurityType.none) {
+                throw .requiredSecurityTypeMissing(required: SecurityType.vncAuthentication, offered: offered)
+            }
         }
         if offered.contains(SecurityType.none) {
             return SecurityType.none

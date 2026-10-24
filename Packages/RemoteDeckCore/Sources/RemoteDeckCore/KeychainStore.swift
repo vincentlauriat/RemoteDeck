@@ -51,7 +51,7 @@ public struct KeychainStore: Sendable {
         if status == errSecDuplicateItem {
             try check(SecItemUpdate(
                 query(for: account, synchronizable: synchronizable) as CFDictionary,
-                updateAttributes(data: data) as CFDictionary
+                updateAttributes(data: data, synchronizable: synchronizable) as CFDictionary
             ))
         } else {
             try check(status)
@@ -140,15 +140,24 @@ public struct KeychainStore: Sendable {
 
     func addAttributes(for account: KeychainAccount, synchronizable: Bool, data: Data) -> [String: Any] {
         var attributes = query(for: account, synchronizable: synchronizable)
-        attributes.merge(updateAttributes(data: data)) { _, new in new }
+        attributes.merge(updateAttributes(data: data, synchronizable: synchronizable)) { _, new in new }
         return attributes
     }
 
-    /// Attributes for `SecItemUpdate` when the item already exists.
-    func updateAttributes(data: Data) -> [String: Any] {
+    /// Attributes for `SecItemUpdate` when the item already exists (also written on every save, so an
+    /// existing item takes the current accessibility at its next save).
+    ///
+    /// A synchronizable item must be able to leave this Mac (`AfterFirstUnlock`; a `ThisDeviceOnly`
+    /// class is refused with it). Local items (the API key, the machine-password fallback) are
+    /// `AfterFirstUnlockThisDeviceOnly` (T5.3 L2): never in a backup restored elsewhere. Per
+    /// SecItem.h, macOS applies `kSecAttrAccessible` only to synchronizable or data-protection
+    /// keychain items, so a local item in the file-based keychain (what an unentitled build gets)
+    /// carries it without effect until local items move to the data-protection keychain (T4.3).
+    func updateAttributes(data: Data, synchronizable: Bool) -> [String: Any] {
         [
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock,
+            kSecAttrAccessible as String: synchronizable
+                ? kSecAttrAccessibleAfterFirstUnlock : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
     }
 

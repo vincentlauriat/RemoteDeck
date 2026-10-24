@@ -34,11 +34,17 @@ import RFBKit
 /// connected on the fake connection, so its newest row is in progress.
 enum LibraryDemo {
     struct Tester: ConnectionTester {
-        func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
+        func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration,
+                  allowsPublicInternet: Bool) async throws(RFBError) {
             do {
                 try await Task.sleep(for: .milliseconds(500))
             } catch {
                 throw .cancelled
+            }
+            // As the real tester: a public IP literal is refused unless confirmed (never contacted).
+            let address = RemoteAddress(text: host, scope: AddressScope(literal: host) ?? .privateNetwork)
+            guard PublicAddressPolicy.admits(address, confirmed: allowsPublicInternet) else {
+                throw .publicAddressNotAdmitted(address: address.text)
             }
         }
     }
@@ -152,7 +158,10 @@ enum LibraryDemo {
         private var received: Int64 = 0
         private var dropTask: Task<Void, Never>?
 
+        private let host: String
+
         init(_ target: SessionTarget, failsToConnect: Bool = false, dropsAfter: Duration? = nil) {
+            host = target.host
             failsAuthentication = target.host == "studio.local"
             self.failsToConnect = failsToConnect
             self.dropsAfter = dropsAfter
@@ -162,14 +171,22 @@ enum LibraryDemo {
 
         func shareClipboard(_ text: String) async throws(RFBError) -> ClipboardShare { .notSharing }
 
-        func connect(credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
+        /// The "address reached" is the host when it is an IP literal (`public`: a documentation-range
+        /// address, never contacted), else a LAN address.
+        func connect(credentials: RFBCredentials, timeout: Duration, allowsPublicInternet: Bool) async throws(RFBError)
+            -> RemoteAddress {
             do {
                 try await Task.sleep(for: .milliseconds(800))
             } catch {
                 throw .cancelled
             }
+            let address = RemoteAddress(text: host, scope: AddressScope(literal: host) ?? .privateNetwork)
+            if !PublicAddressPolicy.admits(address, confirmed: allowsPublicInternet) {
+                throw .publicAddressNotAdmitted(address: address.text)
+            }
             if failsAuthentication { throw .authFailed(reason: nil) }
             if failsToConnect { throw .network("demo: no route to host") }
+            return address
         }
 
         func events() async throws(RFBError) -> any AsyncSequence<RFBEvent, any Error> & Sendable {
@@ -393,7 +410,7 @@ enum LibraryDemo {
         let office = MachineGroup(name: "Office", sortOrder: 1)
         context.insert(servers)
         context.insert(office)
-        let machines = [
+        var machines = [
             Machine(name: "Mac mini", kind: .macARD, host: "mini.local", username: "vincent", isFavorite: true),
             Machine(name: "Build server", kind: .macARD, host: "10.0.1.20", username: "admin"),
             Machine(name: "NAS", kind: .vnc, host: "nas.local", port: 5901),
@@ -406,8 +423,17 @@ enum LibraryDemo {
         if watchesMachines {
             machines.filter { watchedMachineNames.contains($0.name) }.forEach { $0.isWatched = true }
         }
+        if showsPublicAddress {
+            machines.append(Machine(name: publicMachineName, kind: .macARD, host: "203.0.113.10", username: "vincent"))
+        }
         machines.forEach(context.insert)
         try? context.save()
     }
+
+    /// `public` (T5.3 H1): one more machine at 203.0.113.10 (TEST-NET-3, a documentation address the
+    /// demo never contacts), connected at launch: the "Unencrypted connection over the Internet" sheet,
+    /// then, after Connect anyway, the orange toolbar badge and the shared clipboard off.
+    static var showsPublicAddress: Bool { mode == "public" }
+    static let publicMachineName = "Cloud Mac"
 }
 #endif

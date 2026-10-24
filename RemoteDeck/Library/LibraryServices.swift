@@ -134,14 +134,19 @@ final class InMemoryPasswordStore: MachinePasswordStore {
 /// Opens and closes one RFB connection to check reachability and credentials.
 /// Injectable so tests never touch the network.
 protocol ConnectionTester: Sendable {
-    func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration) async throws(RFBError)
+    /// `allowsPublicInternet` false: an address on the public Internet is refused right after TCP,
+    /// before any credential (`PublicAddressPolicy`, as for a session; T5.3).
+    func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration,
+              allowsPublicInternet: Bool) async throws(RFBError)
 }
 
 /// The real tester: `RFBConnection.open`, then `close()` at once (it is a test, not a session).
 struct RFBConnectionTester: ConnectionTester {
-    func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
+    func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration,
+              allowsPublicInternet: Bool) async throws(RFBError) {
         let connection = RFBConnection(host: host, port: port)
-        _ = try await connection.open(credentials: credentials, timeout: timeout)
+        _ = try await connection.open(credentials: credentials, timeout: timeout,
+                                      allowsPublicInternet: allowsPublicInternet)
         await connection.close()
     }
 }
@@ -162,6 +167,15 @@ enum TestConnectionFailure: Equatable, Sendable {
     /// The server wants credentials that were not given (`username`: Apple DH needs a user name too).
     case credentialsRequired(username: Bool)
     case credentialTooLong
+    /// A Mac with a user name, and the server did not offer Apple authentication (type 30), or a 3.3
+    /// server imposed another type (T5.3 M4): nothing but the version banner was sent.
+    case appleAuthenticationMissing(offered: [UInt8])
+    /// A password is set and the server offers no password authentication, only none (type 1), or a
+    /// 3.3 server imposed type 1 (T5.3): no session without authentication.
+    case passwordAuthenticationMissing(offered: [UInt8])
+    /// The address is on the public Internet and was not confirmed for this machine and host: the
+    /// session asks first; the Machine Editor's Test stops there (no credential sent).
+    case publicAddressNotConfirmed
     /// Not an RFB 3.x server (banner shown).
     case notRFBServer(banner: String)
     /// Protocol violation or crypto failure.
@@ -180,6 +194,10 @@ enum TestConnectionFailure: Equatable, Sendable {
         case .unsupportedAppleSecurityTypes(let types): self = .unsupportedSecurityType(offered: types, apple: true)
         case .credentialsRequired(let type): self = .credentialsRequired(username: type == 30)
         case .credentialTooLong: self = .credentialTooLong
+        case .requiredSecurityTypeMissing(SecurityType.appleDiffieHellman, let offered):
+            self = .appleAuthenticationMissing(offered: offered)
+        case .requiredSecurityTypeMissing(_, let offered): self = .passwordAuthenticationMissing(offered: offered)
+        case .publicAddressNotAdmitted: self = .publicAddressNotConfirmed
         case .unsupportedVersion(let banner): self = .notRFBServer(banner: banner)
         case .protocolViolation, .cryptoFailure: self = .unexpectedResponse
         }
@@ -187,11 +205,13 @@ enum TestConnectionFailure: Equatable, Sendable {
 
     /// Localized message (`settings.t` is passed in so the mapping stays testable per language).
     func message(_ t: (String) -> String) -> String {
+        /// The server's reason is server-controlled (T5.3 L8): at most 200 scalars on one line, its
+        /// invisible scalars (bidi overrides, zero-width, controls) shown as `\u{…}`.
         func withReason(_ key: String, _ reason: String?) -> String {
             guard let reason = reason?.trimmingCharacters(in: .whitespacesAndNewlines), !reason.isEmpty else {
                 return t(key)
             }
-            return "\(t(key)) — \(reason)"
+            return "\(t(key)) — \(DisplayText.serverString(reason))"
         }
         switch self {
         case .unreachable: return t("test_unreachable")
@@ -205,6 +225,13 @@ enum TestConnectionFailure: Equatable, Sendable {
         case .credentialsRequired(let username):
             return t(username ? "test_needs_username_password" : "test_needs_password")
         case .credentialTooLong: return t("test_credential_too_long")
+        case .appleAuthenticationMissing(let offered):
+            let list = offered.map(String.init).joined(separator: ", ")
+            return list.isEmpty ? t("test_ard_requires_apple_auth") : "\(t("test_ard_requires_apple_auth")) (\(list))"
+        case .passwordAuthenticationMissing(let offered):
+            let list = offered.map(String.init).joined(separator: ", ")
+            return list.isEmpty ? t("test_password_auth_missing") : "\(t("test_password_auth_missing")) (\(list))"
+        case .publicAddressNotConfirmed: return t("test_public_not_confirmed")
         case .notRFBServer: return t("test_not_rfb")
         case .unexpectedResponse: return t("test_unexpected")
         }

@@ -111,7 +111,10 @@ struct AnthropicVMLoopbackTests {
     @Test func x11vncSecurityTypeChoice() throws {
         let password = RFBCredentials(password: "pw")
         #expect(try RFBHandshake.selectSecurityType(offered: [1], credentials: .none) == 1)
-        #expect(try RFBHandshake.selectSecurityType(offered: [1], credentials: password) == 1)
+        // T5.3: a password set and only type 1 offered never connects without authentication.
+        #expect(throws: RFBError.requiredSecurityTypeMissing(required: 2, offered: [1])) {
+            try RFBHandshake.selectSecurityType(offered: [1], credentials: password)
+        }
         #expect(try RFBHandshake.selectSecurityType(offered: [1, 2], credentials: .none) == 1)
         #expect(try RFBHandshake.selectSecurityType(offered: [1, 2], credentials: password) == 2)
         #expect(try RFBHandshake.selectSecurityType(offered: [2], credentials: password) == 2)

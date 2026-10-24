@@ -40,5 +40,8 @@ TODOS.md
 CHANGES.md
 *.zip
 
-# Real RFB captures stay local (never committed)
+# Real RFB captures stay local (never committed): rfb-probe's raw server bytes, summaries and frames
 Packages/RFBKit/Tests/RFBKitTests/Captures/new/
+Packages/RFBKit/Tests/RFBKitTests/Captures/**/*-server.bin
+Packages/RFBKit/Tests/RFBKitTests/Captures/**/*-summary.json
+Packages/RFBKit/Tests/RFBKitTests/Captures/**/*.png

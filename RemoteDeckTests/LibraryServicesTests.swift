@@ -38,7 +38,8 @@ struct TestConnectionFailureTests {
     /// The real tester against a closed loopback port: no server, so the TCP connect is refused.
     @Test func realTesterReportsAClosedLoopbackPortAsUnreachable() async {
         do {
-            try await RFBConnectionTester().test(host: "127.0.0.1", port: 1, credentials: .none, timeout: .seconds(5))
+            try await RFBConnectionTester().test(host: "127.0.0.1", port: 1, credentials: .none, timeout: .seconds(5),
+                                                allowsPublicInternet: false)
             Issue.record("expected a failure")
         } catch {
             #expect(TestConnectionFailure(error) == .unreachable)

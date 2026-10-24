@@ -68,6 +68,7 @@ actor FakeConnectionTester: ConnectionTester {
         let port: UInt16
         let credentials: RFBCredentials
         let timeout: Duration
+        let allowsPublicInternet: Bool
     }
 
     private(set) var calls: [Call] = []
@@ -76,7 +77,12 @@ actor FakeConnectionTester: ConnectionTester {
     /// Ignores cancellation and answers `result` after this delay: a result racing a cancel.
     private var lateBy: Duration?
 
-    init(result: Result<Void, RFBError> = .success(()), hangs: Bool = false, lateBy: Duration? = nil) {
+    /// The address the test "reaches" (T5.3); a LAN one by default.
+    private let address: RemoteAddress
+
+    init(result: Result<Void, RFBError> = .success(()), hangs: Bool = false, lateBy: Duration? = nil,
+         address: RemoteAddress = RemoteAddress(text: "192.168.1.20", scope: .privateNetwork)) {
+        self.address = address
         self.result = result
         self.hangs = hangs
         self.lateBy = lateBy
@@ -87,8 +93,14 @@ actor FakeConnectionTester: ConnectionTester {
         self.hangs = hangs
     }
 
-    func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
-        calls.append(Call(host: host, port: port, credentials: credentials, timeout: timeout))
+    func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration,
+              allowsPublicInternet: Bool) async throws(RFBError) {
+        calls.append(Call(host: host, port: port, credentials: credentials, timeout: timeout,
+                          allowsPublicInternet: allowsPublicInternet))
+        // Like RFBConnectionTester: the policy, before any credential.
+        guard PublicAddressPolicy.admits(address, confirmed: allowsPublicInternet) else {
+            throw .publicAddressNotAdmitted(address: address.text)
+        }
         if let lateBy {
             try? await Task.sleep(for: lateBy)
             try result.get()
