@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import SwiftData
 import UserNotifications
@@ -87,12 +88,23 @@ struct RemoteDeckApp: App {
         self.makeDiscovery = makeDiscovery
         self.storeError = storeError
         self.notificationAuthorizer = notificationAuthorizer
+        // Resilience (T5.1): the hosted tests never watch the network path or sleep and wake; demo
+        // modes see the network as always there and ignore sleep, except `resilience`, which keeps
+        // the real path and the real sleep and wake.
+        var sessionPath: (any NetworkPathMonitoring)? = LibraryStore.isRunningTests() ? nil : NWNetworkPathMonitor(countsRequiresConnection: true)
+        var powerCenter: NotificationCenter? = LibraryStore.isRunningTests() ? nil : NSWorkspace.shared.notificationCenter
+        #if DEBUG
+        if LibraryDemo.isEnabled && !LibraryDemo.simulatesDrops {
+            sessionPath = LibraryDemo.AlwaysOnlinePath()
+            powerCenter = nil
+        }
+        #endif
         let sessions = SessionManager(context: container.mainContext, passwords: passwords,
                                       tester: tester, makeConnection: makeConnection,
                                       pasteboard: pasteboard,
                                       makeAssistant: { [claudeClient] session in
             AssistantModel(port: session, client: claudeClient, apiKey: { settings.anthropicAPIKey })
-        })
+        }, path: sessionPath, workspaceCenter: powerCenter)
         _sessions = State(initialValue: sessions)
 
         // Status Notifications (T4.5). The hosted tests never probe, post or read the notification
@@ -120,13 +132,7 @@ struct RemoteDeckApp: App {
         let reachability = ReachabilityMonitor(
             probe: probe, path: path, poster: poster, configuration: configuration,
             notificationsEnabled: { settings.notificationsEnabled },
-            sessionState: { [sessions] id in
-                switch sessions.sessions[id]?.phase {
-                case .connected: .connected
-                case .connecting: .connecting
-                default: .noSession
-                }
-            })
+            sessionState: { [sessions] id in sessions.sessions[id]?.phase.watchedState ?? .noSession })
         _reachability = State(initialValue: reachability)
         watchFeed = WatchTargetFeed(context: container.mainContext, monitor: reachability)
         let router = StatusNotificationRouter()

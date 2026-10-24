@@ -99,6 +99,20 @@ extension RFBCredentials {
     }
 }
 
+/// Automatic reconnection (T5.1, TRD › Architecture › Session resilience).
+struct SessionResilience: Sendable {
+    /// From a drop (or the network coming back) to the one automatic attempt.
+    var reconnectDelay: Duration = .seconds(2)
+    /// After wake, before the sessions closed for sleep reconnect (the network may still be coming back).
+    var wakeGrace: Duration = .seconds(5)
+    /// An automatic attempt that drops again sooner than this after its first frame gets no other
+    /// automatic attempt: the banner shows (a server that drops every session never loops).
+    var rearmAfter: TimeInterval = 60
+    /// A connected session is closed for a lost network path only if the path stays lost this long:
+    /// a shorter blip keeps the session (the overlay says "Waiting for network…" meanwhile).
+    var pathLossGrace: Duration = .seconds(3)
+}
+
 // MARK: - Failures
 
 /// Why a session is not (or no longer) showing the remote screen: the Session Window's error banner
@@ -169,17 +183,43 @@ enum SessionFailure: Equatable, Sendable {
 /// `InputSender.finish()`, `await stopped()`, then close the connection. The event loop is never
 /// cancelled before that: ending the event sequence would close the socket under the releases. A
 /// generation token makes every late result of a stopped attempt a no-op.
+///
+/// Resilience (T5.1): a drop after the first frame gets one automatic attempt `reconnectDelay` later
+/// (the overlay says "Reconnecting…" over the last frame); if it fails, the "Connection lost" banner
+/// (credentials keep their own banner). No network: no attempt until the path is back
+/// (`networkLost`/`networkRestored`). Sleep closes the session cleanly and wake reconnects it
+/// (`suspendForSleep`/`resumeAfterWake`). The assistant is always stopped before any teardown.
 @Observable
 @MainActor
 final class SessionModel {
     enum Phase: Equatable {
         case idle
-        /// Overlay "Connecting to <name>…" with Cancel, until the first framebuffer update.
+        /// Overlay "Connecting to <name>…" with Cancel, until the first framebuffer update (an
+        /// automatic attempt says "Reconnecting to <name>…": `isAutomaticAttempt`).
         case connecting
         case connected
         case failed(SessionFailure)
+        /// No attempt runs and no record is open, without a banner: the last frame stays dimmed under
+        /// an overlay until the automatic attempt (T5.1).
+        case waiting(WaitReason)
         /// Window closing or closed.
         case closed
+    }
+
+    enum WaitReason: Equatable, Sendable {
+        /// Lost after the first frame: the automatic attempt starts after `reconnectDelay`.
+        case retryDelay
+        /// This Mac has no network: nothing is tried until the path is back.
+        case network
+        /// Closed for sleep: reconnects after wake.
+        case asleep
+    }
+
+    /// What covers the remote screen; the view picks the words.
+    enum Overlay: Equatable {
+        case connecting
+        case reconnecting
+        case waitingForNetwork
     }
 
     /// `open` timeout. Longer than the Test's 5 s: a session on a slow VPN should not fail where it
@@ -251,10 +291,35 @@ final class SessionModel {
     /// Longest wait for the remote to redraw before a screenshot that follows an action.
     @ObservationIgnored var assistantSettleLimit: Duration = .seconds(1)
 
+    /// The current attempt was started by the session itself (after a drop, the network back, wake).
+    private(set) var isAutomaticAttempt = false
+    /// This Mac has a network path (`SessionManager`); no automatic attempt starts without one.
+    @ObservationIgnored var isNetworkAvailable: @MainActor () -> Bool = { true }
+    @ObservationIgnored private let resilience: SessionResilience
+    /// Sleeps for the reconnect delay; a fake in tests.
+    @ObservationIgnored private let reconnectClock: any ReachabilityClock
+    /// The delay before the automatic attempt.
+    @ObservationIgnored private var pendingReconnect: Task<Void, Never>?
+    /// The teardown of a session stopped for sleep or for the network; the next attempt waits for it.
+    @ObservationIgnored private(set) var suspension: Task<Void, Never>?
+    /// Uptime of the current attempt's first frame (`SessionResilience.rearmAfter`).
+    @ObservationIgnored private var firstFrameUptime: TimeInterval?
+    /// Bumped by `cancelPendingReconnect`: a pending task that wakes up with an older token does nothing.
+    @ObservationIgnored private var reconnectToken = 0
+    /// Connected, but this Mac lost its path less than `pathLossGrace` ago: the socket is kept.
+    private(set) var isPathLost = false
+    @ObservationIgnored private var pathLossTimer: Task<Void, Never>?
+    /// The keyboard was captured when the session was lost: the automatic attempt captures it again.
+    @ObservationIgnored private var recapturesAfterReconnect = false
+
     init(machine: Machine, context: ModelContext, passwords: any MachinePasswordStore,
          display: SessionDisplayModel?, clock: SessionClock = .live,
          pasteboard: any ClipboardPasteboard, clipboardPollInterval: Duration? = .milliseconds(500),
+         resilience: SessionResilience = SessionResilience(),
+         reconnectClock: any ReachabilityClock = ContinuousReachabilityClock(),
          makeConnection: @escaping @MainActor (SessionTarget) -> any SessionConnection) {
+        self.resilience = resilience
+        self.reconnectClock = reconnectClock
         target = SessionTarget(machine)
         scalingMode = machine.scalingModeValue
         clipboardSharing = machine.sharedClipboard
@@ -276,12 +341,30 @@ final class SessionModel {
         return nil
     }
 
+    var overlay: Overlay? {
+        switch phase {
+        case .connecting: isAutomaticAttempt ? .reconnecting : .connecting
+        case .connected: isPathLost ? .waitingForNetwork : nil
+        case .waiting(.network): .waitingForNetwork
+        case .waiting: .reconnecting
+        case .idle, .failed, .closed: nil
+        }
+    }
+
     // MARK: Connect
 
     /// Starts an attempt (window opened, Retry, Reconnect, credentials saved). The connect time runs
     /// from here, before the Keychain read: "click to first frame".
     func connect() {
         guard phase != .connecting, phase != .connected, phase != .closed else { return }
+        startAttempt(automatic: false)
+    }
+
+    private func startAttempt(automatic: Bool) {
+        cancelPendingReconnect()
+        cancelPathLoss()
+        isAutomaticAttempt = automatic
+        firstFrameUptime = nil
         generation += 1
         let generation = self.generation
         if let machine = fetchMachine() { target = SessionTarget(machine) }   // edited credentials
@@ -295,7 +378,9 @@ final class SessionModel {
 
         let password: String?
         do {
-            password = try passwords.storedPassword(for: target.machineID)?.password
+            // An automatic attempt never brings up a Keychain dialog nobody asked for: it fails instead
+            // (errSecInteractionNotAllowed → the "password could not be read" banner).
+            password = try passwords.storedPassword(for: target.machineID, allowsInteraction: !automatic)?.password
         } catch {
             finishRecord(outcome: SessionFailure.passwordUnreadable(status: error.status).outcome, bytes: 0)
             phase = .failed(.passwordUnreadable(status: error.status))
@@ -358,12 +443,15 @@ final class SessionModel {
 
     private func didReceiveFirstFrame() {
         phase = .connected
+        firstFrameUptime = clock.uptime()
         let millis = Int(((clock.uptime() - startUptime) * 1000).rounded())
         record?.outcomeValue = .connected
         record?.connectMillis = millis
         fetchMachine()?.lastConnectedAt = clock.now()
         save()
-        surface?.startCapture()
+        // A reconnect takes the keyboard back only if it was captured when the session was lost.
+        if !isAutomaticAttempt || recapturesAfterReconnect { surface?.startCapture() }
+        recapturesAfterReconnect = false
         clipboard.sessionStarted()
     }
 
@@ -458,6 +546,8 @@ final class SessionModel {
         let wasConnecting = phase == .connecting
         let wasRunning = wasConnecting || phase == .connected
         generation += 1
+        cancelPendingReconnect()   // nothing reconnects a closed window
+        cancelPathLoss()
         // The assistant's releases go into the input sender before the view's and before `finish()`.
         assistant?.sessionEnded()
         phase = .closed
@@ -481,33 +571,202 @@ final class SessionModel {
     }
 
     /// A failure from the attempt `generation`; ignored once a newer attempt or a close took over.
+    /// A drop after the first frame waits for the automatic attempt instead of showing the banner,
+    /// unless that attempt was itself automatic and dropped too soon (`rearmAfter`). A failed
+    /// automatic attempt shows "Connection lost" (its record keeps its own outcome), except a
+    /// credential problem, which shows its own banner: nothing is retried after it.
     private func stop(failing failure: SessionFailure, generation: Int) async {
         guard generation == self.generation else { return }
+        cancelPathLoss()
+        if phase == .connected { recapturesAfterReconnect = isCapturing }
         assistant?.sessionEnded()
-        phase = .failed(failure)
+        let reconnects = phase == .connected && failure == .connectionLost && mayReconnectAutomatically
+        if reconnects {
+            phase = .waiting(isNetworkAvailable() ? .retryDelay : .network)
+        } else {
+            phase = .failed(isAutomaticAttempt && !failure.isAuthentication ? .connectionLost : failure)
+        }
         finishRecord(outcome: failure.outcome, bytes: nil)
         let record = self.record   // a Retry during the teardown starts a new record
         let bytes = await tearDown(windowClosing: false)
         record?.bytesReceived = bytes
         save()
+        // Not if the window closed, the network went away or the user reconnected meanwhile.
+        if reconnects, generation == self.generation, phase == .waiting(.retryDelay) { scheduleReconnect() }
+    }
+
+    /// A user's attempt may always reconnect once; an automatic one only once it held `rearmAfter`.
+    private var mayReconnectAutomatically: Bool {
+        guard isAutomaticAttempt else { return true }
+        guard let firstFrameUptime else { return false }
+        return clock.uptime() - firstFrameUptime >= resilience.rearmAfter
     }
 
     /// Input release → `finish()` → `stopped()` → close. Returns the bytes received.
     private func tearDown(windowClosing: Bool) async -> Int64 {
+        let (sender, connection) = beginTearDown(windowClosing: windowClosing)
+        return await finishTearDown(sender: sender, connection: connection)
+    }
+
+    /// The synchronous part: the input is released and the sender finished now, and the session lets
+    /// go of both, so an attempt started meanwhile can never be torn down by this one.
+    private func beginTearDown(windowClosing: Bool) -> (InputSender?, (any SessionConnection)?) {
         if windowClosing { surface?.tearDownInput() } else { surface?.releaseCapture() }
         clipboard.sessionStopped()
         let sender = self.sender
         let connection = self.connection
         task = nil
-        if let sender {
-            sender.finish()
-            await Self.waitUntilStopped(sender, limit: stopTimeout)
-        }
-        if self.sender === sender { self.sender = nil }
+        self.sender = nil
+        self.connection = nil
+        sender?.finish()
+        return (sender, connection)
+    }
+
+    private func finishTearDown(sender: InputSender?, connection: (any SessionConnection)?) async -> Int64 {
+        if let sender { await Self.waitUntilStopped(sender, limit: stopTimeout) }
         guard let connection else { return 0 }
         await connection.close()
-        if self.connection === connection { self.connection = nil }
         return await connection.receivedByteCount
+    }
+
+    // MARK: Resilience (T5.1)
+
+    /// This Mac lost its network path. A connected session keeps its socket for `pathLossGrace`
+    /// ("Waiting for network…" over it) and is closed only if the path is still lost then (record
+    /// `dropped`); an automatic attempt in flight is stopped at once (`cancelled`), and the delay
+    /// before one is held: no attempt and no banner while offline. A user's own attempt is left to
+    /// fail with its banner.
+    func networkLost() {
+        switch phase {
+        case .connected:
+            guard !isPathLost else { return }
+            isPathLost = true
+            let generation = self.generation
+            let clock = reconnectClock
+            let grace = resilience.pathLossGrace
+            pathLossTimer = Task { [weak self] in
+                guard (try? await clock.sleep(for: grace)) != nil, !Task.isCancelled, let self,
+                      self.generation == generation, self.isPathLost, self.phase == .connected else { return }
+                self.pathLossTimer = nil
+                self.isPathLost = false
+                // Same anti-flap rule as a drop: an automatic attempt lost again within `rearmAfter`
+                // shows the banner instead of waiting for one more.
+                if self.mayReconnectAutomatically {
+                    self.suspend(to: .waiting(.network), outcome: .dropped)
+                } else {
+                    self.suspend(to: .failed(.connectionLost), outcome: .dropped)
+                }
+            }
+        case .connecting where isAutomaticAttempt: suspend(to: .waiting(.network), outcome: .cancelled)
+        case .waiting(.retryDelay):
+            cancelPendingReconnect()
+            phase = .waiting(.network)
+        default: break   // asleep: wake decides; failed, idle, closed: nothing runs
+        }
+    }
+
+    /// The path is back: a blip shorter than `pathLossGrace` changes nothing; otherwise one automatic
+    /// attempt, after `reconnectDelay`.
+    func networkRestored() {
+        if isPathLost {
+            cancelPathLoss()
+            return
+        }
+        guard phase == .waiting(.network) else { return }
+        phase = .waiting(.retryDelay)
+        scheduleReconnect()
+    }
+
+    /// The Mac goes to sleep: the session closes cleanly now (assistant stopped, input released, then
+    /// the connection closed), and is reconnected after wake. A connected record keeps `connected`
+    /// with its end (as a Disconnect), one still connecting becomes `cancelled`. A session showing a
+    /// banner stays as it is.
+    func suspendForSleep() {
+        switch phase {
+        case .connected: suspend(to: .waiting(.asleep), outcome: nil)
+        case .connecting: suspend(to: .waiting(.asleep), outcome: .cancelled)
+        case .waiting:
+            cancelPendingReconnect()
+            phase = .waiting(.asleep)
+        case .idle, .failed, .closed: break
+        }
+    }
+
+    /// After wake (and its grace, `SessionManager`): one automatic attempt, once the sleep teardown is
+    /// over; without a network path, it waits for it. A sleep (or anything that cancels it) before
+    /// the teardown ends leaves it without effect.
+    func resumeAfterWake() {
+        guard phase == .waiting(.asleep) else { return }
+        cancelPendingReconnect()
+        let token = reconnectToken
+        let suspension = self.suspension
+        pendingReconnect = Task { [weak self] in
+            await suspension?.value
+            guard !Task.isCancelled, let self, self.reconnectToken == token,
+                  self.phase == .waiting(.asleep) else { return }
+            self.pendingReconnect = nil
+            if self.isNetworkAvailable() {
+                self.startAttempt(automatic: true)
+            } else {
+                self.phase = .waiting(.network)
+            }
+        }
+    }
+
+    /// The automatic attempt, `reconnectDelay` from now, once any suspension teardown is over.
+    private func scheduleReconnect() {
+        cancelPendingReconnect()
+        let token = reconnectToken
+        let clock = reconnectClock
+        let delay = resilience.reconnectDelay
+        pendingReconnect = Task { [weak self] in
+            guard (try? await clock.sleep(for: delay)) != nil, !Task.isCancelled else { return }
+            await self?.suspension?.value
+            guard !Task.isCancelled, let self, self.reconnectToken == token,
+                  self.phase == .waiting(.retryDelay) else { return }
+            self.pendingReconnect = nil
+            self.startAttempt(automatic: true)
+        }
+    }
+
+    private func cancelPendingReconnect() {
+        reconnectToken += 1
+        pendingReconnect?.cancel()
+        pendingReconnect = nil
+    }
+
+    private func cancelPathLoss() {
+        isPathLost = false
+        pathLossTimer?.cancel()
+        pathLossTimer = nil
+    }
+
+    /// Stops the running attempt for a cause outside the session (sleep, no network): later results of
+    /// the attempt are ignored, so the stream ending under the close is not taken for a drop; the
+    /// assistant is stopped before the input release; the teardown runs in the usual order.
+    private func suspend(to next: Phase, outcome: SessionOutcome?) {
+        cancelPendingReconnect()
+        cancelPathLoss()
+        if phase == .connected { recapturesAfterReconnect = isCapturing }
+        generation += 1
+        assistant?.sessionEnded()
+        phase = next
+        finishRecord(outcome: outcome, bytes: nil)
+        let record = self.record
+        let task = self.task
+        let opening = self.opening
+        self.opening = nil
+        let (sender, connection) = beginTearDown(windowClosing: false)
+        let previous = suspension
+        suspension = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            let bytes = await self.finishTearDown(sender: sender, connection: connection)
+            task?.cancel()   // after the close, as in `completeClose`
+            opening?.cancel()
+            record?.bytesReceived = bytes
+            self.save()
+        }
     }
 
     /// `sender.stopped()`, but at most `limit`: then the connection is closed anyway, which also ends

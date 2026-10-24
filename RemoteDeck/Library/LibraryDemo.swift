@@ -135,14 +135,27 @@ enum LibraryDemo {
     /// Then the second tab is selected as ⌘2 would (AC6): "NAS" in front, the others still connected.
     static let selectsSecondTabAfter: Duration = .seconds(3)
 
+    /// `resilience` (T5.1): "Mac mini" and "NAS" open as two tabs; each first connection drops 4 s
+    /// after its first frame. "Mac mini" reconnects on its own 2 s later; the automatic attempt of
+    /// "NAS" fails, so it shows "Connection lost", and its Reconnect works. The path monitor and sleep
+    /// and wake are the real ones (turn Wi-Fi off, sleep the Mac): the connections stay fake.
+    static var simulatesDrops: Bool { mode == "resilience" }
+    static let resilienceMachineNames = ["Mac mini", "NAS"]
+    @MainActor private static var resilienceAttempts: [String: Int] = [:]
+
     /// A fake session: the color-bar test pattern after 0.8 s; "studio.local" fails authentication.
     actor Connection: SessionConnection {
         private let failsAuthentication: Bool
+        private let failsToConnect: Bool
+        private let dropsAfter: Duration?
         private var continuation: AsyncThrowingStream<RFBEvent, any Error>.Continuation?
         private var received: Int64 = 0
+        private var dropTask: Task<Void, Never>?
 
-        init(_ target: SessionTarget) {
+        init(_ target: SessionTarget, failsToConnect: Bool = false, dropsAfter: Duration? = nil) {
             failsAuthentication = target.host == "studio.local"
+            self.failsToConnect = failsToConnect
+            self.dropsAfter = dropsAfter
         }
 
         func setClipboardSharing(_ on: Bool) {}
@@ -156,6 +169,7 @@ enum LibraryDemo {
                 throw .cancelled
             }
             if failsAuthentication { throw .authFailed(reason: nil) }
+            if failsToConnect { throw .network("demo: no route to host") }
         }
 
         func events() async throws(RFBError) -> any AsyncSequence<RFBEvent, any Error> & Sendable {
@@ -167,7 +181,19 @@ enum LibraryDemo {
                                 pixels: FramebufferDebugView.testPattern(width: width, height: height))])))
             received = Int64(width * height * 4)
             self.continuation = continuation
+            if let dropsAfter {
+                dropTask = Task { [weak self] in
+                    try? await Task.sleep(for: dropsAfter)
+                    await self?.drop()
+                }
+            }
             return stream
+        }
+
+        /// The server goes away (`resilience`).
+        private func drop() {
+            continuation?.finish(throwing: RFBError.connectionClosed)
+            continuation = nil
         }
 
         /// The test pattern, as the session shows it (the Claude Assistant's screenshot).
@@ -181,6 +207,7 @@ enum LibraryDemo {
         func send(_ messages: [ClientMessage]) async throws(RFBError) {}
 
         func close() {
+            dropTask?.cancel()
             continuation?.finish()
             continuation = nil
         }
@@ -188,8 +215,16 @@ enum LibraryDemo {
         var receivedByteCount: Int64 { received }
     }
 
+    @MainActor
     static func connection(_ target: SessionTarget) -> any SessionConnection {
-        Connection(target)
+        guard simulatesDrops else { return Connection(target) }
+        let attempt = resilienceAttempts[target.host, default: 0]
+        resilienceAttempts[target.host] = attempt + 1
+        switch (target.host, attempt) {
+        case (_, 0): return Connection(target, dropsAfter: .seconds(4))
+        case ("nas.local", 1): return Connection(target, failsToConnect: true)
+        default: return Connection(target)
+        }
     }
 
     // MARK: Claude Assistant (`-LibraryDemo assistant`)

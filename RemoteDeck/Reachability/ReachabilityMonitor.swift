@@ -139,11 +139,24 @@ protocol NetworkPathMonitoring: AnyObject {
 @MainActor
 final class NWNetworkPathMonitor: NetworkPathMonitoring {
     private var monitor: NWPathMonitor?
+    private let countsRequiresConnection: Bool
+
+    /// `countsRequiresConnection`: a path that `.requiresConnection` (a VPN on demand, a cellular
+    /// interface to bring up) counts as available. Sessions do (connecting brings it up: T5.1); the
+    /// reachability probes do not.
+    init(countsRequiresConnection: Bool = false) {
+        self.countsRequiresConnection = countsRequiresConnection
+    }
+
+    nonisolated static func isAvailable(_ status: NWPath.Status, countingRequiresConnection: Bool) -> Bool {
+        status == .satisfied || (countingRequiresConnection && status == .requiresConnection)
+    }
 
     func start(_ onChange: @escaping @MainActor @Sendable (Bool) -> Void) {
         let monitor = NWPathMonitor()
+        let countsRequiresConnection = self.countsRequiresConnection
         monitor.pathUpdateHandler = { path in
-            let available = path.status == .satisfied
+            let available = Self.isAvailable(path.status, countingRequiresConnection: countsRequiresConnection)
             MainActor.assumeIsolated { onChange(available) }   // delivered on the main queue
         }
         monitor.start(queue: .main)

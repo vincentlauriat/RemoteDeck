@@ -15,6 +15,8 @@ import os
 public actor RFBConnection {
     public nonisolated let host: String
     public nonisolated let port: UInt16
+    /// TCP keepalive and the viability grace (T5.1): how a dead connection is noticed.
+    public nonisolated let liveness: ConnectionLiveness
     private let networkQueue = DispatchQueue(label: "RFBKit.RFBConnection.network")
     private let handshakeQueue = DispatchQueue(label: "RFBKit.RFBConnection.handshake", qos: .userInitiated)
     private var connection: NWConnection?
@@ -33,6 +35,11 @@ public actor RFBConnection {
     /// Whether a connection is currently held (open or being opened).
     var isOpen: Bool { connection != nil }
 
+    /// The TCP options of the connection held now (T5.1: keepalive), for tests.
+    package var tcpOptionsInUse: NWProtocolTCP.Options? {
+        connection?.parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options
+    }
+
     /// Bytes received from the server since this connection was created: the handshake (counted when
     /// `open` returns or fails) plus every chunk read by the session (SessionRecord.bytesReceived).
     public private(set) var bytesReceived: Int64 = 0
@@ -42,13 +49,15 @@ public actor RFBConnection {
     /// Package-visible for the `rfb-probe` capture tool; the app does not use it.
     private let receiveObserver: (@Sendable (Data) -> Void)?
 
-    public init(host: String, port: UInt16 = 5900) {
-        self.init(host: host, port: port, receiveObserver: nil)
+    public init(host: String, port: UInt16 = 5900, liveness: ConnectionLiveness = ConnectionLiveness()) {
+        self.init(host: host, port: port, liveness: liveness, receiveObserver: nil)
     }
 
-    package init(host: String, port: UInt16 = 5900, receiveObserver: (@Sendable (Data) -> Void)?) {
+    package init(host: String, port: UInt16 = 5900, liveness: ConnectionLiveness = ConnectionLiveness(),
+                 receiveObserver: (@Sendable (Data) -> Void)?) {
         self.host = host
         self.port = port
+        self.liveness = liveness
         self.receiveObserver = receiveObserver
     }
 
@@ -57,8 +66,14 @@ public actor RFBConnection {
                      entropy: HandshakeEntropy = .system) async throws(RFBError) -> HandshakeResult {
         guard connection == nil else { throw .protocolViolation("connection already opened") }
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw .network("invalid port \(port)") }
-        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: liveness.parameters())
         self.connection = connection
+        // Not viable for longer than the grace (its interface went away): cancelled, so the session's
+        // read fails and the app treats it as a drop.
+        let watchdog = ViabilityWatchdog(grace: liveness.viabilityGrace, queue: networkQueue) { [weak connection] in
+            connection?.cancel()
+        }
+        connection.viabilityUpdateHandler = { viable in watchdog.viabilityChanged(viable) }
 
         let deadline = Deadline()
         networkQueue.asyncAfter(deadline: .now() + timeout.timeInterval) {

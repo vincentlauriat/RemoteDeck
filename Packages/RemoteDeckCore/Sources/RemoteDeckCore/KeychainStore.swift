@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 /// Account of a KeychainCredential (BackendSchema › KeychainCredential).
@@ -62,12 +63,14 @@ public struct KeychainStore: Sendable {
         try read(account, synchronizable: account.isSynchronizable)
     }
 
-    /// Reads the item carrying exactly this sync flag.
-    public func read(_ account: KeychainAccount, synchronizable: Bool) throws(KeychainError) -> String? {
-        var lookup = query(for: account, synchronizable: synchronizable)
-        lookup[kSecReturnData as String] = true
-        lookup[kSecMatchLimit as String] = kSecMatchLimitOne
-
+    /// Reads the item carrying exactly this sync flag. With `allowsInteraction` false, a read that
+    /// would need the user (an authentication dialog) fails with `errSecInteractionNotAllowed`
+    /// instead of showing it (an automatic reconnect, T5.1). Per Security's SecItem.h this holds for
+    /// Data Protection keychain items (synchronizable ones); a legacy file-keychain item may still
+    /// ask.
+    public func read(_ account: KeychainAccount, synchronizable: Bool,
+                     allowsInteraction: Bool = true) throws(KeychainError) -> String? {
+        let lookup = readQuery(for: account, synchronizable: synchronizable, allowsInteraction: allowsInteraction)
         var result: AnyObject?
         let status = SecItemCopyMatching(lookup as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
@@ -92,6 +95,20 @@ public struct KeychainStore: Sendable {
         let status = SecItemDelete(query as CFDictionary)
         if status == errSecItemNotFound { return }
         try check(status)
+    }
+
+    /// `SecItemCopyMatching` query for one item's data.
+    func readQuery(for account: KeychainAccount, synchronizable: Bool, allowsInteraction: Bool) -> [String: Any] {
+        var lookup = query(for: account, synchronizable: synchronizable)
+        lookup[kSecReturnData as String] = true
+        lookup[kSecMatchLimit as String] = kSecMatchLimitOne
+        if !allowsInteraction {
+            // The non-deprecated form of kSecUseAuthenticationUIFail.
+            let context = LAContext()
+            context.interactionNotAllowed = true
+            lookup[kSecUseAuthenticationContext as String] = context
+        }
+        return lookup
     }
 
     /// Attributes identifying an item. Carries `kSecAttrSynchronizable` on every call:

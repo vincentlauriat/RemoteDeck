@@ -21,6 +21,9 @@ enum PasswordScope: Equatable, Sendable {
 @MainActor
 protocol MachinePasswordStore {
     func password(for machineID: UUID, scope: PasswordScope) throws(KeychainError) -> String?
+    /// `allowsInteraction` false: never a system dialog; a read that needs one fails instead
+    /// (`errSecInteractionNotAllowed`). Stores without any UI ignore it.
+    func password(for machineID: UUID, scope: PasswordScope, allowsInteraction: Bool) throws(KeychainError) -> String?
     func setPassword(_ password: String, for machineID: UUID, scope: PasswordScope) throws(KeychainError)
     func deletePassword(for machineID: UUID, scope: PasswordScope) throws(KeychainError)
     /// Deletes both scopes.
@@ -28,16 +31,23 @@ protocol MachinePasswordStore {
 }
 
 extension MachinePasswordStore {
+    func password(for machineID: UUID, scope: PasswordScope, allowsInteraction: Bool) throws(KeychainError) -> String? {
+        try password(for: machineID, scope: scope)
+    }
+
     /// The synced password, else the local one. A synced read refused with -34018 counts as
     /// "no synced item".
-    func storedPassword(for machineID: UUID) throws(KeychainError) -> (password: String, scope: PasswordScope)? {
+    func storedPassword(for machineID: UUID,
+                        allowsInteraction: Bool = true) throws(KeychainError) -> (password: String, scope: PasswordScope)? {
         do throws(KeychainError) {
-            if let synced = try password(for: machineID, scope: .synced) { return (synced, .synced) }
+            if let synced = try password(for: machineID, scope: .synced, allowsInteraction: allowsInteraction) {
+                return (synced, .synced)
+            }
         } catch {
             // No entitlement: only the local fallback can exist.
             guard error.status == errSecMissingEntitlement else { throw error }
         }
-        return try password(for: machineID, scope: .local).map { ($0, .local) }
+        return try password(for: machineID, scope: .local, allowsInteraction: allowsInteraction).map { ($0, .local) }
     }
 
     /// Saves to iCloud Keychain; on -34018 saves a local item instead (Vincent, 2026-10-22).
@@ -71,6 +81,10 @@ extension MachinePasswordStore {
 extension KeychainStore: MachinePasswordStore {
     func password(for machineID: UUID, scope: PasswordScope) throws(KeychainError) -> String? {
         try read(.machine(machineID), synchronizable: scope.isSynchronizable)
+    }
+
+    func password(for machineID: UUID, scope: PasswordScope, allowsInteraction: Bool) throws(KeychainError) -> String? {
+        try read(.machine(machineID), synchronizable: scope.isSynchronizable, allowsInteraction: allowsInteraction)
     }
 
     func setPassword(_ password: String, for machineID: UUID, scope: PasswordScope) throws(KeychainError) {
