@@ -10,8 +10,11 @@ import RFBKit
 /// One RFB connection as the Session Window uses it. `RFBConnection` in the app; a fake in tests
 /// (the hosted tests cannot listen on loopback). A new instance per attempt.
 protocol SessionConnection: AnyObject, Sendable {
-    /// Connects and authenticates (`RFBConnection.open`).
-    func connect(credentials: RFBCredentials, timeout: Duration) async throws(RFBError)
+    /// Connects and authenticates (`RFBConnection.open`) and returns the address reached. Without
+    /// `allowsPublicInternet`, an address on the public Internet is refused right after TCP, before any
+    /// RFB byte (`RFBError.publicAddressNotAdmitted`): the user confirms first (T5.3 H1).
+    func connect(credentials: RFBCredentials, timeout: Duration, allowsPublicInternet: Bool) async throws(RFBError)
+        -> RemoteAddress
     /// Starts the framebuffer protocol. The sequence is consumed as is: taking an update is what asks
     /// the server for the next one (`RFBSessionEvents`), so it must never be re-buffered.
     func events() async throws(RFBError) -> any AsyncSequence<RFBEvent, any Error> & Sendable
@@ -30,8 +33,11 @@ protocol SessionConnection: AnyObject, Sendable {
 }
 
 extension RFBConnection: SessionConnection {
-    func connect(credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
-        _ = try await open(credentials: credentials, timeout: timeout)
+    func connect(credentials: RFBCredentials, timeout: Duration, allowsPublicInternet: Bool) async throws(RFBError)
+        -> RemoteAddress {
+        _ = try await open(credentials: credentials, timeout: timeout, allowsPublicInternet: allowsPublicInternet)
+        // `open` sets it before returning; the fallback (public) only satisfies the type.
+        return remoteAddress ?? RemoteAddress(text: host, scope: .publicInternet)
     }
 
     func events() async throws(RFBError) -> any AsyncSequence<RFBEvent, any Error> & Sendable {
@@ -91,11 +97,15 @@ struct SessionTarget: Equatable, Sendable {
 
 extension RFBCredentials {
     /// The credentials for a machine of `kind`, as the Machine Editor's Test and the session both use
-    /// them: no user name for an Anthropic VM, a blank user name or password counts as none.
+    /// them: no user name for an Anthropic VM, a blank user name or password counts as none. A Mac
+    /// (ARD) with a user name requires Apple DH (type 30, T5.3 M4): its macOS password never goes out
+    /// as a VNC DES response, and the session never falls back to no authentication.
     init(kind: MachineKind, username: String?, password: String?) {
         let user = username?.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.init(username: kind == .anthropicVM || user?.isEmpty != false ? nil : user,
-                  password: password?.isEmpty == false ? password : nil)
+        let effectiveUser = kind == .anthropicVM || user?.isEmpty != false ? nil : user
+        self.init(username: effectiveUser,
+                  password: password?.isEmpty == false ? password : nil,
+                  requiredSecurityType: kind == .macARD && effectiveUser != nil ? SecurityType.appleDiffieHellman : nil)
     }
 }
 
@@ -143,7 +153,11 @@ enum SessionFailure: Equatable, Sendable {
 
     var isAuthentication: Bool {
         switch self {
-        case .connect(.authFailed), .connect(.credentialsRequired), .connect(.credentialTooLong), .passwordUnreadable:
+        // A missing Apple authentication (T5.3 M4) is a credentials matter too: Edit credentials (the
+        // kind or user name), recorded `authFailed`, and never turned into "Connection lost" after an
+        // automatic attempt (a downgrade during a reconnect keeps its own banner).
+        case .connect(.authFailed), .connect(.credentialsRequired), .connect(.credentialTooLong),
+             .connect(.appleAuthenticationMissing), .connect(.passwordAuthenticationMissing), .passwordUnreadable:
             true
         default:
             false
@@ -247,6 +261,15 @@ final class SessionModel {
     }
     /// "Clipboard too large" toast, for 2 s.
     private(set) var clipboardTooLarge = false
+    /// The address the last attempt reached, once TCP was up (T5.3 H1): a public one shows the orange
+    /// badge in the toolbar.
+    private(set) var remoteAddress: RemoteAddress?
+    /// The last attempt stopped before any RFB byte because the address reached is on the public
+    /// Internet and this machine was never confirmed: the "Unencrypted connection over the Internet"
+    /// sheet, with the address. Connect anyway (`connectOverPublicInternet`) or Cancel (the tab closes).
+    private(set) var publicAddressConsent: String?
+
+    var isOverPublicInternet: Bool { remoteAddress?.scope.isPublicInternet == true }
 
     /// The record of the current attempt (one per connect, BackendSchema › SessionRecord).
     @ObservationIgnored private(set) var record: SessionRecord?
@@ -263,13 +286,18 @@ final class SessionModel {
     @ObservationIgnored private let passwords: any MachinePasswordStore
     @ObservationIgnored private let makeConnection: @MainActor (SessionTarget) -> any SessionConnection
     @ObservationIgnored private let clock: SessionClock
+    /// Machines whose connection across the Internet the user confirmed (per Mac, T5.3 H1).
+    @ObservationIgnored private let publicConsents: any PublicAddressConsents
+    /// The user set the shared clipboard in the toolbar during this session: a public address no
+    /// longer turns it off (T5.3 M1).
+    @ObservationIgnored private var clipboardChosenInSession = false
 
     @ObservationIgnored private var connection: (any SessionConnection)?
     @ObservationIgnored private var sender: InputSender?
     @ObservationIgnored private var task: Task<Void, Never>?
     /// The `open` of the current attempt, the only task that holds the credentials; dropped as soon as
     /// it ends, so the password does not live as long as the session.
-    @ObservationIgnored private(set) var opening: Task<Void, any Error>?
+    @ObservationIgnored private(set) var opening: Task<RemoteAddress, any Error>?
     /// How long a stop waits for the input already queued to be written before closing anyway (a
     /// frozen peer must not keep the socket and tasks alive after the window closed).
     @ObservationIgnored var stopTimeout: Duration = .seconds(2)
@@ -317,7 +345,9 @@ final class SessionModel {
          pasteboard: any ClipboardPasteboard, clipboardPollInterval: Duration? = .milliseconds(500),
          resilience: SessionResilience = SessionResilience(),
          reconnectClock: any ReachabilityClock = ContinuousReachabilityClock(),
+         publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents(),
          makeConnection: @escaping @MainActor (SessionTarget) -> any SessionConnection) {
+        self.publicConsents = publicConsents
         self.resilience = resilience
         self.reconnectClock = reconnectClock
         target = SessionTarget(machine)
@@ -363,6 +393,7 @@ final class SessionModel {
     private func startAttempt(automatic: Bool) {
         cancelPendingReconnect()
         cancelPathLoss()
+        publicAddressConsent = nil   // a new attempt decides again
         isAutomaticAttempt = automatic
         firstFrameUptime = nil
         generation += 1
@@ -387,26 +418,37 @@ final class SessionModel {
             return
         }
         let credentials = RFBCredentials(kind: target.kind, username: target.username, password: password)
+        // Checked at each attempt: an automatic reconnect that now lands on a public address (a name
+        // resolving elsewhere off the VPN) stops for the same confirmation.
+        let allowsPublicInternet = publicConsents.hasConfirmed(target.machineID, host: target.host)
         let connection = makeConnection(target)
         self.connection = connection
         // A fresh chain: a share stuck on the previous (frozen) peer must not hold this one up.
         clipboardSend = nil
         // Untyped closures: a typed-throws `Task` closure crashes the Swift 6.4 compiler (RFBKit note).
         let opening = Task {
-            try await connection.connect(credentials: credentials, timeout: Self.openTimeout)
+            try await connection.connect(credentials: credentials, timeout: Self.openTimeout,
+                                         allowsPublicInternet: allowsPublicInternet)
         }
         self.opening = opening
         task = Task { [weak self] in
             let events: any AsyncSequence<RFBEvent, any Error> & Sendable
+            let address: RemoteAddress
             do {
-                try await opening.value
+                address = try await opening.value
                 self?.openingEnded(generation: generation)
             } catch {
                 self?.openingEnded(generation: generation)
+                if case .publicAddressNotAdmitted(let text)? = error as? RFBError {
+                    await self?.askPublicConsent(address: text, generation: generation)
+                    return
+                }
                 let failure = (error as? RFBError).flatMap(SessionFailure.init(openError:)) ?? .connect(.unexpectedResponse)
                 if (error as? RFBError) != .cancelled { await self?.stop(failing: failure, generation: generation) }
                 return
             }
+            // Before the clipboard is applied: a public address turns sharing off first.
+            self?.addressReached(address, generation: generation)
             // Before the events start, so no clipboard text arrives or leaves while it is off; a toggle
             // during the connection goes through the same chain after it.
             await self?.applyClipboardSharing(to: connection).value
@@ -427,6 +469,52 @@ final class SessionModel {
 
     private func openingEnded(generation: Int) {
         if generation == self.generation { opening = nil }
+    }
+
+    // MARK: Public Internet (T5.3 H1, M1)
+
+    /// The address of a connection that opened. On the public Internet the shared clipboard is turned
+    /// off for the session, unless the user set it in the toolbar during this session.
+    private func addressReached(_ address: RemoteAddress, generation: Int) {
+        guard generation == self.generation else { return }
+        // Landing on the Internet after a LAN address (or for the first time): a toolbar choice made on
+        // the LAN does not carry over.
+        if address.scope.isPublicInternet, remoteAddress?.scope.isPublicInternet != true { clipboardChosenInSession = false }
+        remoteAddress = address
+        if address.scope.isPublicInternet, !clipboardChosenInSession { clipboardSharing = false }
+    }
+
+    /// `open` refused the address before any RFB byte: the record ends `cancelled` (nothing was
+    /// connected), no banner, and the sheet asks.
+    private func askPublicConsent(address: String, generation: Int) async {
+        guard generation == self.generation else { return }
+        finishRecord(outcome: .cancelled, bytes: nil)
+        let record = self.record
+        phase = .idle
+        publicAddressConsent = address
+        let bytes = await tearDown(windowClosing: false)
+        record?.bytesReceived = bytes
+        save()
+    }
+
+    /// "Connect anyway": remembered for this machine on this Mac, then a new attempt.
+    func connectOverPublicInternet() {
+        guard publicAddressConsent != nil, phase == .idle else { return }
+        publicAddressConsent = nil
+        publicConsents.confirm(target.machineID, host: target.host)
+        startAttempt(automatic: false)
+    }
+
+    /// "Cancel": nothing is remembered; the view closes the tab.
+    func declinePublicInternet() {
+        publicAddressConsent = nil
+    }
+
+    /// The toolbar's Shared Clipboard toggle: the user's choice holds for this session, a public
+    /// address included.
+    func setClipboardSharingFromToolbar(_ on: Bool) {
+        clipboardChosenInSession = true
+        clipboardSharing = on
     }
 
     private func consume(_ events: some AsyncSequence<RFBEvent, any Error>, generation: Int) async throws {
@@ -551,6 +639,7 @@ final class SessionModel {
         // The assistant's releases go into the input sender before the view's and before `finish()`.
         assistant?.sessionEnded()
         phase = .closed
+        publicAddressConsent = nil
         guard wasRunning else { return nil }
         finishRecord(outcome: wasConnecting ? .cancelled : nil, bytes: nil)
         return record

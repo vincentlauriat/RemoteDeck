@@ -29,7 +29,7 @@ SwiftData + CloudKit rule: every synced property is optional or has a default, a
 | isFavorite | Bool | yes | false | |
 | isWatched | Bool | yes | false | Drives Status Notifications (T4.5): probed by `ReachabilityMonitor`; the status itself is not stored |
 | scalingMode | String (`fit`, `actual`) | yes | `fit` | |
-| sharedClipboard | Bool | yes | true | Starting value of the session's Shared Clipboard toggle (not written back by the toolbar) |
+| sharedClipboard | Bool | yes | true | Starting value of the session's Shared Clipboard toggle (not written back by the toolbar). The Machine Editor proposes `defaultSharedClipboard` for a new machine, and false for an Anthropic VM (T5.3); a session whose address is on the public Internet starts with it off |
 | lastConnectedAt | Date? | no | nil | |
 | createdAt | Date | yes | now | |
 
@@ -56,7 +56,7 @@ Store files (TRD › Backend and database): Machine and MachineGroup in `Applica
 | account | `machine.<Machine.id>` or `anthropic.apiKey` |
 | data | UTF-8 secret |
 | synchronizable | `true` for machine passwords (iCloud Keychain), `false` for the API key. **Local fallback** (Vincent, 2026-10-22): when the synchronizable save of `machine.<id>` fails with -34018 (`errSecMissingEntitlement`, unsigned and ad-hoc builds until T1.2/T4.3), the password is saved as a non-synchronizable item with the same service and account. Reads try the synced item, then the local one; deletes match either flag (`kSecAttrSynchronizableAny`). A synced save removes a stale local copy. T4.3 calls `migrateLocalPasswordsToSynced(machineIDs:)` once the entitlement exists (local → synced, local deleted). |
-| accessible | `kSecAttrAccessibleAfterFirstUnlock` |
+| accessible | Synchronizable items `kSecAttrAccessibleAfterFirstUnlock`; local items (the API key, the machine-password fallback) `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` (T5.3), set at each save. macOS honours it only for synchronizable or data-protection-keychain items: the file-keychain local items of an unentitled build carry it without effect until T4.3 |
 
 ### SessionRecord (SwiftData, local store only)
 
@@ -102,6 +102,7 @@ Lifecycle (T3.5, `SessionModel`): one record per attempt (Connect, Retry, Reconn
 | `claudeModel` | — (not stored) | `claude-opus-5-5`, the constant `ClaudeAPI.defaultModel` (the toolset `computer_toolset_20260801` is the only computer use tool on Opus 5.5). A value left in UserDefaults is ignored. No picker: Settings › Claude shows it |
 | `onboardingCompleted` | Bool | false |
 | `historyRetentionDays` | Int | 365 |
+| `publicInternetConfirmed.<Machine.id>` | String | absent (T5.3: "Connect anyway" on the "Unencrypted connection over the Internet" sheet stores the host it was confirmed for, trimmed and lowercased; a different host counts as unconfirmed; per Mac, not synced; removed when the machine is deleted) |
 
 `onboardingCompleted` is set to true once, when the Onboarding Sheet is finished or skipped ("Later", Esc on the first two pages, or the sheet dismissed with the Library Window); while it is false, each launch shows the sheet, so quitting the app before the sheet ends shows it again. `-LibraryDemo onboarding` shows the sheet whatever the value and never writes it.
 

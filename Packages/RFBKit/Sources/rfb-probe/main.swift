@@ -154,12 +154,13 @@ if let result {
     let pf = result.serverInit.pixelFormat
     print("OK in \(elapsed)")
     print("server version \(result.serverVersion), answered \(result.version), security type \(result.securityType)")
-    print("desktop \(result.serverInit.width)x\(result.serverInit.height) name=\"\(result.serverInit.name)\"")
+    print("desktop \(result.serverInit.width)x\(result.serverInit.height) name=\"\(DisplayText.serverString(result.serverInit.name))\"")
     print("pixel format bpp=\(pf.bitsPerPixel) depth=\(pf.depth) bigEndian=\(pf.bigEndian) trueColor=\(pf.trueColor) "
           + "max=\(pf.redMax)/\(pf.greenMax)/\(pf.blueMax) shift=\(pf.redShift)/\(pf.greenShift)/\(pf.blueShift)")
     print("remainder \(result.remainder.count) bytes")
 } else if let failure {
-    print("FAILED in \(elapsed): \(failure)")
+    // The error can carry the server's reason string: shown bounded, with its invisible scalars visible.
+    print("FAILED in \(elapsed): \(DisplayText.serverString(String(describing: failure), limit: 400))")
 }
 
 if let captureDirectory {

@@ -130,6 +130,37 @@ struct SessionWindowView: View {
         .sheet(item: $editorRequest) { request in
             MachineEditorView(model: request.model) { _ in session.connect() }
         }
+        // T5.3 H1: before any RFB byte of a first connection across the Internet.
+        .sheet(isPresented: Binding(get: { session.publicAddressConsent != nil }, set: { _ in })) {
+            publicAddressSheet(session)
+        }
+    }
+
+    /// "Unencrypted connection over the Internet" (AppFlow › Session Window, DesignBrief › Sheets):
+    /// Connect anyway is remembered for this machine on this Mac; Cancel (Esc) closes the tab.
+    private func publicAddressSheet(_ session: SessionModel) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(settings.t("public_sheet_title"), systemImage: "exclamationmark.shield.fill")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            Text(settings.t("public_sheet_body", session.publicAddressConsent ?? session.target.host))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(settings.t("public_sheet_note"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button(settings.t("cancel"), role: .cancel) {
+                    session.declinePublicInternet()
+                    dismissWindow()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button(settings.t("public_connect_anyway")) { session.connectOverPublicInternet() }
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .interactiveDismissDisabled()
     }
 
     /// Wires the view's capture and Accessibility state to the session. Capture stays off until the
@@ -231,7 +262,8 @@ struct SessionWindowView: View {
             predicate: #Predicate { $0.id == machineID })).first else { return }
         editorRequest = EditorRequest(model: MachineEditorModel(
             machine: machine, context: manager.context, passwords: manager.passwords,
-            tester: manager.tester, defaultSharedClipboard: settings.defaultSharedClipboard))
+            tester: manager.tester, defaultSharedClipboard: settings.defaultSharedClipboard,
+            publicConsents: manager.publicConsents))
     }
 
     // MARK: Toolbar
@@ -261,7 +293,18 @@ struct SessionWindowView: View {
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
             .help(settings.t(session.scalingMode == .fit ? "session_scaling_to_actual" : "session_scaling_to_fit"))
-            Toggle(isOn: Binding(get: { session.clipboardSharing }, set: { session.clipboardSharing = $0 })) {
+            if session.isOverPublicInternet {
+                // T5.3 H1: systemOrange, DesignBrief › Session Window.
+                Label(settings.t("session_public_badge"), systemImage: "exclamationmark.shield.fill")
+                    .labelStyle(.titleAndIcon)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color(nsColor: .systemOrange))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color(nsColor: .systemOrange).opacity(0.18)))
+                    .help(settings.t("session_public_help", session.remoteAddress?.text ?? session.target.host))
+            }
+            Toggle(isOn: Binding(get: { session.clipboardSharing }, set: { session.setClipboardSharingFromToolbar($0) })) {
                 Label(settings.t("session_clipboard"), systemImage: "doc.on.clipboard")
             }
             .help(settings.t(session.clipboardSharing ? "session_clipboard_on" : "session_clipboard_off"))

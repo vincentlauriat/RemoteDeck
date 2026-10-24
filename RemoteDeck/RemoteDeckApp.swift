@@ -49,7 +49,12 @@ struct RemoteDeckApp: App {
         var claudeClient = MessagesClient()
         var notificationAuthorizer: any NotificationAuthorizing = UserNotificationAuthorizer()
         let passwords = LibraryStore.passwordStore(isInMemory: isInMemory)
-        _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords))
+        // "Connect anyway" over the Internet (T5.3 H1): the user's defaults, except under the hosted
+        // tests and the demo, which never write them.
+        let publicConsents: any PublicAddressConsents = inMemory
+            ? InMemoryPublicAddressConsents() : UserDefaultsPublicAddressConsents()
+        _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords,
+                                                           publicConsents: publicConsents))
         var tester: any ConnectionTester = RFBConnectionTester()
         var makeConnection: @MainActor (SessionTarget) -> any SessionConnection = SessionManager.rfbConnection
         // The hosted tests never touch the real pasteboard.
@@ -104,7 +109,7 @@ struct RemoteDeckApp: App {
                                       pasteboard: pasteboard,
                                       makeAssistant: { [claudeClient] session in
             AssistantModel(port: session, client: claudeClient, apiKey: { settings.anthropicAPIKey })
-        }, path: sessionPath, workspaceCenter: powerCenter)
+        }, path: sessionPath, workspaceCenter: powerCenter, publicConsents: publicConsents)
         _sessions = State(initialValue: sessions)
 
         // Status Notifications (T4.5). The hosted tests never probe, post or read the notification

@@ -119,6 +119,7 @@ struct LibraryView: View {
                 connect(machines.first { $0.name == "Mac mini" })
             }
             if LibraryDemo.showsHistory { openWindow(id: HistoryWindow.id) }
+            if LibraryDemo.showsPublicAddress { connect(machines.first { $0.name == LibraryDemo.publicMachineName }) }
             if LibraryDemo.simulatesDrops {
                 LibraryDemo.resilienceMachineNames.forEach { name in connect(machines.first { $0.name == name }) }
             }
@@ -243,7 +244,8 @@ struct LibraryView: View {
         guard onboarding == nil else { return }
         editorRequest = EditorRequest(model: MachineEditorModel(
             machine: machine, context: model.context, passwords: model.passwords,
-            tester: tester, defaultSharedClipboard: settings.defaultSharedClipboard, discovered: discovered
+            tester: tester, defaultSharedClipboard: settings.defaultSharedClipboard, discovered: discovered,
+            publicConsents: model.publicConsents
         ))
     }
 
@@ -288,12 +290,14 @@ struct LibraryView: View {
         reachability.presentation(machineID: machine.id, isWatched: machine.isWatched)
     }
 
-    /// A clicked notification (AppFlow › Entry points): the machine is selected; "back online"
-    /// also connects, through the same path as the Connect button. A machine deleted since is ignored.
+    /// A clicked notification (AppFlow › Entry points): the machine is selected, whatever the
+    /// notification (T5.3: a click never opens a connection by itself). A machine deleted since is ignored.
     private func openFromNotification() {
         guard let request = notificationRouter.take(), let machine = machine(request.machineID) else { return }
         model.selection = machine.id
-        if request.connects { connect(machine) }
+        switch request.action {
+        case .select: break   // T5.3: "back online" no longer connects on its own
+        }
     }
 
     // MARK: Banner and alerts

@@ -33,6 +33,13 @@ struct MachineEditorView: View {
                         }
                         .font(.system(size: 12, design: .monospaced))
                         .autocorrectionDisabled()
+                        if model.hostIsPublicAddress {
+                            // T5.3 H1: a public IP literal; the session asks again at connect time.
+                            Label(settings.t("editor_public_host"), systemImage: "exclamationmark.shield.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(Color(nsColor: .systemOrange))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     field(.port) {
                         TextField(text: $model.portText) {

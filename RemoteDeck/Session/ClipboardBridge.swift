@@ -91,9 +91,11 @@ final class InMemoryPasteboard: ClipboardPasteboard {
 ///   text copied for another app or session does not leak to it. The contents are read only when the
 ///   count changed. Items marked concealed/transient/auto-generated are skipped, and so is text over
 ///   `ServerMessageDecoder.maxCutTextLength` UTF-8 bytes (`onTooLarge`: "Clipboard too large").
-/// - Remote → local: the server's text is written to the pasteboard whether the window is key or not
-///   (copying on the remote then switching to a local app is the common case). Text that arrives
-///   before the first frame is kept and written when the session starts.
+/// - Remote → local: only while the session runs **and** its window is key (T5.3 M1): a background
+///   tab or a server that writes while the user works elsewhere never replaces the local pasteboard.
+///   The latest remote text is kept and written when the window becomes key (or the session starts
+///   with its window key), unless the local pasteboard changed since it arrived: a later local copy
+///   wins. C0 control characters other than tab, line feed and carriage return, DEL and C1 controls are removed first.
 /// - No echo: text that came from one side is never sent back to it. The change count produced by
 ///   writing the remote text is recorded, so the next poll does not even read it. A server text equal
 ///   to the last one exchanged (or to the form the server holds it in, `ClipboardShare.sent(echo:)`:
@@ -127,8 +129,9 @@ final class ClipboardBridge {
     private var lastShared: String?
     /// `lastShared` as the server holds it, once the send reported it.
     private var lastEcho: String?
-    /// Remote text received before the first frame.
-    private var pendingRemote: String?
+    /// The latest remote text not written yet (session not running or window not key), with the
+    /// local change count when it arrived.
+    private var pendingRemote: (text: String, changeCount: Int)?
     private var pollTask: Task<Void, Never>?
 
     /// `pollInterval` nil: no timer (tests call `poll()`).
@@ -144,10 +147,7 @@ final class ClipboardBridge {
         lastSeenChangeCount = nil
         lastShared = nil
         lastEcho = nil
-        if let pending = pendingRemote {
-            pendingRemote = nil
-            receive(pending)
-        }
+        writePendingRemote()
         updatePolling()
         poll()
     }
@@ -162,7 +162,9 @@ final class ClipboardBridge {
         guard key != isKey else { return }
         isKey = key
         updatePolling()
-        if key { poll() }
+        guard key else { return }
+        writePendingRemote()   // first: a write records its change count, so the poll does not send it back
+        poll()
     }
 
     /// Sends the local text if the pasteboard changed since the last look.
@@ -191,13 +193,41 @@ final class ClipboardBridge {
         }
     }
 
-    /// Text from the server.
+    /// Text from the server: written now if the session runs and its window is key, else kept (the
+    /// latest only) for the next time it is.
     func receive(_ text: String) {
         guard isEnabled else { return }
-        guard isRunning else {
-            pendingRemote = text
+        let text = Self.sanitized(text)
+        guard isRunning, isKey else {
+            pendingRemote = (text, pasteboard.changeCount)
             return
         }
+        write(text)
+    }
+
+    /// Removes the C0 controls except tab, line feed and carriage return, DEL and the C1 controls
+    /// (T5.3 M1): a server's text pasted into a terminal must not carry escape sequences (ESC, or the
+    /// 8-bit CSI U+009B), NULs or deletes.
+    static func sanitized(_ text: String) -> String {
+        guard text.unicodeScalars.contains(where: isStripped) else { return text }
+        var kept = String.UnicodeScalarView()
+        kept.append(contentsOf: text.unicodeScalars.filter { !isStripped($0) })
+        return String(kept)
+    }
+
+    private static func isStripped(_ scalar: Unicode.Scalar) -> Bool {
+        (scalar.value < 0x20 && scalar != "\t" && scalar != "\n" && scalar != "\r") || (0x7F...0x9F).contains(scalar.value)
+    }
+
+    private func writePendingRemote() {
+        guard isRunning, isKey, let pending = pendingRemote else { return }
+        pendingRemote = nil
+        // Copied locally since the remote text came: the newer local copy stays.
+        guard pasteboard.changeCount == pending.changeCount else { return }
+        write(pending.text)
+    }
+
+    private func write(_ text: String) {
         let unchangedLocally = pasteboard.changeCount == lastSeenChangeCount
         if unchangedLocally, text == lastShared || text == lastEcho { return }
         lastShared = text

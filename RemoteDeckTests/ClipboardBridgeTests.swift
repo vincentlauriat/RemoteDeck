@@ -112,7 +112,8 @@ struct ClipboardBridgeTests {
     }
 
     /// Copy "A" here (sent), copy "C" in another app (window not key, no poll), then copy "A" on the
-    /// remote: that is a new remote copy, not an echo, and must land on the pasteboard.
+    /// remote: that is a new remote copy, not an echo, and must land on the pasteboard once the
+    /// window is key again (T5.3 M1).
     @Test func remoteCopyOfTheLastSharedTextAfterALocalCopyElsewhereIsWritten() {
         pasteboard.content = .text("A")
         let bridge = bridge()
@@ -120,7 +121,10 @@ struct ClipboardBridgeTests {
         bridge.windowKeyChanged(false)
         pasteboard.content = .text("C")
         bridge.receive("A")
+        #expect(pasteboard.content == .text("C"))
+        bridge.windowKeyChanged(true)
         #expect(pasteboard.content == .text("A"))
+        #expect(sent.texts == ["A"])   // not sent back
     }
 
     /// On the Latin-1 path "10 €\r\n" reaches the server as "10 ?\n": its echo must not replace the
@@ -154,10 +158,60 @@ struct ClipboardBridgeTests {
         #expect(sent.tooLarge == 1)
     }
 
-    @Test func remoteTextIsWrittenEvenWhenNotKey() {
+    /// T5.3 M1: a background tab or a server writing while the user works elsewhere never replaces
+    /// the local pasteboard; the latest remote text waits for the window to be key.
+    @Test func remoteTextWaitsUntilTheWindowIsKey() {
+        pasteboard.content = .text("local")
         let bridge = bridge(key: false)
+        bridge.receive("first remote")
         bridge.receive("copied remotely")
-        #expect(pasteboard.content == .text("copied remotely"))
+        #expect(pasteboard.content == .text("local"))
+        #expect(pasteboard.reads == 0)
+        bridge.windowKeyChanged(true)
+        #expect(pasteboard.content == .text("copied remotely"))   // the latest only
+        #expect(sent.texts.isEmpty)   // neither sent back nor the old local text sent
+    }
+
+    /// A local copy after the remote text arrived is newer: it stays, and goes to the remote.
+    @Test func aLocalCopyAfterThePendingRemoteTextWins() {
+        let bridge = bridge(key: false)
+        bridge.receive("remote")
+        pasteboard.content = .text("newer local")
+        bridge.windowKeyChanged(true)
+        #expect(pasteboard.content == .text("newer local"))
+        #expect(sent.texts == ["newer local"])
+    }
+
+    @Test func pendingRemoteTextIsDroppedWhenTheSessionStops() {
+        let bridge = bridge(key: false)
+        bridge.receive("remote")
+        bridge.sessionStopped()
+        bridge.windowKeyChanged(true)
+        #expect(pasteboard.content == PasteboardContent.none)
+    }
+
+    @Test func aSessionStartedInABackgroundTabKeepsTheEarlyTextForLater() {
+        let bridge = bridge(running: false, key: false)
+        bridge.receive("early")
+        bridge.sessionStarted()
+        #expect(pasteboard.content == PasteboardContent.none)
+        bridge.windowKeyChanged(true)
+        #expect(pasteboard.content == .text("early"))
+    }
+
+    /// T5.3 M1: C0 controls other than tab, LF and CR never reach the local pasteboard (a terminal
+    /// paste with ESC sequences or NULs).
+    @Test func controlCharactersAreStrippedBeforeWriting() {
+        let bridge = bridge()
+        bridge.receive("ls\u{1B}[2J\u{0}\u{7}\ta\r\nb\u{1F}")
+        #expect(pasteboard.content == .text("ls[2J\ta\r\nb"))
+        // Not an echo afterwards: the sanitized text is what was exchanged.
+        let count = pasteboard.changeCount
+        bridge.receive("ls\u{1B}[2J\u{0}\u{7}\ta\r\nb\u{1F}")
+        #expect(pasteboard.changeCount == count)
+        // DEL and C1 too (the 8-bit CSI U+009B is ESC [); printable text is kept.
+        #expect(ClipboardBridge.sanitized("é€ 👋\u{7F}\u{80}\u{85}\u{9B}2J\u{9F}\u{A0}") == "é€ 👋2J\u{A0}")
+        #expect(ClipboardBridge.sanitized("") == "")
     }
 
     @Test func tooLargeTextIsNotSentAndReportedOnce() {

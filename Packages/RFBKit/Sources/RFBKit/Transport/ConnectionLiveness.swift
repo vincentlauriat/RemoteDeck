@@ -30,8 +30,12 @@ public struct ConnectionLiveness: Sendable, Equatable {
         return tcp
     }
 
+    /// TCP with keepalive, and no proxy (T5.3): RFB goes straight to the host, so the address the
+    /// connection reaches is the machine's own and `RemoteAddress` can classify it.
     public func parameters() -> NWParameters {
-        NWParameters(tls: nil, tcp: tcpOptions())
+        let parameters = NWParameters(tls: nil, tcp: tcpOptions())
+        parameters.preferNoProxies = true
+        return parameters
     }
 }
 

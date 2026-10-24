@@ -75,9 +75,28 @@ public protocol HTTPTransport: Sendable {
 public struct URLSessionTransport: HTTPTransport {
     private let session: URLSession
 
-    public init(session: URLSession = .shared) {
+    /// The session every request goes through by default (T5.3 L1): ephemeral, with no URL cache, no
+    /// cookie storage and no credential storage, so no request, response (screenshots, prompts,
+    /// answers) or header ever reaches the disk.
+    public static let ephemeralSession = URLSession(configuration: ephemeralConfiguration())
+
+    static func ephemeralConfiguration() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.urlCredentialStorage = nil
+        return configuration
+    }
+
+    public init(session: URLSession = URLSessionTransport.ephemeralSession) {
         self.session = session
     }
+
+    /// The session this transport sends with (tests).
+    var urlSession: URLSession { session }
 
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await session.data(for: request)

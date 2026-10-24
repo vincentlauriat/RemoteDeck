@@ -19,6 +19,14 @@ public enum RFBError: Error, Equatable, Sendable {
     case credentialsRequired(securityType: UInt8)
     /// A user name or password is longer than 63 UTF-8 bytes, the limit of Apple DH authentication.
     case credentialTooLong
+    /// The credentials require one security type (`RFBCredentials.requiredSecurityType`: Apple DH for
+    /// a Mac with a user name) and the server did not offer it (3.7/3.8) or imposed another one (3.3).
+    /// Nothing was sent past the version banner: no VNC DES response, no unauthenticated session.
+    case requiredSecurityTypeMissing(required: UInt8, offered: [UInt8])
+    /// The address the connection reached is on the public Internet and the caller did not admit it
+    /// (`RFBConnection.open`'s `admit`). Closed right after the TCP connection, before any RFB byte was
+    /// read or sent. Carries the address as text.
+    case publicAddressNotAdmitted(address: String)
     /// The server rejected the credentials. 3.8 servers send a reason; 3.3/3.7 servers do not.
     case authFailed(reason: String?)
     /// The server sent something RFC 6143 does not allow, or a length beyond RFBKit's limits.

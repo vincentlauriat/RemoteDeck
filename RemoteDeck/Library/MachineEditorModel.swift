@@ -23,7 +23,17 @@ final class MachineEditorModel {
     // MARK: Fields (BackendSchema › Machine)
 
     // Changing anything a Test connection used resets its result (it no longer applies).
-    var kind: MachineKind { didSet { resetTest() } }
+    var kind: MachineKind {
+        didSet {
+            resetTest()
+            // A new machine's Shared Clipboard follows the kind until the user sets it (T5.3 M1).
+            if isNew, !sharedClipboardTouched {
+                applyingKindDefault = true
+                sharedClipboard = Self.defaultSharedClipboard(for: kind, appDefault: appDefaultSharedClipboard)
+                applyingKindDefault = false
+            }
+        }
+    }
     var name: String
     var host: String { didSet { resetTest() } }
     /// Text, so a non-numeric entry is reported as an out-of-range port rather than lost.
@@ -35,7 +45,9 @@ final class MachineEditorModel {
     var isFavorite: Bool
     var isWatched: Bool
     var scalingMode: ScalingMode
-    var sharedClipboard: Bool
+    var sharedClipboard: Bool {
+        didSet { if !applyingKindDefault { sharedClipboardTouched = true } }
+    }
 
     // MARK: State
 
@@ -56,10 +68,16 @@ final class MachineEditorModel {
     let groups: [MachineGroup]
     let isNew: Bool
 
+    @ObservationIgnored private let appDefaultSharedClipboard: Bool
+    @ObservationIgnored private var sharedClipboardTouched = false
+    @ObservationIgnored private var applyingKindDefault = false
     @ObservationIgnored private let editing: Machine?
     @ObservationIgnored private let context: ModelContext
     @ObservationIgnored private let passwords: any MachinePasswordStore
     @ObservationIgnored private let tester: any ConnectionTester
+    /// "Connect anyway" confirmations: a Test reaches a public address only for this machine at the
+    /// host it was confirmed for (T5.3).
+    @ObservationIgnored private let publicConsents: any PublicAddressConsents
     @ObservationIgnored private let validator = MachineValidator()
     /// Password as loaded from the Keychain; `nil` when none is stored or the read failed.
     @ObservationIgnored private let storedPassword: String?
@@ -79,11 +97,14 @@ final class MachineEditorModel {
     /// `discovered` pre-fills a new machine from a Discovery Panel row (kind, name, host, port;
     /// user name empty). Ignored when editing an existing machine.
     init(machine: Machine?, context: ModelContext, passwords: any MachinePasswordStore,
-         tester: any ConnectionTester, defaultSharedClipboard: Bool, discovered: DiscoveredMachine? = nil) {
+         tester: any ConnectionTester, defaultSharedClipboard: Bool, discovered: DiscoveredMachine? = nil,
+         publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents()) {
+        self.publicConsents = publicConsents
         self.editing = machine
         self.context = context
         self.passwords = passwords
         self.tester = tester
+        appDefaultSharedClipboard = defaultSharedClipboard
         isNew = machine == nil
         groups = ((try? context.fetch(FetchDescriptor<MachineGroup>())) ?? []).sorted {
             ($0.sortOrder, $0.name.lowercased()) < ($1.sortOrder, $1.name.lowercased())
@@ -98,13 +119,16 @@ final class MachineEditorModel {
         isFavorite = machine?.isFavorite ?? false
         isWatched = machine?.isWatched ?? false
         scalingMode = machine?.scalingModeValue ?? .fit
-        sharedClipboard = machine?.sharedClipboard ?? defaultSharedClipboard
+        sharedClipboard = machine?.sharedClipboard
+            ?? Self.defaultSharedClipboard(for: machine?.kindValue ?? .macARD, appDefault: defaultSharedClipboard)
         if machine == nil, let discovered {
             kind = discovered.kind
             name = String(discovered.name.prefix(MachineValidator.maxNameLength))
             host = discovered.host
             portText = String(discovered.port)
+            sharedClipboard = Self.defaultSharedClipboard(for: discovered.kind, appDefault: defaultSharedClipboard)
         }
+        sharedClipboardTouched = false   // the assignments above are defaults, not the user's choice
 
         var loaded: (password: String, scope: PasswordScope)?
         if let machine {
@@ -118,6 +142,18 @@ final class MachineEditorModel {
         storedScope = loaded?.scope
         passwordScope = loaded?.scope
         password = loaded?.password ?? ""
+    }
+
+    /// Shared Clipboard of a new machine (T5.3 M1): off for an Anthropic VM (a sandbox Claude drives
+    /// should not read this Mac's pasteboard by default), Settings' default for the other kinds.
+    static func defaultSharedClipboard(for kind: MachineKind, appDefault: Bool) -> Bool {
+        kind == .anthropicVM ? false : appDefault
+    }
+
+    /// The host field holds an IP literal on the public Internet (T5.3 H1): an orange note under it.
+    /// A host name is classified when a connection resolves it.
+    var hostIsPublicAddress: Bool {
+        AddressScope(literal: trimmedHost)?.isPublicInternet == true
     }
 
     /// Anthropic VM has no user field (DesignBrief › Machine Editor); Mac ARD requires it.
@@ -268,11 +304,14 @@ final class MachineEditorModel {
         let tester = self.tester
         let host = trimmedHost
         let credentials = testCredentials
+        // A new machine, or one whose host changed, was never confirmed at this host.
+        let allowsPublicInternet = editing.map { publicConsents.hasConfirmed($0.id, host: host) } ?? false
         testTask = Task { [weak self] in
             // Untyped closure: a typed-throws `Task` closure crashes the Swift 6.4 compiler (RFBKit note).
             let outcome: TestConnectionState
             do {
-                try await tester.test(host: host, port: port, credentials: credentials, timeout: Self.testTimeout)
+                try await tester.test(host: host, port: port, credentials: credentials, timeout: Self.testTimeout,
+                                      allowsPublicInternet: allowsPublicInternet)
                 outcome = .succeeded
             } catch {
                 let failure = (error as? RFBError).flatMap(TestConnectionFailure.init)

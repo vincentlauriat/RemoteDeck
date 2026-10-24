@@ -65,13 +65,28 @@ struct KeychainStoreTests {
         #expect(add[kSecAttrSynchronizable as String] as? Bool == account.isSynchronizable)
         #expect(add[kSecValueData as String] as? Data == data)
 
-        let update = store.updateAttributes(data: data)
+        let update = store.updateAttributes(data: data, synchronizable: account.isSynchronizable)
         #expect(update[kSecValueData as String] as? Data == data)
 
+        // T5.3 L2: synced items can leave the Mac; local ones (the API key) are this-device-only.
+        let expected = account.isSynchronizable
+            ? kSecAttrAccessibleAfterFirstUnlock : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         for attributes in [add, update] {
-            #expect(attributes[kSecAttrAccessible as String] as? String
-                == kSecAttrAccessibleAfterFirstUnlock as String)
+            #expect(attributes[kSecAttrAccessible as String] as? String == expected as String)
         }
+    }
+
+    /// T5.3 L2: the machine-password local fallback is this-device-only too, the synced item never is
+    /// (a ThisDeviceOnly class is refused on a synchronizable item).
+    @Test func localFallbackItemsAreThisDeviceOnly() {
+        let store = KeychainStore()
+        let data = Data("pw".utf8)
+        let local = store.addAttributes(for: .machine(UUID()), synchronizable: false, data: data)
+        #expect(local[kSecAttrAccessible as String] as? String
+            == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+        #expect(local[kSecAttrSynchronizable as String] as? Bool == false)
+        let synced = store.addAttributes(for: .machine(UUID()), synchronizable: true, data: data)
+        #expect(synced[kSecAttrAccessible as String] as? String == kSecAttrAccessibleAfterFirstUnlock as String)
     }
 
     @Test func errorCarriesStatus() {

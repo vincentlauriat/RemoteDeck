@@ -103,8 +103,9 @@ struct SilentNotificationPoster: NotificationPosting {
 
 // MARK: - Click
 
-/// A clicked Status Notification, handed to the Library Window: "back online" connects, "offline"
-/// selects the machine (AppFlow › Entry points).
+/// A clicked Status Notification, handed to the Library Window, which selects the machine (AppFlow ›
+/// Entry points). "Back online" no longer connects (T5.3): a notification click must not open a
+/// connection, and send credentials, without a Connect from the user.
 @Observable
 @MainActor
 final class StatusNotificationRouter {
@@ -112,7 +113,13 @@ final class StatusNotificationRouter {
         let machineID: UUID
         let transition: StatusTransition
 
-        var connects: Bool { transition == .backOnline }
+        enum Action: Equatable, Sendable {
+            /// Select the machine in the Library Window.
+            case select
+        }
+
+        /// What the Library Window does with the click: `.select` for both transitions.
+        var action: Action { .select }
     }
 
     private(set) var pending: Request?

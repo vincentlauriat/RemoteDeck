@@ -57,12 +57,18 @@ enum AssistantCopy {
             let words = t("scroll_\(direction.rawValue)") + " ×\(amount) " + at(0)
             return with("action_scroll", words) + modifiers(held)
         case .type(let text):
-            let shown = text.replacingOccurrences(of: "\n", with: "⏎").replacingOccurrences(of: "\t", with: "⇥")
-            return with("action_type", shown.count > 80 ? String(shown.prefix(80)) + "…" : shown)
+            // T5.3 M2: never truncated. A long or multi-line text is in the block under the row
+            // (`TypedTextBlock`); a short one is shown whole here, invisible scalars made visible.
+            if AssistantModel.typeTextNeedsReveal(text) {
+                return t("action_type_long").replacingOccurrences(of: "%d", with: String(text.unicodeScalars.count))
+            }
+            return with("action_type", DisplayText.revealingInvisibles(text))
         case .key(let text, let count):
-            return with("action_key", count > 1 ? "\(text) ×\(count)" : text)
+            // Claude-controlled: escaped and bounded like a server string (T5.3).
+            let keys = DisplayText.serverString(text)
+            return with("action_key", count > 1 ? "\(keys) ×\(count)" : keys)
         case .holdKey(let text, let seconds):
-            return with("action_hold_key", "\(text) (\(seconds.formatted()) s)")
+            return with("action_hold_key", "\(DisplayText.serverString(text)) (\(seconds.formatted()) s)")
         case .wait(let seconds):
             return with("action_wait", seconds.formatted())
         }
@@ -202,7 +208,20 @@ struct AssistantPanelView: View {
                 Spacer(minLength: 4)
                 statusBadge(item.status)
             }
+            if case .type(let text)? = item.action {
+                if AssistantModel.typeTextNeedsReveal(text) {
+                    TypedTextBlock(text: text, item: item, model: model)
+                }
+                if DisplayText.hasHiddenScalars(text) {
+                    Label(settings.t("action_type_invisible"), systemImage: "eye.trianglebadge.exclamationmark")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
             if item.status == .awaiting {
+                if model.awaitingID == item.toolUseID, model.awaitingNeedsReveal, !model.awaitingRevealed {
+                    Text(settings.t("action_type_reveal_first")).font(.caption).foregroundStyle(.secondary)
+                }
                 HStack {
                     Button(settings.t("assistant_confirm")) {
                         model.confirm(item.toolUseID, isKeyRepeat: Self.currentEventIsKeyRepeat)
@@ -261,6 +280,19 @@ struct AssistantPanelView: View {
             activity("assistant_running")
         case .stopping:
             activity("assistant_stopping")
+        case .paused:
+            VStack(alignment: .leading, spacing: 6) {
+                Label(settings.t("assistant_paused", AssistantModel.maxStepsWithoutAction), systemImage: "pause.circle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                HStack {
+                    Button(settings.t("assistant_continue")) { model.continueAfterPause() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.purple)
+                    Button(settings.t("assistant_stop"), role: .cancel) { model.stop() }
+                }
+                .controlSize(.small)
+            }
         case .stopped:
             Text(settings.t("assistant_stopped")).font(.callout).foregroundStyle(.secondary)
         case .cutOff:
@@ -322,5 +354,44 @@ struct AssistantPanelView: View {
             .controlSize(.small)
         }
         .padding(12)
+    }
+}
+
+/// A long or multi-line `type` text (T5.3 M2): closed at first, the whole text once opened, every
+/// invisible scalar visible (⏎ ⇥ `\u{…}`). Opening it is what arms Confirm (`AssistantModel.reveal`).
+private struct TypedTextBlock: View {
+    @Environment(AppSettings.self) private var settings
+    let text: String
+    let item: AssistantModel.ActionItem
+    let model: AssistantModel
+    @State private var isOpen = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                isOpen.toggle()
+                if isOpen { model.reveal(item.toolUseID) }
+            } label: {
+                Label(isOpen ? settings.t("action_type_hide") : settings.t("action_type_show", text.unicodeScalars.count),
+                      systemImage: isOpen ? "chevron.down" : "chevron.right")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            if isOpen {
+                ScrollView {
+                    Text(DisplayText.revealingInvisibles(text))
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 200)
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 4).fill(Color.secondary.opacity(0.1)))
+            }
+        }
+        // Opened while it was still queued: it counts once it is the proposal.
+        .onChange(of: model.awaitingID, initial: true) {
+            if isOpen { model.reveal(item.toolUseID) }
+        }
     }
 }

@@ -25,6 +25,8 @@ final class SessionManager {
     @ObservationIgnored private let makeAssistant: @MainActor (SessionModel) -> AssistantModel?
     @ObservationIgnored private let resilience: SessionResilience
     @ObservationIgnored private let reconnectClock: any ReachabilityClock
+    /// "Connect anyway" confirmations (T5.3 H1); in memory unless the app passes the UserDefaults one.
+    @ObservationIgnored let publicConsents: any PublicAddressConsents
     @ObservationIgnored private let path: (any NetworkPathMonitoring)?
     @ObservationIgnored private var workspaceObservers: [any NSObjectProtocol] = []
     @ObservationIgnored private let workspaceCenter: NotificationCenter?
@@ -46,7 +48,9 @@ final class SessionManager {
          resilience: SessionResilience = SessionResilience(),
          reconnectClock: any ReachabilityClock = ContinuousReachabilityClock(),
          path: (any NetworkPathMonitoring)? = nil,
-         workspaceCenter: NotificationCenter? = nil) {
+         workspaceCenter: NotificationCenter? = nil,
+         publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents()) {
+        self.publicConsents = publicConsents
         self.resilience = resilience
         self.reconnectClock = reconnectClock
         self.path = path
@@ -149,7 +153,8 @@ final class SessionManager {
             .first else { return nil }
         let session = SessionModel(machine: machine, context: context, passwords: passwords, display: makeDisplay(),
                                    clock: clock, pasteboard: pasteboard, resilience: resilience,
-                                   reconnectClock: reconnectClock, makeConnection: makeConnection)
+                                   reconnectClock: reconnectClock, publicConsents: publicConsents,
+                                   makeConnection: makeConnection)
         session.isNetworkAvailable = { [weak self] in self?.isNetworkAvailable ?? true }
         openCount += 1
         session.openOrder = openCount

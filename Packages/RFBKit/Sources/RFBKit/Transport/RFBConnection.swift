@@ -48,22 +48,38 @@ public actor RFBConnection {
     /// server → client bytes pass through it (never the encrypted credentials the client sends).
     /// Package-visible for the `rfb-probe` capture tool; the app does not use it.
     private let receiveObserver: (@Sendable (Data) -> Void)?
+    /// How the endpoint reached is turned into a `RemoteAddress`; replaced only by tests, which cannot
+    /// reach a public address over loopback.
+    private let classify: @Sendable (NWEndpoint?, String) -> RemoteAddress
 
     public init(host: String, port: UInt16 = 5900, liveness: ConnectionLiveness = ConnectionLiveness()) {
         self.init(host: host, port: port, liveness: liveness, receiveObserver: nil)
     }
 
     package init(host: String, port: UInt16 = 5900, liveness: ConnectionLiveness = ConnectionLiveness(),
-                 receiveObserver: (@Sendable (Data) -> Void)?) {
+                 receiveObserver: (@Sendable (Data) -> Void)?,
+                 classify: @escaping @Sendable (NWEndpoint?, String) -> RemoteAddress = {
+                     RemoteAddress(endpoint: $0, fallbackText: $1)
+                 }) {
         self.host = host
         self.port = port
         self.liveness = liveness
         self.receiveObserver = receiveObserver
+        self.classify = classify
     }
 
+    /// The address the last `open` reached once TCP was up (T5.3 H1): the scope of what was resolved
+    /// at connect time, not of the host name. `nil` before TCP is ready.
+    public private(set) var remoteAddress: RemoteAddress?
+
     /// Connects and authenticates. On failure the connection is closed and a typed error thrown.
+    ///
+    /// `admit` is asked once TCP is up, with the address actually reached, before any RFB byte is read
+    /// or sent: `false` closes the connection and throws `.publicAddressNotAdmitted` (the app asks the
+    /// user before a first connection across the Internet, so no credential leaves before that).
     public func open(credentials: RFBCredentials, shared: Bool = true, timeout: Duration = .seconds(10),
-                     entropy: HandshakeEntropy = .system) async throws(RFBError) -> HandshakeResult {
+                     entropy: HandshakeEntropy = .system,
+                     admit: @escaping @Sendable (RemoteAddress) -> Bool = { _ in true }) async throws(RFBError) -> HandshakeResult {
         guard connection == nil else { throw .protocolViolation("connection already opened") }
         guard let nwPort = NWEndpoint.Port(rawValue: port) else { throw .network("invalid port \(port)") }
         let connection = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: liveness.parameters())
@@ -82,9 +98,14 @@ public actor RFBConnection {
 
         var handshake = RFBHandshake(credentials: credentials, shared: shared, entropy: entropy)
         var handshakeBytes = 0
-        let outcome: Result<HandshakeResult, any Error> = await withTaskCancellationHandler {
+        remoteAddress = nil
+        let host = self.host
+        let classify = self.classify
+        let outcome: Result<(HandshakeResult, RemoteAddress), any Error> = await withTaskCancellationHandler {
             do {
                 try await connection.startAndWaitUntilReady(queue: networkQueue)
+                let address = classify(connection.currentPath?.remoteEndpoint, host)
+                guard admit(address) else { throw RFBError.publicAddressNotAdmitted(address: address.text) }
                 while true {
                     guard !Task.isCancelled else { throw RFBError.cancelled }
                     guard let chunk = try await connection.receiveChunk() else {
@@ -99,7 +120,7 @@ public actor RFBConnection {
                         try await connection.sendAll(step.outgoing)
                     }
                     if let result = step.result {
-                        return .success(result)
+                        return .success((result, address))
                     }
                 }
             } catch {
@@ -114,7 +135,8 @@ public actor RFBConnection {
         let expired = !deadline.complete()
         let cancelled = Task.isCancelled
         switch outcome {
-        case .success(let result) where !expired && !cancelled:
+        case .success(let (result, address)) where !expired && !cancelled:
+            remoteAddress = address
             pendingBytes = result.remainder
             serverInit = result.serverInit
             return result
@@ -124,6 +146,15 @@ public actor RFBConnection {
         case .failure(let error):
             release(connection)
             throw Self.failure(error, handshake: handshake, expired: expired, cancelled: cancelled)
+        }
+    }
+
+    /// `open` with the app's public-Internet rule (`PublicAddressPolicy`): a public address only when
+    /// `allowsPublicInternet` (the user confirmed this machine at this host).
+    public func open(credentials: RFBCredentials, shared: Bool = true, timeout: Duration = .seconds(10),
+                     allowsPublicInternet: Bool) async throws(RFBError) -> HandshakeResult {
+        try await open(credentials: credentials, shared: shared, timeout: timeout) { address in
+            PublicAddressPolicy.admits(address, confirmed: allowsPublicInternet)
         }
     }
 

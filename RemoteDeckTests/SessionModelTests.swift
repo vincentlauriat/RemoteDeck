@@ -32,22 +32,39 @@ actor FakeSessionConnection: SessionConnection {
     var bytes: Int64 = 4242
 
     init(log: SessionLog, connectResult: Result<Void, RFBError> = .success(()), hangs: Bool = false,
-         sendDelay: Duration = .milliseconds(50)) {
+         sendDelay: Duration = .milliseconds(50),
+         address: RemoteAddress = RemoteAddress(text: "192.168.1.20", scope: .privateNetwork)) {
+        self.address = address
         self.log = log
         self.connectResult = connectResult
         self.hangs = hangs
         self.sendDelay = sendDelay
     }
 
-    func connect(credentials: RFBCredentials, timeout: Duration) async throws(RFBError) {
+    /// The address the connection "reaches" (T5.3 H1); a LAN one by default.
+    var address: RemoteAddress
+    /// `allowsPublicInternet` of each connect.
+    private(set) var allowedPublic: [Bool] = []
+
+    func setAddress(_ address: RemoteAddress) { self.address = address }
+
+    func connect(credentials: RFBCredentials, timeout: Duration, allowsPublicInternet: Bool) async throws(RFBError)
+        -> RemoteAddress {
         self.credentials = credentials
+        allowedPublic.append(allowsPublicInternet)
         log.append("connect")
         if hangs {
             // Like RFBConnection.open: cancellation (or a close) ends the attempt.
             while !closed && !Task.isCancelled { try? await Task.sleep(for: .milliseconds(5)) }
             throw closed ? .network("closed") : .cancelled
         }
+        // Like RFBConnection.open's `admit`: refused right after TCP, before any credential.
+        if address.scope.isPublicInternet, !allowsPublicInternet {
+            log.append("refused \(address.text)")
+            throw .publicAddressNotAdmitted(address: address.text)
+        }
         try connectResult.get()
+        return address
     }
 
     func events() async throws(RFBError) -> any AsyncSequence<RFBEvent, any Error> & Sendable {

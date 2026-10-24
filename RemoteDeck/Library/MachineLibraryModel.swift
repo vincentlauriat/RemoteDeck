@@ -42,10 +42,14 @@ final class MachineLibraryModel {
 
     @ObservationIgnored let context: ModelContext
     @ObservationIgnored let passwords: any MachinePasswordStore
+    /// The "Connect anyway" confirmations (T5.3 H1), forgotten with the machine.
+    @ObservationIgnored let publicConsents: any PublicAddressConsents
 
-    init(context: ModelContext, passwords: any MachinePasswordStore) {
+    init(context: ModelContext, passwords: any MachinePasswordStore,
+         publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents()) {
         self.context = context
         self.passwords = passwords
+        self.publicConsents = publicConsents
     }
 
     // MARK: Search and sections
@@ -97,7 +101,8 @@ final class MachineLibraryModel {
 
     // MARK: Delete
 
-    /// Deletes the machine and its Keychain password (BackendSchema › Retention and deletion).
+    /// Deletes the machine, its Keychain password and its public-Internet confirmation (BackendSchema ›
+    /// Retention and deletion).
     /// The machine goes first: if SwiftData fails, nothing changes (password kept). A Keychain
     /// failure afterwards does not resurrect the machine; it is reported in `deleteWarning`,
     /// never swallowed. Its SessionRecords are kept (soft link).
@@ -112,6 +117,7 @@ final class MachineLibraryModel {
             return
         }
         if selection == id { selection = nil }
+        publicConsents.forget(id)
         do {
             try passwords.deletePassword(for: id)
         } catch {
