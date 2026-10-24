@@ -81,6 +81,8 @@ measurement ran with the screen locked, so no frame could be drawn); 120 Hz need
 | T4.6 Session History View + Menu Bar Extra recents + CSV export + 30-day summary | executor | AppFlow, BackendSchema | Views | Acceptance criterion 10 passes | T3.5 |
 | T4.7 Spike: Cowork VM and Claude Code cloud sandbox remote access (P2) | Vincent + document-specialist | Anthropic docs | Short decision note in `MEMORY.md` | Documented yes/no and an access method for each | — |
 
+**T4.7 status.** Done 2026-10-25: dropped. No documented VNC/RFB, SSH or screen-streaming endpoint for the Cowork VM (local headless Linux VM) or for Claude Code cloud sandboxes (Anthropic-managed VMs, claude.ai/code, `--cloud`, `--teleport` only); see PRD › Open questions 1.
+
 **Checkpoint:** criteria 5–10 pass; Vincent answers PRD open questions 1 and 4 with the spike result and the observed token costs.
 
 ## Step 5 — quality

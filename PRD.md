@@ -32,7 +32,7 @@ Today, reaching a remote Mac means juggling Apple Remote Desktop (heavy, fleet-m
 | Status Notifications | macOS notification when a watched machine goes offline or comes back | P1 |
 | Session History | Local log of sessions (when, which machine, how long), which also measures the success metric | P1 *(assumption: proposed feature)* |
 | File Transfer | Drag files to and from a remote Mac | P2 |
-| Cowork & Cloud Sandbox Access | Reach the Claude Cowork VM and Claude Code cloud sandboxes if a documented access path exists | P2 |
+| Cowork & Cloud Sandbox Access | Reach the Claude Cowork VM and Claude Code cloud sandboxes if a documented access path exists. **Dropped** after the T4.7 spike (2026-10-25): no documented access path exists | P2 (dropped) |
 
 ## Out of scope for v1
 
@@ -71,7 +71,7 @@ Today, reaching a remote Mac means juggling Apple Remote Desktop (heavy, fleet-m
 
 ## Open questions
 
-1. **Anthropic VM scope** — Claude computer use environments expose VNC, so they are P0. I found no documented remote-screen access for the Claude Cowork VM or Claude Code cloud sandboxes. *Recommendation:* keep them in P2 behind a research spike (task T4.7), and decide after the spike.
+1. **Anthropic VM scope** — Claude computer use environments expose VNC, so they are P0. I found no documented remote-screen access for the Claude Cowork VM or Claude Code cloud sandboxes. *Recommendation:* keep them in P2 behind a research spike (task T4.7), and decide after the spike. **Answered (T4.7, 2026-10-25): dropped.** The Cowork VM is a local headless Linux VM (Virtualization.framework) with no user-facing remote access ([support article](https://support.claude.com/en/articles/14479288)); Claude Code cloud sessions run in Anthropic-managed VMs reached only through claude.ai/code, `--cloud` and `--teleport` ([docs](https://code.claude.com/docs/en/claude-code-on-the-web)). A workaround would be unsupported and would weaken their isolation. Only the computer use reference container stays in scope; revisit only for a self-hosted environment profile ([docs](https://code.claude.com/docs/en/self-hosted-environments)).
 2. **RFB implementation** — write the RFB client in Swift, or wrap libvncclient (GPL-2.0)? *Recommendation:* pure Swift. It avoids GPL constraints on a signed DMG, and ARD auth (security type 30) is small enough to implement.
 3. **Apple authentication types beyond type 30** — recent macOS versions also offer newer Apple-specific security types. *Recommendation:* ship type 30 + VNC password in v1, then probe a macOS 26 host during T1.4 and record what it offers. *Probed 2026-10-19 on macOS 26 (minim6):* banner `RFB 003.889`, types `[30, 33, 36, 2, 35]`; type 30 uses generator 5 with a 4096-bit RFC 3526 group 16 prime. Types 30 and 2 are enough for v1; 33/35/36 stay out of scope.
 4. **Claude Assistant cost and control** — computer use calls send screenshots, which costs tokens. *Recommendation:* on demand only (never continuous), confirmation required for every action, and a visible per-session token counter.
