@@ -11,6 +11,11 @@ packages:
     path: Packages/RemoteDeckCore
   ClaudeKit:
     path: Packages/ClaudeKit
+  # Auto-update (T6.3). Pinned to one release: Scripts/release.sh fetches the same version's
+  # sign_update (SPARKLE_VERSION there), checked against the tarball's SHA-256.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: "2.10.0"
 
 # Explicit scheme (otherwise xcodegen generates none → scheme lost on every regeneration).
 schemes:
@@ -42,6 +47,7 @@ targets:
       - package: RFBKit
       - package: RemoteDeckCore
       - package: ClaudeKit
+      - package: Sparkle
     settings:
       base:
         PRODUCT_NAME: RemoteDeck
@@ -88,6 +94,20 @@ targets:
           - _rfb._tcp
           - _net-assistant._udp
         NSLocalNetworkUsageDescription: "RemoteDeck looks for Macs with Screen Sharing or Remote Management on your local network, and connects to the machines you add."
+        # Sparkle auto-update (T6.3). Public half of the EdDSA key in the login keychain under the
+        # account "RemoteDeck" (sign_update --account RemoteDeck): NEVER regenerate it nor change this
+        # value, or every installed copy rejects all later updates (see Scripts/release.sh header).
+        # The updater only starts in a Release build, never under XCTest, -LibraryDemo or -FramebufferDebug
+        # (AppUpdater); Debug builds never start it.
+        SUFeedURL: "https://raw.githubusercontent.com/vincentlauriat/RemoteDeck/main/appcast.xml"
+        SUPublicEDKey: "zMdb1qKvrTXX6nYkToyWzl8IGNYyXUMBEH5xKMtL2nw=" # gitleaks:allow (Sparkle public key)
+        SUEnableAutomaticChecks: true
+        SUScheduledCheckInterval: 86400
+        SUAutomaticallyUpdate: false
+        # Sandboxed app (Sparkle › Sandboxing): the Installer XPC service installs outside the
+        # sandbox; it needs the -spks / -spki mach-lookup exceptions in RemoteDeck.entitlements. No
+        # Downloader service: network.client is already granted.
+        SUEnableInstallerLauncherService: true
 
   RemoteDeckTests:
     type: bundle.unit-test

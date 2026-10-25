@@ -1,0 +1,45 @@
+# gitleaks false positives, confirmed by reading each flagged line (2026-10-25, gitleaks 8.30.1):
+# generated Apple Diffie-Hellman test vectors in AuthVectors.swift (privateKey / sharedSecret /
+# aesKey hex values computed by Tests/RFBKitTests/Vectors/generate_auth_vectors.py, no real
+# credential). `<commit>:<file>:<rule>:<line>` entries cover the history (`gitleaks git`),
+# `<file>:<rule>:<line>` entries the working tree (`gitleaks dir`). Nothing else may go here.
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:116
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:124
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:130
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:131
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:139
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:145
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:146
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:154
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:160
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:161
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:169
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:175
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:184
+6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:190
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:115
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:123
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:128
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:137
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:142
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:143
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:151
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:156
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:157
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:165
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:170
+77092de4137e8c0842fbd3de927086e0ea91d6de:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:171
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:116
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:124
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:130
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:131
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:139
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:145
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:146
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:154
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:160
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:161
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:169
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:175
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:184
+Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:190

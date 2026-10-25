@@ -31,5 +31,17 @@
 	<string></string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>RemoteDeck looks for Macs with Screen Sharing or Remote Management on your local network, and connects to the machines you add.</string>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/vincentlauriat/RemoteDeck/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>zMdb1qKvrTXX6nYkToyWzl8IGNYyXUMBEH5xKMtL2nw=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

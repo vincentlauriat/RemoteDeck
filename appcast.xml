@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+  <channel>
+    <title>RemoteDeck</title>
+    <link>https://raw.githubusercontent.com/vincentlauriat/RemoteDeck/main/appcast.xml</link>
+    <description>RemoteDeck release feed. Scripts/release.sh adds one item per release, newest first.</description>
+    <language>en</language>
+  </channel>
+</rss>
