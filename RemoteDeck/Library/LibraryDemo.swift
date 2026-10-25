@@ -234,6 +234,8 @@ enum LibraryDemo {
 
     @MainActor
     static func connection(_ target: SessionTarget) -> any SessionConnection {
+        // `computer-use`: the one real connection a demo mode makes, to loopback only.
+        if connectsLocalComputerUse && target.host == "127.0.0.1" { return SessionManager.rfbConnection(target) }
         guard simulatesDrops else { return Connection(target) }
         let attempt = resilienceAttempts[target.host, default: 0]
         resilienceAttempts[target.host] = attempt + 1
@@ -415,7 +417,8 @@ enum LibraryDemo {
             Machine(name: "Build server", kind: .macARD, host: "10.0.1.20", username: "admin"),
             Machine(name: "NAS", kind: .vnc, host: "nas.local", port: 5901),
             Machine(name: "Studio", kind: .macARD, host: "studio.local", username: "vincent"),
-            Machine(name: "Computer use", kind: .anthropicVM, host: "127.0.0.1"),
+            Machine(name: "Computer use", kind: .anthropicVM, host: "127.0.0.1",
+                    port: connectsLocalComputerUse ? localComputerUsePort : 5900),
         ]
         machines[1].group = servers
         machines[2].group = servers
@@ -478,5 +481,84 @@ enum LibraryDemo {
             sync.handle(SyncEvent(id: id, kind: .import, endDate: .now, succeeded: true))
         }
     }
+
+    // MARK: Local computer use container
+
+    /// `computer-use` (screenshots of a real session): the sample library, with "Computer use" at
+    /// 127.0.0.1 on `-LibraryDemoPort` (default 5901, the port TRD › Test hosts maps the reference
+    /// container to), connected at launch through a real `RFBConnection`, loopback only; every other
+    /// machine stays fake. Start the container yourself first; nothing is stored, the clipboard is in memory.
+    static var connectsLocalComputerUse: Bool { mode == "computer-use" }
+    static var localComputerUsePort: Int {
+        let port = UserDefaults.standard.integer(forKey: "LibraryDemoPort")
+        return (1...65535).contains(port) ? port : 5901
+    }
+
+    // MARK: Help and What's New
+
+    /// `help` opens the Help window, `whats-new` the What's New window, both on fixed sample pages;
+    /// `help-offline` opens Help as if this Mac had no network. Every demo mode uses `HelpTransport`:
+    /// the demo never fetches from GitHub.
+    static var helpPage: HelpPage? {
+        switch mode {
+        case "help", "help-offline": .help
+        case "whats-new": .whatsNew
+        default: nil
+        }
+    }
+
+    struct HelpTransport: HTTPTransport {
+        func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+            try? await Task.sleep(for: .milliseconds(400))
+            if LibraryDemo.mode == "help-offline" { throw URLError(.notConnectedToInternet) }
+            let isReleases = request.url == HelpPage.whatsNew.requestURL
+            let body = isReleases ? LibraryDemo.demoReleases : LibraryDemo.demoReadme
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                                           headerFields: nil)!
+            return (Data(body.utf8), response)
+        }
+    }
+
+    static let demoReadme = """
+    <div align="center">
+
+    # RemoteDeck
+
+    **Demo page.** In a release build this window shows the live README from GitHub.
+
+    [![Release](https://img.shields.io/badge/demo-badge-blue)](https://github.com/vincentlauriat/RemoteDeck)
+
+    </div>
+
+    ## Quick start
+
+    1. Add a machine with ⌘N, or find one with **Discover** (⌘D).
+    2. Double-click it to open a session.
+    3. Press `⌃⌥⌘R` to release the keyboard.
+
+    ## Features
+
+    | | |
+    | --- | --- |
+    | 🖥️ **Screen Session** | View and control a remote Mac |
+    | 🗂️ **Session Tabs** | Several sessions in one window, ⌘1…⌘9 |
+
+    > Every link opens in your browser: [the repository](https://github.com/vincentlauriat/RemoteDeck).
+
+    ```bash
+    xcodegen generate
+    ```
+
+    - [x] Shipped feature
+    - [ ] Planned feature
+    """
+
+    static let demoReleases = """
+    [{"tag_name": "v0.2.0", "name": "v0.2.0 (demo)", "published_at": "2026-11-02T09:00:00Z",
+      "prerelease": true, "draft": false,
+      "body": "## What's new\\n\\n- Demo entry: release notes come from GitHub Releases.\\n\\n## Fixes\\n\\n- None, this is sample text."},
+     {"tag_name": "v0.1.0", "name": "", "published_at": "2026-10-30T09:00:00Z",
+      "prerelease": false, "draft": false, "body": ""}]
+    """
 }
 #endif

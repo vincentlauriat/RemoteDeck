@@ -29,6 +29,10 @@ struct RemoteDeckApp: App {
     private let apiKeyChecker: any APIKeyChecking
     /// Sparkle (T6.3): started only in a Release build outside XCTest and the debug modes.
     private let updater: AppUpdater
+    /// Help (⌘?) and What's New… (AppFlow › Help and What's New): fetched from GitHub only when their
+    /// window appears; never under XCTest (`HelpSource.disabled`) nor in a debug mode (sample pages).
+    @State private var help: HelpModel
+    @State private var whatsNew: HelpModel
 
     init() {
         // The hosted RemoteDeckTests run inside this app: never open the user's on-disk store then.
@@ -59,6 +63,10 @@ struct RemoteDeckApp: App {
                                                            isDebugBuild: UpdaterLaunch.isDebugBuild,
                                                            demoMode: demoMode,
                                                            framebufferDebugMode: framebufferDebugMode))
+        let helpTransport = HelpSource.appTransport(for: HelpSource.resolve(
+            isRunningTests: LibraryStore.isRunningTests(), demoMode: demoMode, framebufferDebugMode: framebufferDebugMode))
+        _help = State(initialValue: HelpModel(page: .help, transport: helpTransport))
+        _whatsNew = State(initialValue: HelpModel(page: .whatsNew, transport: helpTransport))
         // The hosted tests and the demo never read or write the user's API key.
         var apiKeys: any APIKeyStore = inMemory ? InMemoryAPIKeyStore() : KeychainAPIKeyStore()
         var claudeClient = MessagesClient()
@@ -231,6 +239,7 @@ struct RemoteDeckApp: App {
             UpdateCommands(settings: settings, updater: updater)
             LibraryCommands(settings: settings)
             SessionTabCommands(settings: settings, sessions: sessions)
+            HelpCommands(settings: settings)
         }
 
         // One window per machine, each a native tab of the Session Window (`SessionTabs`); opening a
@@ -265,6 +274,25 @@ struct RemoteDeckApp: App {
         .modelContainer(container)
         .defaultSize(width: 1000, height: 600)
         // `-LibraryDemo history` opens it from the Library Window.
+        .defaultLaunchBehavior(.suppressed)
+
+        // Help and What's New (AppFlow › Help and What's New): never opened nor restored at launch,
+        // so nothing is fetched until the user asks.
+        Window(settings.t("help_window_title"), id: HelpWindow.helpID) {
+            HelpWindowView(model: help)
+                .environment(settings)
+                .preferredColorScheme(settings.appearance.colorScheme)
+        }
+        .defaultSize(width: 760, height: 720)
+        .restorationBehavior(.disabled)
+        .defaultLaunchBehavior(.suppressed)
+        Window(settings.t("whats_new_window_title"), id: HelpWindow.whatsNewID) {
+            HelpWindowView(model: whatsNew)
+                .environment(settings)
+                .preferredColorScheme(settings.appearance.colorScheme)
+        }
+        .defaultSize(width: 760, height: 620)
+        .restorationBehavior(.disabled)
         .defaultLaunchBehavior(.suppressed)
 
         // Menu Bar Extra (T4.6): favorites and recent machines, Open Library, Session History, Quit.

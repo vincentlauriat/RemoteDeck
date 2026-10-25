@@ -120,6 +120,8 @@ struct LibraryView: View {
                 connect(machines.first { $0.name == "Mac mini" })
             }
             if LibraryDemo.showsHistory { openWindow(id: HistoryWindow.id) }
+            if let page = LibraryDemo.helpPage { openWindow(id: HelpWindow.id(for: page)) }
+            if LibraryDemo.connectsLocalComputerUse { connect(machines.first { $0.name == "Computer use" }) }
             if LibraryDemo.showsSync { openSettings() }
             if LibraryDemo.showsPublicAddress { connect(machines.first { $0.name == LibraryDemo.publicMachineName }) }
             if LibraryDemo.simulatesDrops {
