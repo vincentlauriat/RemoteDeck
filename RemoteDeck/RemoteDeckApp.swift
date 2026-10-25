@@ -27,6 +27,8 @@ struct RemoteDeckApp: App {
     private let tester: any ConnectionTester
     private let makeDiscovery: @MainActor () -> DiscoveryService
     private let apiKeyChecker: any APIKeyChecking
+    /// Sparkle (T6.3): started only in a Release build outside XCTest and the debug modes.
+    private let updater: AppUpdater
 
     init() {
         // The hosted RemoteDeckTests run inside this app: never open the user's on-disk store then.
@@ -53,6 +55,10 @@ struct RemoteDeckApp: App {
         #endif
         onboardingLaunch = OnboardingLaunch.resolve(isRunningTests: LibraryStore.isRunningTests(),
                                                     demoMode: demoMode, framebufferDebugMode: framebufferDebugMode)
+        updater = AppUpdater(launch: UpdaterLaunch.resolve(isRunningTests: LibraryStore.isRunningTests(),
+                                                           isDebugBuild: UpdaterLaunch.isDebugBuild,
+                                                           demoMode: demoMode,
+                                                           framebufferDebugMode: framebufferDebugMode))
         // The hosted tests and the demo never read or write the user's API key.
         var apiKeys: any APIKeyStore = inMemory ? InMemoryAPIKeyStore() : KeychainAPIKeyStore()
         var claudeClient = MessagesClient()
@@ -222,6 +228,7 @@ struct RemoteDeckApp: App {
         // killed run, or when only session windows were open: those are never restored).
         .defaultLaunchBehavior(.presented)
         .commands {
+            UpdateCommands(settings: settings, updater: updater)
             LibraryCommands(settings: settings)
             SessionTabCommands(settings: settings, sessions: sessions)
         }

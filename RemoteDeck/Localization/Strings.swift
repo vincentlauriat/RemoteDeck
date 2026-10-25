@@ -335,6 +335,7 @@ enum Strings {
 
             // Session History (T4.6)
             "menu_session_history": "Historique des sessions",
+            "menu_check_for_updates": "Rechercher les mises à jour…",
             "history_title": "Historique des sessions",
             "history_empty": "Les sessions que tu ouvres apparaîtront ici.",
             "history_search": "Nom de machine",
@@ -704,6 +705,7 @@ enum Strings {
 
             // Session History (T4.6)
             "menu_session_history": "Session History",
+            "menu_check_for_updates": "Check for Updates…",
             "history_title": "Session History",
             "history_empty": "Sessions you open will appear here.",
             "history_search": "Machine name",
