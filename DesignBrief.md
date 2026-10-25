@@ -90,7 +90,8 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 
 ## Required assets
 
-- App icon (1024 pt master, macOS rounded-square template). *(assumption: to be designed; a monitor glyph with a remote "deck" stack)*
+- App icon: drawn by `Scripts/make-icon.swift` (every macOS size into `AppIcon.appiconset`): the macOS Big Sur+ rounded square on Apple's 824/1024 grid with a soft shadow, deep blue gradient (#284A96 → #0E1A3C), a light display on a short aluminium stand whose screen is a teal-to-indigo desktop (#36C4D6 → #2E70E8 → #3A3EC4) with a small window and a white pointer outlined in navy; at 16 px it reads as a monitor with a pointer. The DMG background (`Scripts/make-dmg-background.swift`, 540 × 380) is near-white with the same blue as the arrow between the app and Applications, and the hint "Drag RemoteDeck to Applications to install it". The landing page (`docs/index.html`) uses the icon's #2E70E8 as accent with white text on it.
+- Help and What's New windows (760 × 720 and 760 × 620, minimum 560 × 440): the page in a scroll view, text column at most 820 pt, 24 pt padding, selectable text; headings large title / title 2 / title 3 / headline by level; code blocks monospaced callout on a quaternary 8 pt rounded fill, scrolling sideways; tables as a grid on a lighter fill (a header row of empty cells is left out); quotes with a 3 pt bar; a bottom bar (`.bar` material) with Reload and "View on GitHub"; loading, error and empty states as `ContentUnavailableView` (`wifi.slash` offline, `exclamationmark.triangle` otherwise, `shippingbox` for no release).
 - SF Symbols only for UI icons: `desktopcomputer`, `display`, `sparkles`, `antenna.radiowaves.left.and.right`, `doc.on.clipboard`, `clock.arrow.circlepath`, `bell`.
 - No illustrations.
 - README and release-page screenshots: Library Window, Session Window with Claude Assistant Panel.

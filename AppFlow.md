@@ -21,6 +21,8 @@
 | Session History View | Table of past sessions and a 30-day summary | SessionRecord |
 | Settings Window | General, iCloud Sync, Claude (API key, model), Notifications, Shared Clipboard default | AppSettings, KeychainCredential |
 | Menu Bar Extra | Favorites and recents, "Open Library…", "Session History…", "Quit RemoteDeck" | Machine, SessionRecord |
+| Help Window | Help › RemoteDeck Help (⌘?): the README of the public repository, read live from GitHub and rendered natively | README.md on `main` (GitHub) |
+| What's New Window | Help › What's New…: the notes of the last 10 GitHub Releases, newest first | GitHub Releases API |
 
 ## Main path
 
@@ -181,10 +183,22 @@ Content: Favorites (by name), then Recent: the 5 most recent other machines (dis
 | Toggle iCloud Sync | "iCloud Sync" switch (Settings › iCloud, AppSettings `iCloudSyncEnabled`) | Turning it on needs an available iCloud account (the switch is disabled otherwise); off is always possible | "Checking the iCloud account…", then "Syncing…" while CloudKit imports or exports | "Last synced: <date>", or "Your library syncs with iCloud." before the first event; changed since launch: "Quit and reopen RemoteDeck to start (stop) syncing." (the store takes the setting at launch) | "iCloud unavailable: …" (a failed mirroring event, or the CloudKit store failed to open and the library stays on this Mac); account restricted or temporarily unavailable; a build not signed for iCloud says so | — |
 | Toggle notifications | "Status notifications" switch (Settings › Notifications, AppSettings `notificationsEnabled`, on by default) | — | — | Off: no Status Notification is posted (probes and dots go on) | Under the switch, the macOS permission: not asked yet → "Allow notifications" (the system prompt, on that click only); denied → "Notifications are off in System Settings › Notifications" (text pointer, no deep link); request failed → Retry; allowed → "Notifications allowed" | — |
 
+### Help and What's New
+
+Two windows, each opened from the Help menu (never at launch, never restored), as in Vincent's other Mac apps (MarkdownViewer). Each fetches its page when it appears; the page stays while the app runs (reopening shows it at once, Reload fetches again). Links open in the browser (http and https only; any other link is shown as plain text, and a link whose text names another site shows its real host after it, e.g. "(evil.example)"); images and HTML in the Markdown are not shown, and bidi or invisible characters are removed.
+
+| Action | Trigger | Validation | Loading | Success | Error | Next |
+|---|---|---|---|---|---|---|
+| Open Help | Help › RemoteDeck Help, ⌘? (with the keyboard released or another window key: a captured session sends ⌘? to the remote, Keyboard capture) | — | "Loading Help…" | The README: headings, paragraphs, lists, tables, code blocks, quotes; Reload and "View on GitHub" at the bottom | "Help could not be loaded" with the reason and Retry: offline ("You're offline. This page is read from GitHub…"); not published (HTTP 404: "…the repository is not public", the state until the repository goes public); rate-limited (HTTP 429, or 403 with no request left); another HTTP status; another network error with its code; an unreadable or oversized (> 2 MB) answer | Close |
+| Open What's New | Help › What's New… | — | "Loading release notes…" | Each release: name (or tag), date, a "Pre-release" capsule when it is one, its notes ("No notes for this release." when empty) | As Help, titled "Release notes could not be loaded"; no release published: "No release yet — The first release's notes will appear here." | Close |
+| Reload / Retry | Reload (bottom left) or Retry | — | As above | As above | As above | — |
+
+Under the hosted tests neither window ever fetches (it would show "This page is never loaded while tests run."); the Debug `-LibraryDemo help`, `whats-new` and `help-offline` modes open them on fixed sample pages (every demo mode uses those, never GitHub).
+
 ## Navigation rules
 
 - One Library Window, one Session History View window, one Session Window containing native macOS window tabs (one per open machine, each with its own connection), and one Settings Window (⌘,). A tab can be moved to its own window or windows merged back (Window menu); a new session joins the frontmost Session Window (visible and not minimised; else the one opened last). The tab bar's "+" brings the Library Window forward, where the next machine is picked. Switching tabs, minimising and full screen never disconnect; only closing a tab does.
-- ⌘0 Library, ⌘1…⌘9 session tabs (Window › Session Tabs; the physical top-row keys, so AZERTY's ⌘& ⌘é… too, captured or not), ⌘K Claude Assistant Panel, ⌘Y Session History View.
+- ⌘0 Library, ⌘1…⌘9 session tabs (Window › Session Tabs; the physical top-row keys, so AZERTY's ⌘& ⌘é… too, captured or not), ⌘K Claude Assistant Panel, ⌘Y Session History View, ⌘? Help (Help › What's New… has no shortcut).
 - Only the selected tab of the key window captures the keyboard, runs the system-shortcut tap and reads the local clipboard; leaving a tab releases every key held on its remote, and a background tab stops drawing but stays connected and up to date.
 - While a session has the keyboard captured, key combos go to the remote machine, with the exceptions in Keyboard capture below.
 - Deep links open in a new tab of the existing Session Window.
@@ -199,7 +213,7 @@ Shortcuts match the physical key (key code) and the exact set of ⇧⌃⌥⌘, s
 | ⌘1…⌘9 (top-row digit keys) | Stay local: switch session tab | The only local allow-list (`LocalShortcut`); the tab left sees ⌘ go down and up, nothing else; the tab selected sees nothing of the combo |
 | ⌘Tab, ⌘⇧Tab, ⌘Space, ⌥⌘Space, ⌃Space, ⌃⌥Space, ⌃↑ ⌃↓ ⌃← ⌃→ (and with ⇧), ⌘⇧3/4/5, ⌃⌘⇧3/4, ⌥⌘D | Sent to the remote, swallowed locally, **only with Accessibility access** (`SystemShortcut`). Without it, macOS acts on them locally as usual | macOS takes them before the app (app switcher, Spotlight, input sources, Mission Control and Spaces, screenshots, Dock hiding) |
 | Force Quit, F-key hotkeys (F11, ⌃F1…⌃F8, brightness) | Stay local | Force Quit is the way out if the app hangs; the top row sends media keys by default |
-| Everything else (⌘W, ⌘Q, ⌘K, ⌘V, ⌘⌥S…) | Sent to the remote | The Session Window's own shortcuts work after ⌃⌥⌘R, or from the toolbar and menus |
+| Everything else (⌘W, ⌘Q, ⌘K, ⌘V, ⌘⌥S, ⌘?…) | Sent to the remote | The Session Window's own shortcuts work after ⌃⌥⌘R, or from the toolbar and menus |
 
 Capture states:
 

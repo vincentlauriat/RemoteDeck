@@ -54,6 +54,25 @@
 #   xcrun notarytool store-credentials "AppliMacVincentGithub" \
 #     --apple-id "<your Apple ID>" --team-id "KFLACS69T9"
 #
+# Conventions shared with Vincent's other Mac apps (MarkdownViewer's Scripts/release.sh and the
+# macos-app-release skill): Developer ID Application identity, the shared notary profile
+# AppliMacVincentGithub (MarkdownViewer's header names "MarkdownViewer-Notary", but its code default
+# is this same shared profile), release notes in release/release-notes-<version>.md, the DMG in
+# release/, CFBundleVersion as <sparkle:version>, `gh release create` printed rather than run, then
+# appcast.xml committed to main and the landing pages updated.
+#
+# Intended differences from MarkdownViewer (keep them):
+#   - Build: `xcodebuild archive` + `-exportArchive` (developer-id), not a `CODE_SIGNING_ALLOWED=NO`
+#     build re-signed by hand (MarkdownViewer, skill step 3). The app embeds a Developer ID
+#     provisioning profile for iCloud/CloudKit, push and its keychain group (T4.3); only the export
+#     makes and embeds it and expands $(AppIdentifierPrefix). A hand codesign would ship an app the
+#     system kills at launch.
+#   - DMG layout: dmgbuild (hash-pinned venv), not the Finder AppleScript (skill step 6).
+#   - Appcast: one <item> added per release (history kept), with sparkle:fullReleaseNotesLink
+#     (opened in the browser, never in Sparkle's web view) instead of releaseNotesLink.
+#   - Extra gates: CloudKit schema, clean tree, appcast build numbers from three sources, entitlements,
+#     each Sparkle helper's signature, notarization status read from JSON, spctl on DMG and app.
+#
 # Overridable via env: APP_NAME, SCHEME, PROJECT, SIGNING_IDENTITY (checked, not chosen: the export
 # uses the team's Developer ID Application identity), NOTARY_PROFILE
 set -euo pipefail
@@ -594,3 +613,12 @@ echo "Publish (the tag must match the appcast enclosure URL; the repository must
 echo "  gh release create v$VERSION \"$DMG\" --repo $GITHUB_REPO --target $BUILT_SHA --title \"v$VERSION\" --notes-file \"$NOTES\""
 echo "Then commit appcast.xml on a branch and merge it to main: installed copies read it from"
 echo "  https://raw.githubusercontent.com/$GITHUB_REPO/main/appcast.xml"
+echo
+echo "Landing pages that list the app (update them in the same change):"
+echo "  - docs/index.html (GitHub Pages): it shows no version number. At the FIRST release, turn its"
+echo "    \"GitHub Releases\" buttons into \"Download\" to releases/latest and drop \"First release coming"
+echo "    soon\" (see the comment in its <nav>); later, update it only if the features, requirements (macOS"
+echo "    $MIN_SYSTEM_VERSION+), privacy section or screenshots (docs/assets/) change."
+echo "  - README.md (Features, Install, Roadmap); the Release badge follows GitHub on its own."
+echo "  - any other site that lists RemoteDeck (e.g. a personal site's tools page)."
+echo "Check after publishing: What's New… in the installed app shows these notes."

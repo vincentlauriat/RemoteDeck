@@ -51,8 +51,9 @@ final class AppUpdater {
                                                       userDriverDelegate: nil)
         self.controller = controller
         Self.startedCount += 1
-        observation = controller.updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { [weak self] updater, _ in
-            let value = updater.canCheckForUpdates
+        observation = controller.updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { [weak self] _, change in
+            // From the change itself: `SPUUpdater` is main-actor isolated, this closure is not.
+            let value = change.newValue ?? false
             // Sparkle changes it on the main thread; hop explicitly in case a future version does not.
             Task { @MainActor in self?.canCheckForUpdates = value }
         }

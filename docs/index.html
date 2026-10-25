@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RemoteDeck — Every remote screen, one native Mac app</title>
+<meta name="description" content="A native macOS client for remote Macs (Apple Remote Desktop / Screen Sharing), VNC desktops and Anthropic computer use environments: Machine Library, session tabs, Bonjour discovery, iCloud sync, and an optional Claude Assistant that acts one confirmed action at a time. Free and open source (MIT).">
+<meta property="og:title" content="RemoteDeck">
+<meta property="og:description" content="Remote Macs, VNC desktops and Claude computer use environments in one native macOS window. Free and open source.">
+<meta property="og:image" content="https://vincentlauriat.github.io/RemoteDeck/assets/computer-use.png">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="assets/icon.png">
+<link rel="stylesheet" href="assets/base.css">
+<style>
+  /* Light page on top of the shared base.css tokens (copied verbatim from MarkdownViewer's docs/). */
+  :root{
+    --bg:#ffffff; --bg-soft:#f5f7fb; --panel:#ffffff; --line:#e3e8f0;
+    --ink:#172033; --txt:#172033; --muted:#566176; --faint:#7a8396;
+    --accent:#2e70e8; --accent-deep:#1d4fb8; --accent-soft:#e3edff; --teal:#1fb5c9;
+    --on-accent:#ffffff;   /* the accent here is a dark blue: white text on it reads at about 4.5:1 */
+    --code-bg:#0f172a;
+    --maxw:1100px;
+  }
+  body{background:var(--bg);color:var(--ink);font:16px/1.65 var(--font-sans)}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+  code{background:var(--bg-soft);border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:.9em}
+
+  nav{position:sticky;top:0;z-index:var(--z-nav);backdrop-filter:saturate(180%) blur(12px);background:rgba(255,255,255,.82);border-bottom:1px solid var(--line)}
+  nav .wrap{display:flex;align-items:center;justify-content:space-between;height:62px;gap:12px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:750;letter-spacing:-.2px}
+  .brand img{width:34px;height:34px}
+  .nav-links{display:flex;gap:22px;align-items:center;color:var(--muted);font-size:14.5px}
+  .nav-links a:hover{color:var(--ink)}
+  .btn{gap:8px;padding:11px 20px;border-radius:11px;font-weight:650;font-size:15px;transition:transform .12s ease,box-shadow .12s ease,background .12s}
+  .btn:hover{transform:translateY(-1px)}
+  .btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent-deep));color:var(--on-accent);box-shadow:0 6px 22px rgba(46,112,232,.32)}
+  .btn-ghost{border:1px solid var(--line);color:var(--ink);background:#fff}
+  .btn-ghost:hover{border-color:#c5cedd;background:var(--bg-soft)}
+  .btn-sm{padding:8px 15px;font-size:14px;border-radius:9px}
+
+  header{padding:72px 0 40px;background:radial-gradient(860px 400px at 16% -10%,rgba(46,112,232,.12),transparent 62%),radial-gradient(600px 300px at 90% 0%,rgba(31,181,201,.10),transparent 60%),linear-gradient(180deg,#fbfcff,#fff 70%)}
+  .hero-grid{display:grid;grid-template-columns:1fr 1.15fr;gap:44px;align-items:center}
+  .pill{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);background:#fff;color:var(--muted);padding:6px 13px;border-radius:999px;font-size:13px;margin-bottom:22px}
+  .pill b{color:var(--accent)}
+  h1{font-size:clamp(34px,5vw,54px);line-height:1.06}
+  h1 .grad{background:linear-gradient(120deg,var(--teal),var(--accent) 45%,var(--accent-deep));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .sub{max-width:520px;margin:20px 0 0;font-size:clamp(16px,2vw,18.5px);color:var(--muted)}
+  .cta{display:flex;gap:13px;flex-wrap:wrap;margin:28px 0 14px}
+  .meta{color:var(--faint);font-size:13px}
+  .meta b{color:var(--muted);font-weight:600}
+  .shot{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff;box-shadow:0 30px 60px rgba(16,32,64,.16)}
+  .shot img{display:block;width:100%;height:auto}
+  .shot .bar{display:flex;align-items:center;gap:7px;padding:10px 13px;background:var(--bg-soft);border-bottom:1px solid var(--line)}
+  .shot .dot{width:11px;height:11px;border-radius:50%}
+  .shot .dot.r{background:#ff5f57}.shot .dot.y{background:#febc2e}.shot .dot.g{background:#28c840}
+  .shot .name{margin-left:8px;font-size:12.5px;color:var(--muted);font-weight:600}
+  .shot .cap{color:var(--faint);font-size:12.5px;padding:9px 13px;border-top:1px solid var(--line)}
+
+  section{padding:72px 0;border-top:1px solid var(--line)}
+  .center{text-align:center}
+  .center .eyebrow{display:block}
+  h2{font-size:clamp(26px,3.6vw,36px);margin:9px 0 12px}
+  .lead{color:var(--muted);max-width:640px;font-size:17px}
+  .center .lead{margin-left:auto;margin-right:auto}
+
+  .grid{display:grid;gap:16px;margin-top:40px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px;transition:border-color .15s,transform .15s,box-shadow .15s}
+  .card:hover{border-color:#c9d8f2;transform:translateY(-2px);box-shadow:0 12px 30px rgba(16,32,64,.07)}
+  .card h3{font-size:16.5px;margin-bottom:5px}
+  .card p{color:var(--muted);font-size:14.5px}
+  .ico{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;background:var(--accent-soft);font-size:21px;margin-bottom:14px}
+
+  .why{background:var(--bg-soft);border-radius:18px;padding:40px;display:grid;grid-template-columns:1.15fr 1fr;gap:40px;align-items:center}
+  .facts{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .fact{background:#fff;border:1px solid var(--line);border-radius:13px;padding:18px}
+  .fact .k{font-size:22px;font-weight:800;letter-spacing:-.5px;color:var(--accent-deep)}
+  .fact .v{color:var(--muted);font-size:13.5px;margin-top:2px}
+
+  .gallery{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;margin-top:40px}
+  .grid>*,.gallery>*,.privacy>*,.steps>*,.hero-grid>*,.why>*{min-width:0}
+  .gallery figure{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff;box-shadow:0 16px 40px rgba(16,32,64,.08)}
+  .gallery img{display:block;width:100%;height:auto}
+  .gallery figcaption{color:var(--muted);font-size:13.5px;padding:12px 16px;border-top:1px solid var(--line)}
+  .gallery figcaption b{color:var(--ink)}
+  .note{color:var(--faint);font-size:13px;margin-top:16px;text-align:center}
+
+  .privacy{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:40px}
+  .privacy ul{list-style:none}
+  .privacy li{padding:10px 0;border-bottom:1px solid var(--line);color:var(--muted);font-size:14.5px}
+  .privacy li:last-child{border-bottom:0}
+  .privacy li b{color:var(--ink)}
+
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:42px;counter-reset:s}
+  .step{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 22px 20px;position:relative}
+  .step::before{counter-increment:s;content:counter(s);position:absolute;top:-14px;left:22px;width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent-deep));color:var(--on-accent);font-weight:800;display:grid;place-items:center;font-size:15px}
+  .step h3{margin:6px 0 5px;font-size:16px}
+  .step p{color:var(--muted);font-size:14.5px}
+
+  .final{text-align:center;background:radial-gradient(620px 280px at 50% 120%,rgba(46,112,232,.12),transparent 66%)}
+  .final .cta{justify-content:center}
+  footer{border-top:1px solid var(--line);padding:34px 0;color:var(--muted);font-size:14px;text-align:center}
+  footer a{color:var(--accent);font-weight:600}
+
+  .langtog{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden;flex:none}
+  .langtog button{background:transparent;border:0;color:var(--muted);font:600 12.5px/1 var(--font-mono);padding:0 10px;min-height:36px;cursor:pointer}
+  .langtog button+button{border-left:1px solid var(--line)}
+  .langtog button:hover{color:var(--ink)}
+  .langtog button.on{background:var(--accent);color:var(--on-accent)}
+
+  @media(max-width:880px){
+    .hero-grid,.why,.privacy{grid-template-columns:1fr}
+    .why{padding:28px}
+    .g3,.g2,.steps,.gallery{grid-template-columns:1fr}
+    .nav-links a:not(.btn){display:none}
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#features"><span class="en">Skip to content</span><span class="fr">Aller au contenu</span></a>
+
+<nav><div class="wrap">
+  <a class="brand" href="#top"><img src="assets/icon.png" alt="" width="34" height="34">RemoteDeck</a>
+  <div class="nav-links">
+    <a href="#features"><span class="en">Features</span><span class="fr">Fonctions</span></a>
+    <a href="#privacy"><span class="en">Privacy</span><span class="fr">Confidentialité</span></a>
+    <a href="#install"><span class="en">Install</span><span class="fr">Installer</span></a>
+    <a href="https://github.com/vincentlauriat/RemoteDeck">GitHub</a>
+    <div class="langtog" role="group" aria-label="Language / Langue">
+      <button type="button" data-lang="en" class="on" onclick="setLang('en')">EN</button>
+      <button type="button" data-lang="fr" onclick="setLang('fr')">FR</button>
+    </div>
+    <!-- Until the first release exists, the buttons go to the Releases page with neutral wording.
+         After it ships: "Download" / "Télécharger" to releases/latest (Scripts/release.sh reminds it). -->
+    <a class="btn btn-primary btn-sm" href="https://github.com/vincentlauriat/RemoteDeck/releases"><span class="en">Releases</span><span class="fr">Versions</span></a>
+  </div>
+</div></nav>
+
+<header id="top"><div class="wrap">
+  <div class="hero-grid">
+    <div>
+      <span class="pill">🖥️ <span class="en"><b>Macs</b>, <b>VNC</b> and <b>Claude computer use</b> desktops</span><span class="fr"><b>Mac</b>, bureaux <b>VNC</b> et <b>Claude computer use</b></span></span>
+      <h1><span class="en">Every remote screen,<br><span class="grad">one native Mac app.</span></span><span class="fr">Tous vos écrans distants,<br><span class="grad">une seule app Mac native.</span></span></h1>
+      <p class="sub"><span class="en">RemoteDeck opens screen sessions on your Macs (Apple Remote Desktop / Screen Sharing), on VNC desktops and on Anthropic computer use environments — from one Machine Library, in tabs, with your passwords in the Keychain.</span><span class="fr">RemoteDeck ouvre des sessions d'écran sur vos Mac (Apple Remote Desktop / Partage d'écran), sur des bureaux VNC et sur les environnements Anthropic computer use — depuis une seule bibliothèque de machines, en onglets, avec vos mots de passe dans le Trousseau.</span></p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/vincentlauriat/RemoteDeck/releases"><span class="en">GitHub Releases</span><span class="fr">Versions sur GitHub</span></a>
+        <a class="btn btn-ghost" href="https://github.com/vincentlauriat/RemoteDeck"><span class="en">View on GitHub</span><span class="fr">Voir sur GitHub</span></a>
+      </div>
+      <p class="meta"><span class="en"><b>Free &amp; open source (MIT)</b> · macOS 15+ · <b>First release coming soon</b>: a signed, notarized DMG with Sparkle updates</span><span class="fr"><b>Gratuit et open source (MIT)</b> · macOS 15+ · <b>Première version bientôt</b> : un DMG signé et notarié, mis à jour par Sparkle</span></p>
+    </div>
+    <figure class="shot">
+      <div class="bar" aria-hidden="true"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="name">Computer use</span></div>
+      <img src="assets/computer-use.png" width="1024" height="768" alt="The desktop of Anthropic's computer use reference container (a calculator window and a taskbar), as RemoteDeck's RFB library decodes it">
+      <figcaption class="cap"><span class="en">A real frame from Anthropic's computer use reference container, decoded by RemoteDeck's RFB library.</span><span class="fr">Une vraie image du conteneur de référence Anthropic computer use, décodée par la bibliothèque RFB de RemoteDeck.</span></figcaption>
+    </figure>
+  </div>
+</div></header>
+
+<section id="features"><div class="wrap">
+  <div class="center">
+    <p class="eyebrow"><span class="en">## features</span><span class="fr">## fonctions</span></p>
+    <h2><span class="en">Built for daily remote work</span><span class="fr">Conçue pour le travail à distance au quotidien</span></h2>
+    <p class="lead"><span class="en">Everything you open Apple Remote Desktop or Screen Sharing for, without the fleet-management weight — plus the environments those apps can't reach.</span><span class="fr">Tout ce pour quoi vous ouvrez Apple Remote Desktop ou le Partage d'écran, sans le poids de la gestion de parc — plus les environnements que ces apps n'atteignent pas.</span></p>
+  </div>
+  <div class="grid g3">
+    <div class="card"><div class="ico">🗂️</div><h3><span class="en">Machine Library</span><span class="fr">Bibliothèque de machines</span></h3><p><span class="en">All your machines in one sidebar: groups, favorites, search, and passwords kept in the Keychain only.</span><span class="fr">Toutes vos machines dans une barre latérale : groupes, favoris, recherche, et mots de passe gardés dans le Trousseau uniquement.</span></p></div>
+    <div class="card"><div class="ico">🖥️</div><h3><span class="en">Screen Session</span><span class="fr">Session d'écran</span></h3><p><span class="en">Control a remote Mac with Apple Diffie-Hellman authentication, or any VNC desktop. Raw, CopyRect, ZRLE and Tight decoding, drawn with Metal.</span><span class="fr">Pilotez un Mac distant avec l'authentification Apple Diffie-Hellman, ou n'importe quel bureau VNC. Décodage Raw, CopyRect, ZRLE et Tight, affiché avec Metal.</span></p></div>
+    <div class="card"><div class="ico">🗃️</div><h3><span class="en">Session Tabs</span><span class="fr">Onglets de session</span></h3><p><span class="en">Several sessions as native tabs of one window, <code>⌘1</code>…<code>⌘9</code> to switch. Background tabs stay connected.</span><span class="fr">Plusieurs sessions en onglets natifs d'une fenêtre, <code>⌘1</code>…<code>⌘9</code> pour passer de l'une à l'autre. Les onglets en arrière-plan restent connectés.</span></p></div>
+    <div class="card"><div class="ico">📡</div><h3><span class="en">Bonjour Discovery</span><span class="fr">Découverte Bonjour</span></h3><p><span class="en">Find the Macs with Screen Sharing or Remote Management on your LAN without typing an address.</span><span class="fr">Trouvez les Mac du réseau local qui ont le Partage d'écran ou la Gestion à distance, sans taper d'adresse.</span></p></div>
+    <div class="card"><div class="ico">⌨️</div><h3><span class="en">Real keyboard capture</span><span class="fr">Vraie capture du clavier</span></h3><p><span class="en">Key combos go to the remote, <code>⌃⌥⌘R</code> gives them back. With Accessibility access, ⌘Tab and ⌘Space go too.</span><span class="fr">Les raccourcis partent vers la machine distante, <code>⌃⌥⌘R</code> les rend. Avec l'accès Accessibilité, ⌘Tab et ⌘Espace aussi.</span></p></div>
+    <div class="card"><div class="ico">✨</div><h3><span class="en">Claude Assistant</span><span class="fr">Assistant Claude</span></h3><p><span class="en">Ask Claude what is on the remote screen, or give it a task. With your own API key; every click or keystroke waits for your Confirm.</span><span class="fr">Demandez à Claude ce qu'il y a à l'écran, ou confiez-lui une tâche. Avec votre propre clé d'API ; chaque clic ou frappe attend votre confirmation.</span></p></div>
+    <div class="card"><div class="ico">☁️</div><h3><span class="en">iCloud Sync</span><span class="fr">Synchronisation iCloud</span></h3><p><span class="en">The same Machine Library on all your Macs, passwords through iCloud Keychain.</span><span class="fr">La même bibliothèque sur tous vos Mac, les mots de passe via le Trousseau iCloud.</span></p></div>
+    <div class="card"><div class="ico">🔔</div><h3><span class="en">Status &amp; history</span><span class="fr">État et historique</span></h3><p><span class="en">A notification when a watched machine goes offline or comes back; a local Session History with a 30-day summary and CSV export.</span><span class="fr">Une notification quand une machine surveillée tombe ou revient ; un historique local des sessions avec un résumé sur 30 jours et un export CSV.</span></p></div>
+    <div class="card"><div class="ico">🔁</div><h3><span class="en">Resilient sessions</span><span class="fr">Sessions résilientes</span></h3><p><span class="en">One automatic reconnect after a drop, a clean stop before sleep and a reconnect after wake. Sparkle keeps the app up to date.</span><span class="fr">Une reconnexion automatique après une coupure, un arrêt propre avant la veille et une reconnexion au réveil. Sparkle tient l'app à jour.</span></p></div>
+  </div>
+</div></section>
+
+<section id="why"><div class="wrap">
+  <div class="why">
+    <div>
+      <p class="eyebrow"><span class="en">// why it exists</span><span class="fr">// pourquoi elle existe</span></p>
+      <h2><span class="en">One client instead of three</span><span class="fr">Un client au lieu de trois</span></h2>
+      <p class="lead"><span class="en">Reaching a remote Mac meant juggling Apple Remote Desktop, heavy and built for fleets, and Screen Sharing, which has no library and no tabs; Claude computer use desktops needed yet another VNC client. RemoteDeck is the one fast, keyboard-friendly app for all of them, with its own RFB/VNC library written in Swift.</span><span class="fr">Atteindre un Mac distant, c'était jongler entre Apple Remote Desktop, lourd et pensé pour les parcs, et le Partage d'écran, sans bibliothèque ni onglets ; les bureaux Claude computer use demandaient encore un autre client VNC. RemoteDeck est l'app rapide, pensée pour le clavier, qui couvre tout, avec sa propre bibliothèque RFB/VNC écrite en Swift.</span></p>
+    </div>
+    <div class="facts">
+      <div class="fact"><div class="k">Swift 6</div><div class="v"><span class="en">Native SwiftUI + AppKit, strict concurrency</span><span class="fr">SwiftUI + AppKit natifs, concurrence stricte</span></div></div>
+      <div class="fact"><div class="k">ARD + VNC</div><div class="v"><span class="en">Apple DH, VNC password, 4 encodings</span><span class="fr">Apple DH, mot de passe VNC, 4 encodages</span></div></div>
+      <div class="fact"><div class="k">macOS 15+</div><div class="v"><span class="en">Sandboxed, Hardened Runtime, notarized</span><span class="fr">Sandboxée, Hardened Runtime, notariée</span></div></div>
+      <div class="fact"><div class="k">MIT</div><div class="v"><span class="en">Free and open source</span><span class="fr">Gratuite et open source</span></div></div>
+    </div>
+  </div>
+</div></section>
+
+<section id="screens"><div class="wrap">
+  <div class="center">
+    <p class="eyebrow"><span class="en">screenshots</span><span class="fr">captures</span></p>
+    <h2><span class="en">A closer look</span><span class="fr">De plus près</span></h2>
+  </div>
+  <div class="gallery">
+    <figure><img src="assets/session.png" width="1600" height="1000" loading="lazy" alt="A Session Window with three tabs (Mac mini, NAS, Studio) on demo machines, showing a synthetic test pattern and the 'Keyboard captured' indicator"><figcaption><span class="en"><b>Session Tabs</b> — three sessions in one window, keyboard captured.</span><span class="fr"><b>Onglets de session</b> — trois sessions dans une fenêtre, clavier capturé.</span></figcaption></figure>
+    <figure><img src="assets/library.png" width="1440" height="960" loading="lazy" alt="The Machine Library window: favorites, groups and machines in the sidebar"><figcaption><span class="en"><b>Machine Library</b> — groups, favorites and search.</span><span class="fr"><b>Bibliothèque de machines</b> — groupes, favoris et recherche.</span></figcaption></figure>
+    <figure><img src="assets/editor.png" width="1440" height="960" loading="lazy" alt="The Machine Editor sheet with connection, library and session settings"><figcaption><span class="en"><b>Machine Editor</b> — kind, host, credentials, Test connection.</span><span class="fr"><b>Éditeur de machine</b> — type, hôte, identifiants, test de connexion.</span></figcaption></figure>
+    <figure><img src="assets/history.png" width="1600" height="960" loading="lazy" alt="The Session History window with its 30-day summary and the list of sessions"><figcaption><span class="en"><b>Session History</b> — every session, a 30-day summary, CSV export.</span><span class="fr"><b>Historique des sessions</b> — chaque session, un résumé sur 30 jours, export CSV.</span></figcaption></figure>
+    <figure><img src="assets/whats-new.png" width="1200" height="979" loading="lazy" alt="The What's New window listing release notes"><figcaption><span class="en"><b>What's New</b> — release notes read from GitHub, rendered natively.</span><span class="fr"><b>Nouveautés</b> — les notes de version lues sur GitHub, rendues nativement.</span></figcaption></figure>
+  </div>
+  <p class="note"><span class="en">Window captures from the Debug build's demo mode: sample machines, a synthetic test pattern and sample release notes, no real host.</span><span class="fr">Captures de fenêtres dans le mode démo du build Debug : machines d'exemple, mire synthétique et notes de version d'exemple, aucun hôte réel.</span></p>
+</div></section>
+
+<section id="privacy"><div class="wrap">
+  <div class="center">
+    <p class="eyebrow"><span class="en">privacy &amp; security</span><span class="fr">confidentialité et sécurité</span></p>
+    <h2><span class="en">What leaves your Mac, and when</span><span class="fr">Ce qui quitte votre Mac, et quand</span></h2>
+    <p class="lead"><span class="en">No account, no analytics, no tracker — on this page either. The app talks only to the places below.</span><span class="fr">Pas de compte, pas de mesure d'audience, pas de traceur — sur cette page non plus. L'app ne parle qu'aux destinations ci-dessous.</span></p>
+  </div>
+  <div class="privacy">
+    <div class="card"><ul>
+      <li><b><span class="en">The machines you add</span><span class="fr">Les machines que vous ajoutez</span></b> — <span class="en">sessions, Test connection, and a TCP probe every 60 s for the ones you mark Watch (no credentials sent by the probe).</span><span class="fr">sessions, test de connexion, et une sonde TCP toutes les 60 s pour celles marquées « Surveiller » (la sonde n'envoie aucun identifiant).</span></li>
+      <li><b>Bonjour</b> — <span class="en">on your local network, only while the Discovery Panel is open.</span><span class="fr">sur le réseau local, seulement quand le panneau Découverte est ouvert.</span></li>
+      <li><b>Anthropic</b> — <span class="en">only when you use the Claude Assistant, with your own API key: your prompt and screenshots of that session. Nothing is cached on disk.</span><span class="fr">seulement quand vous utilisez l'assistant Claude, avec votre propre clé d'API : votre demande et les captures de cette session. Rien n'est mis en cache sur le disque.</span></li>
+      <li><b>GitHub</b> — <span class="en">Sparkle's daily update check, and Help / What's New when you open them.</span><span class="fr">la vérification quotidienne des mises à jour (Sparkle), et l'Aide / les Nouveautés quand vous les ouvrez.</span></li>
+      <li><b><span class="en">What a request carries</span><span class="fr">Ce que porte une requête</span></b> — <span class="en">to GitHub, only the standard User-Agent (app name and build, CFNetwork and Darwin versions): no identifier, no cookie, nothing cached on disk.</span><span class="fr">vers GitHub, seulement le User-Agent standard (nom et build de l'app, versions de CFNetwork et de Darwin) : aucun identifiant, aucun cookie, rien en cache sur le disque.</span></li>
+      <li><b>iCloud</b> — <span class="en">your Machine Library (private CloudKit database) and passwords (iCloud Keychain), if you turn sync on.</span><span class="fr">votre bibliothèque (base CloudKit privée) et vos mots de passe (Trousseau iCloud), si vous activez la synchronisation.</span></li>
+    </ul></div>
+    <div class="card"><ul>
+      <li><b><span class="en">Keychain only</span><span class="fr">Trousseau uniquement</span></b> — <span class="en">machine passwords and the API key are never written to the library, logs or CloudKit records.</span><span class="fr">les mots de passe et la clé d'API ne sont jamais écrits dans la bibliothèque, les journaux ou CloudKit.</span></li>
+      <li><b><span class="en">Unencrypted protocol</span><span class="fr">Protocole non chiffré</span></b> — <span class="en">RFB is not encrypted beyond the authentication exchange: use your LAN or a VPN. A connection that reaches a public Internet address stops and asks first, then shows an "Internet" badge with the clipboard off.</span><span class="fr">RFB n'est pas chiffré au-delà de l'échange d'authentification : utilisez le réseau local ou un VPN. Une connexion qui atteint une adresse Internet publique s'arrête et demande d'abord, puis affiche un badge « Internet », presse-papiers coupé.</span></li>
+      <li><b><span class="en">No downgrade</span><span class="fr">Pas de repli</span></b> — <span class="en">a Mac with a user name must offer Apple authentication; a configured password never falls back to no authentication.</span><span class="fr">un Mac avec un nom d'utilisateur doit proposer l'authentification Apple ; un mot de passe configuré ne retombe jamais sur « aucune authentification ».</span></li>
+      <li><b><span class="en">Confirmed actions</span><span class="fr">Actions confirmées</span></b> — <span class="en">the Claude Assistant never clicks or types without your Confirm, and pauses after 8 turns without one.</span><span class="fr">l'assistant Claude ne clique ni ne tape jamais sans votre confirmation, et se met en pause après 8 tours sans action confirmée.</span></li>
+      <li><b>Sandbox</b> — <span class="en">App Sandbox and Hardened Runtime, signed with a Developer ID and notarized by Apple.</span><span class="fr">App Sandbox et Hardened Runtime, signée avec un Developer ID et notariée par Apple.</span></li>
+    </ul></div>
+  </div>
+</div></section>
+
+<section id="install"><div class="wrap">
+  <div class="center">
+    <p class="eyebrow"><span class="en">get started</span><span class="fr">démarrer</span></p>
+    <h2><span class="en">Install in a minute</span><span class="fr">Installée en une minute</span></h2>
+    <p class="lead"><span class="en">No App Store, no sign-in. Requires macOS 15 Sequoia or later.</span><span class="fr">Pas d'App Store, pas de compte. Nécessite macOS 15 Sequoia ou ultérieur.</span></p>
+  </div>
+  <div class="steps">
+    <div class="step"><h3><span class="en">Download</span><span class="fr">Télécharger</span></h3><p><span class="en">Once the first release is published, get the signed, notarized <code>.dmg</code> from GitHub Releases. Until then, build from source (README).</span><span class="fr">Dès la première version publiée, récupérez le <code>.dmg</code> signé et notarié sur GitHub Releases. D'ici là, compilez depuis les sources (README).</span></p></div>
+    <div class="step"><h3><span class="en">Install</span><span class="fr">Installer</span></h3><p><span class="en">Open it and drag <code>RemoteDeck</code> to <code>Applications</code>.</span><span class="fr">Ouvrez-le et glissez <code>RemoteDeck</code> dans <code>Applications</code>.</span></p></div>
+    <div class="step"><h3><span class="en">Allow the local network</span><span class="fr">Autoriser le réseau local</span></h3><p><span class="en">Say yes to the Local Network prompt to discover and reach your Macs. Accessibility and notifications are optional.</span><span class="fr">Acceptez la demande d'accès au réseau local pour découvrir et joindre vos Mac. Accessibilité et notifications sont facultatives.</span></p></div>
+  </div>
+</div></section>
+
+<section class="final"><div class="wrap">
+  <p class="eyebrow"><span class="en">ready?</span><span class="fr">prêt ?</span></p>
+  <h2><span class="en">All your remote screens, one window</span><span class="fr">Tous vos écrans distants, une seule fenêtre</span></h2>
+  <p class="lead" style="margin:0 auto 6px"><span class="en">Free and open source. The first release is on its way.</span><span class="fr">Gratuite et open source. La première version arrive.</span></p>
+  <div class="cta">
+    <a class="btn btn-primary" href="https://github.com/vincentlauriat/RemoteDeck/releases"><span class="en">GitHub Releases</span><span class="fr">Versions sur GitHub</span></a>
+    <a class="btn btn-ghost" href="https://github.com/vincentlauriat/RemoteDeck#readme"><span class="en">Read the docs</span><span class="fr">Lire la doc</span></a>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  RemoteDeck · <span class="en">MIT License</span><span class="fr">Licence MIT</span> · © 2026 Vincent Lauriat ·
+  <a href="https://github.com/vincentlauriat/RemoteDeck">github.com/vincentlauriat/RemoteDeck</a>
+</div></footer>
+
+<script>
+  /* Same key as Vincent's other landing pages (one origin, vincentlauriat.github.io): the language
+     chosen on one page follows on the others. English is the bare default without JavaScript. */
+  var LANG_TAG={en:'en',fr:'fr'};
+  function setLang(l){
+    if(!LANG_TAG[l]) l='en';
+    document.body.classList.remove('lang-en','lang-fr','lang-zh');
+    document.body.classList.add('lang-'+l);
+    document.documentElement.lang=LANG_TAG[l];
+    document.querySelectorAll('.langtog button').forEach(function(b){
+      var on=b.dataset.lang===l;
+      b.classList.toggle('on',on);
+      b.setAttribute('aria-pressed',on?'true':'false');
+    });
+    try{localStorage.setItem('vl-lang',l)}catch(e){}
+  }
+  (function(){
+    var saved;try{saved=localStorage.getItem('vl-lang')}catch(e){}
+    var n=(navigator.language||'en').slice(0,2).toLowerCase();
+    setLang(saved||(n==='fr'?'fr':'en'));
+  })();
+</script>
+</body>
+</html>
