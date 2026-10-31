@@ -171,7 +171,8 @@ if printf '%s' "$XCODE_DIR" | grep -qi "beta"; then
   echo "✗ xcode-select points to a beta Xcode ($XCODE_DIR): select the stable one (sudo xcode-select -s /Applications/Xcode.app)" >&2
   exit 1
 fi
-XCODE_VERSION="$(xcodebuild -version | head -1)"
+# sed reads all of it: `head -1` exiting early could SIGPIPE xcodebuild under pipefail (silent exit 141).
+XCODE_VERSION="$(xcodebuild -version | sed -n 1p)"
 XCODE_BUILD="$(xcodebuild -version | sed -n 2p | awk '{print $NF}')"
 # A beta renamed to Xcode.app passes the path check. Neither its Info.plist nor its version.plist
 # carries a key that tells a beta apart (checked 2026-10-25 on 27.1 / 27A9275: CFBundleShortVersionString,
