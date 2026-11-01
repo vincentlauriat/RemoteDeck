@@ -1,9 +1,18 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version='1.0' encoding='utf-8'?>
 <rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
   <channel>
     <title>RemoteDeck</title>
     <link>https://raw.githubusercontent.com/vincentlauriat/RemoteDeck/main/appcast.xml</link>
     <description>RemoteDeck release feed. Scripts/release.sh adds one item per release, newest first.</description>
     <language>en</language>
+    <item>
+      <title>v1.0.0</title>
+      <pubDate>Sun, 01 Nov 2026 07:58:34 GMT</pubDate>
+      <sparkle:version>2</sparkle:version>
+      <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/vincentlauriat/RemoteDeck/releases/tag/v1.0.0</sparkle:fullReleaseNotesLink>
+      <enclosure url="https://github.com/vincentlauriat/RemoteDeck/releases/download/v1.0.0/RemoteDeck-1.0.0.dmg" type="application/octet-stream" sparkle:edSignature="55ddTLLInj3jZniAThJofZmet3PKkHjONB8YiZBqY80N2+xOaHbURnhyCA4MDdWlLR/41nQnRwF35TDE6ArnCQ==" length="4098100" />
+    </item>
   </channel>
 </rss>
