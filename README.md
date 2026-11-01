@@ -51,7 +51,7 @@ It is a native SwiftUI + AppKit app with its own RFB/VNC protocol library (Apple
 
 ## Install
 
-Download the latest `RemoteDeck-<version>.dmg` from the [GitHub Releases page](https://github.com/vincentlauriat/RemoteDeck/releases/latest), open it and drag **RemoteDeck** to **Applications**. The first public release is not out yet (see the roadmap).
+Download the latest `RemoteDeck-<version>.dmg` from the [GitHub Releases page](https://github.com/vincentlauriat/RemoteDeck/releases/latest), open it and drag **RemoteDeck** to **Applications**.
 
 Requires **macOS 15 Sequoia or later**. The DMG is signed with an Apple Developer ID, built with the Hardened Runtime and sandboxed, then notarized and stapled by Apple: it opens with a double-click, without a Gatekeeper warning, even offline. After that, **RemoteDeck › Check for Updates…** (Sparkle) installs new versions; it also checks once a day.
 
@@ -167,7 +167,7 @@ Releases (maintainer): bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in
 - [x] **Step 3 — main path (P0)** — Machine Library, Screen Session, Bonjour Discovery, Anthropic VM Connect
 - [x] **Step 4 — secondary features (P1)** — clipboard, tabs, iCloud Sync, Claude Assistant, notifications, history (live two-Mac sync check pending)
 - [ ] **Step 5 — quality** — resilience, security review and parser fuzzing done; accessibility pass (T5.2) and 4K performance (T5.4) pending
-- [ ] **Step 6 — go-live** — release pipeline, landing page and in-app Help ready; clean-Mac test run, CloudKit Production schema and first release pending
+- [ ] **Step 6 — go-live** — v1.0.0 released (signed, notarized DMG, Sparkle updates), CloudKit Production schema deployed, landing page live; clean-Mac test run pending
 - [ ] **File Transfer** (P2)
 
 ## Contributing
