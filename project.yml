@@ -58,8 +58,8 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "0.1.0"
-        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "2"
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         # One file for both configurations: `aps-environment` development, as the Development profile
         # that signs Debug builds and Release archives grants; `-exportArchive` (developer-id) rewrites
