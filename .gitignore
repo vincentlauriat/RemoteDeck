@@ -28,6 +28,9 @@ dmg-staging/
 # ── Swift Package Manager ──────────────────────────────
 .build/
 .swiftpm/
+# Local packages pin in their manifests (`exact:`); a resolve or an Xcode build rewrites these files
+# (Xcode put the whole app graph, Sparkle included, in Packages/SSHKit/Package.resolved).
+Packages/**/Package.resolved
 
 # ── Tooling / local state (not for publication) ────────
 .omc/
