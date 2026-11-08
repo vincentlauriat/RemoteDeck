@@ -2,7 +2,11 @@
 # generated Apple Diffie-Hellman test vectors in AuthVectors.swift (privateKey / sharedSecret /
 # aesKey hex values computed by Tests/RFBKitTests/Vectors/generate_auth_vectors.py, no real
 # credential). `<commit>:<file>:<rule>:<line>` entries cover the history (`gitleaks git`),
-# `<file>:<rule>:<line>` entries the working tree (`gitleaks dir`). Nothing else may go here.
+# `<file>:<rule>:<line>` entries the working tree (`gitleaks dir`).
+# Since 2026-11-08 (gitleaks 8.30.1, SSH machines): the `private-key` rule on the SSHKit test keys
+# (Tests/SSHKitTests/Fixtures, generated with ssh-keygen for the tests only, never used anywhere)
+# and on `-----BEGIN … PRIVATE KEY-----` armor strings in SSHKit and the vendored Citadel and
+# swift-nio-ssh sources and tests (format constants and upstream test keys). Nothing else may go here.
 6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:116
 6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:124
 6c07bc9f2726d1c1578336b405798ea72956ccb0:Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:130
@@ -43,3 +47,35 @@ Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:169
 Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:175
 Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:184
 Packages/RFBKit/Tests/RFBKitTests/AuthVectors.swift:generic-api-key:190
+09180558e5578211cbebdb59308957dd833a74b7:Packages/Vendor/Citadel/Sources/Citadel/OpenSSHKey.swift:private-key:132
+09180558e5578211cbebdb59308957dd833a74b7:Packages/Vendor/Citadel/Sources/Citadel/OpenSSHKey.swift:private-key:311
+09180558e5578211cbebdb59308957dd833a74b7:Packages/Vendor/Citadel/Sources/Citadel/SSHKeyTypeDetection.swift:private-key:143
+09180558e5578211cbebdb59308957dd833a74b7:Packages/Vendor/Citadel/Sources/Citadel/SSHKeyTypeDetection.swift:private-key:163
+09180558e5578211cbebdb59308957dd833a74b7:Packages/Vendor/swift-nio-ssh/Tests/NIOSSHTests/CertifiedKeyTests.swift:private-key:26
+09180558e5578211cbebdb59308957dd833a74b7:Packages/Vendor/swift-nio-ssh/Tests/NIOSSHTests/UserAuthenticationStateMachineTests.swift:private-key:24
+2b4610ac870d6dca2c70a94abac6150dd70d1d64:Packages/SSHKit/Sources/SSHKit/PrivateKey.swift:private-key:20
+2b4610ac870d6dca2c70a94abac6150dd70d1d64:Packages/SSHKit/Tests/SSHKitTests/Fixtures/host_ed25519:private-key:1
+2b4610ac870d6dca2c70a94abac6150dd70d1d64:Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_ecdsa:private-key:1
+2b4610ac870d6dca2c70a94abac6150dd70d1d64:Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_ecdsa_encrypted:private-key:1
+2b4610ac870d6dca2c70a94abac6150dd70d1d64:Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_ed25519:private-key:1
+2b4610ac870d6dca2c70a94abac6150dd70d1d64:Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_ed25519_encrypted:private-key:1
+2b4610ac870d6dca2c70a94abac6150dd70d1d64:Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_rsa:private-key:1
+2b4610ac870d6dca2c70a94abac6150dd70d1d64:Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_rsa_encrypted:private-key:1
+2b4610ac870d6dca2c70a94abac6150dd70d1d64:Packages/SSHKit/Tests/SSHKitTests/PrivateKeyTests.swift:private-key:111
+2b4610ac870d6dca2c70a94abac6150dd70d1d64:Packages/SSHKit/Tests/SSHKitTests/PrivateKeyTests.swift:private-key:85
+Packages/SSHKit/Sources/SSHKit/PrivateKey.swift:private-key:20
+Packages/SSHKit/Tests/SSHKitTests/Fixtures/host_ed25519:private-key:1
+Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_ecdsa:private-key:1
+Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_ecdsa_encrypted:private-key:1
+Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_ed25519:private-key:1
+Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_ed25519_encrypted:private-key:1
+Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_rsa:private-key:1
+Packages/SSHKit/Tests/SSHKitTests/Fixtures/id_rsa_encrypted:private-key:1
+Packages/SSHKit/Tests/SSHKitTests/PrivateKeyTests.swift:private-key:111
+Packages/SSHKit/Tests/SSHKitTests/PrivateKeyTests.swift:private-key:85
+Packages/Vendor/Citadel/Sources/Citadel/OpenSSHKey.swift:private-key:132
+Packages/Vendor/Citadel/Sources/Citadel/OpenSSHKey.swift:private-key:311
+Packages/Vendor/Citadel/Sources/Citadel/SSHKeyTypeDetection.swift:private-key:143
+Packages/Vendor/Citadel/Sources/Citadel/SSHKeyTypeDetection.swift:private-key:163
+Packages/Vendor/swift-nio-ssh/Tests/NIOSSHTests/CertifiedKeyTests.swift:private-key:26
+Packages/Vendor/swift-nio-ssh/Tests/NIOSSHTests/UserAuthenticationStateMachineTests.swift:private-key:24
