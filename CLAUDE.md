@@ -17,6 +17,7 @@ xcodebuild -project RemoteDeck.xcodeproj -scheme RemoteDeck -derivedDataPath bui
 cd Packages/RFBKit && swift test                                   # fastest loop for protocol work
 cd Packages/RemoteDeckCore && swift test                           # models, Keychain, validation
 cd Packages/ClaudeKit && swift test                                # Claude Assistant protocol side (fake HTTP only)
+cd Packages/SSHKit && swift test                                   # SSH host keys, ssh_config, private keys (vendored Citadel/swift-nio-ssh: Packages/Vendor/PATCHES.md)
 cd Packages/RFBKit && swift test --filter ProtocolVersionTests/parsesStandardBanner   # single test
 RFBKIT_PERF=1 swift test --filter modPowTiming                    # opt-in timing tests and the 2000-run cancel-race stress (run from Packages/RFBKit)
 cd Packages/RFBKit && RFBKIT_PERF=1 swift test -c release -Xswiftc -enable-testing --filter ParserFuzzTests   # full parser fuzz run (>1M inputs; the default run does ~20k); replay with RFBKIT_FUZZ_SEED / RFBKIT_FUZZ_START / RFBKIT_FUZZ_COUNT, RFBKIT_FUZZ_TRACE=1 names each input on stderr; under --sanitize=address add RFBKIT_FUZZ_SLOW_SECONDS=60 (a 4096-bit Apple DH input takes ~30 s there)

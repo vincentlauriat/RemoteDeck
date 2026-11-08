@@ -11,6 +11,10 @@ packages:
     path: Packages/RemoteDeckCore
   ClaudeKit:
     path: Packages/ClaudeKit
+  # SSH machines (Step 7). Its SSH library (Citadel, swift-nio-ssh) is vendored and patched under
+  # Packages/Vendor and reached only through SSHKit; see Packages/Vendor/PATCHES.md.
+  SSHKit:
+    path: Packages/SSHKit
   # Auto-update (T6.3). Pinned to one release: Scripts/release.sh fetches the same version's
   # sign_update (SPARKLE_VERSION there), checked against the tarball's SHA-256.
   Sparkle:
@@ -32,6 +36,7 @@ schemes:
         - package: RFBKit/RFBKitTests
         - package: RemoteDeckCore/RemoteDeckCoreTests
         - package: ClaudeKit/ClaudeKitTests
+        - package: SSHKit/SSHKitTests
 
 targets:
   RemoteDeck:
@@ -47,6 +52,7 @@ targets:
       - package: RFBKit
       - package: RemoteDeckCore
       - package: ClaudeKit
+      - package: SSHKit
       - package: Sparkle
     settings:
       base:
