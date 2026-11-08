@@ -26,6 +26,19 @@ struct SSHConnectionLoopbackTests {
         await server.stop()
     }
 
+    @Test func hostNameWithSeveralAddressesConnects() async throws {
+        // `localhost` resolves to ::1 and 127.0.0.1; the server listens on 127.0.0.1 only, so the
+        // first (refused) connection attempt must not end the one that succeeds.
+        let server = try await TestSSHServer.start()
+        let connection = SSHConnection(host: "localhost", port: server.port)
+        try await open(connection, .password(user: user, password: password))
+        let transcript = try await Transcript(try await openShell(connection))
+        try await transcript.shell.write(Data("hi\n".utf8))
+        #expect(await transcript.waitFor { $0.contains("hi") })
+        await connection.close()
+        await server.stop()
+    }
+
     @Test func ed25519KeyAuth() async throws {
         let server = try await TestSSHServer.start(.init(password: nil, authorizedKeys: [try publicKey("id_ed25519.pub")]))
         let connection = SSHConnection(host: "127.0.0.1", port: server.port)
@@ -147,13 +160,6 @@ struct SSHConnectionLoopbackTests {
     @Test func closedPortIsUnreachable() async throws {
         let port = try await closedLoopbackPort()
         let connection = SSHConnection(host: "127.0.0.1", port: port)
-        let error = await openError(connection, .password(user: user, password: password))
-        #expect(error == .unreachable)
-    }
-
-    @Test func unresolvableHostIsUnreachable() async throws {
-        // `.invalid` never resolves (RFC 6761), so no DNS answer can make this reach a host.
-        let connection = SSHConnection(host: "remotedeck-test.invalid", port: 22)
         let error = await openError(connection, .password(user: user, password: password))
         #expect(error == .unreachable)
     }

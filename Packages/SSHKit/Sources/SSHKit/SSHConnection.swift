@@ -85,20 +85,21 @@ public actor SSHConnection {
             .channelOption(.socketOption(.tcp_nodelay), value: 1)
             .channelInitializer { channel in
                 channel.eventLoop.makeCompletedFuture {
+                    // Called once per connection attempt: a name with several addresses gets one
+                    // channel per address (Happy Eyeballs). `Handshake` keeps only the winner's events.
                     let configuration = SSHClientConfiguration(
                         userAuthDelegate: UserAuthenticator(credentials: credentials),
-                        serverAuthDelegate: HostKeyValidator(handshake: handshake, validate: validateHostKey)
+                        serverAuthDelegate: HostKeyValidator(handshake: handshake, channel: channel, validate: validateHostKey)
                     )
                     let ssh = NIOSSHHandler(role: .client(configuration), allocator: channel.allocator, inboundChildChannelInitializer: nil)
                     let session = SessionHandler(ssh: ssh, handshake: handshake, keepalive: keepalive)
                     try channel.pipeline.syncOperations.addHandlers(ssh, session)
-                    handshake.arm(channel: channel)
                     // NIOSSHHandler does not pass channelInactive on, so the end is seen here.
                     channel.closeFuture.whenComplete { _ in
-                        if handshake.isDone, handshake.recorded == nil {
+                        if handshake.isAuthenticated(channel) {
                             onEnd(.connectionClosed)
                         } else {
-                            handshake.fail(.connectionClosed)
+                            handshake.fail(.connectionClosed, on: channel)
                         }
                     }
                 }
@@ -108,9 +109,8 @@ public actor SSHConnection {
         do {
             channel = try await bootstrap.connect(host: host, port: Int(port)).get()
         } catch {
-            // Our deadline closing the channel shows as a failed connect: report the deadline.
-            let failure = await handshake.recordedFailure() == .timedOut ? .timedOut : Self.connectError(error)
-            handshake.authenticated.fail(failure)  // never left pending, when no handler was added
+            let failure = Self.connectError(error)
+            handshake.authenticated.fail(failure)  // never left pending, when no attempt was made
             finish(failure)
             throw failure
         }
@@ -120,6 +120,8 @@ public actor SSHConnection {
             throw .connectionClosed
         }
         self.channel = channel
+        // The winning attempt: from now on the handshake follows it, under the deadline.
+        try? await loop.submit { handshake.arm(channel) }.get()
 
         let ssh: NIOLoopBound<NIOSSHHandler>
         do {
@@ -208,8 +210,9 @@ extension TimeAmount {
 
 // MARK: - Handshake
 
-/// The state of one connection attempt until authentication, shared by its handlers on the event
-/// loop: the deadline and the outcome. Mutated on `loop` only.
+/// The state of one `open` until authentication, shared by its handlers on the event loop: the
+/// deadline and the outcome. Events are kept per connection attempt until the bootstrap reports the
+/// winning one (`arm`); the other attempts' events are then dropped. Mutated on `loop` only.
 final class Handshake: Sendable {
     let loop: any EventLoop
     let timeout: TimeAmount
@@ -217,11 +220,17 @@ final class Handshake: Sendable {
     let authenticated: EventLoopPromise<Void>
     private let state: NIOLoopBoundBox<State>
 
+    private struct Attempt {
+        var validating = false
+        var outcome: Result<Void, SSHError>?
+    }
+
     private struct State {
-        var channel: (any Channel)?
+        var attempts: [ObjectIdentifier: Attempt] = [:]
+        var winner: (any Channel)?
         var timer: Scheduled<Void>?
-        var failure: SSHError?
         var done = false
+        var succeeded = false
     }
 
     init(loop: any EventLoop, timeout: TimeAmount) {
@@ -231,55 +240,97 @@ final class Handshake: Sendable {
         state = .makeBoxSendingValue(State(), as: State.self, eventLoop: loop)
     }
 
-    /// The failure recorded so far, read on the loop.
-    func recordedFailure() async -> SSHError? {
-        try? await loop.submit { self.state.value.failure }.get()
+    /// `channel` is the connection the bootstrap kept: apply what it already reported, else start
+    /// the deadline (unless its host key is being validated).
+    func arm(_ channel: any Channel) {
+        let attempt = state.value.attempts[ObjectIdentifier(channel)] ?? Attempt()
+        state.value.winner = channel
+        state.value.attempts = [:]
+        if let outcome = attempt.outcome {
+            complete(outcome)
+        } else if !attempt.validating {
+            startTimer()
+        }
     }
 
-    /// Whether authentication succeeded or the attempt failed. On the loop only.
-    var isDone: Bool { state.value.done }
-
-    /// The failure recorded, if the attempt failed. On the loop only.
-    var recorded: SSHError? { state.value.failure }
-
-    /// Starts the deadline for the network wait up to the host key.
-    func arm(channel: any Channel) {
-        state.value.channel = channel
-        startTimer()
+    /// Whether `channel` is the winner and authenticated.
+    func isAuthenticated(_ channel: any Channel) -> Bool {
+        state.value.succeeded && isWinner(channel)
     }
 
-    /// The host key is being validated: that wait is the user's, not the network's.
-    func pauseDeadline() {
+    /// The host key of `channel` is being validated: that wait is the user's, not the network's.
+    func validationStarted(on channel: any Channel) {
+        guard !state.value.done else { return }
+        if isWinner(channel) {
+            cancelTimer()
+        } else if state.value.winner == nil {
+            state.value.attempts[ObjectIdentifier(channel), default: Attempt()].validating = true
+        }
+    }
+
+    /// The validator answered: a fresh deadline for authentication.
+    func validationEnded(on channel: any Channel) {
+        guard !state.value.done else { return }
+        if isWinner(channel) {
+            startTimer()
+        } else if state.value.winner == nil {
+            state.value.attempts[ObjectIdentifier(channel), default: Attempt()].validating = false
+        }
+    }
+
+    /// Whether authentication of `channel` is over (succeeded or failed): a later host key check
+    /// is a re-key.
+    func isSettled(_ channel: any Channel) -> Bool {
+        state.value.done && isWinner(channel)
+    }
+
+    func succeed(on channel: any Channel) {
+        report(.success(()), on: channel)
+    }
+
+    func fail(_ error: SSHError, on channel: any Channel) {
+        report(.failure(error), on: channel)
+    }
+
+    private func report(_ outcome: Result<Void, SSHError>, on channel: any Channel) {
+        guard !state.value.done else { return }
+        if isWinner(channel) {
+            complete(outcome)
+        } else if state.value.winner == nil {
+            let id = ObjectIdentifier(channel)
+            if state.value.attempts[id]?.outcome == nil {
+                state.value.attempts[id, default: Attempt()].outcome = outcome
+            }
+        }
+    }
+
+    private func complete(_ outcome: Result<Void, SSHError>) {
+        guard !state.value.done else { return }
+        state.value.done = true
+        cancelTimer()
+        switch outcome {
+        case .success:
+            state.value.succeeded = true
+            authenticated.succeed(())
+        case .failure(let error):
+            authenticated.fail(error)
+            state.value.winner?.close(promise: nil)
+        }
+    }
+
+    private func isWinner(_ channel: any Channel) -> Bool {
+        state.value.winner.map { $0 === channel } ?? false
+    }
+
+    private func cancelTimer() {
         state.value.timer?.cancel()
         state.value.timer = nil
     }
 
-    /// The validator answered: a fresh deadline for authentication.
-    func resumeDeadline() {
-        guard !state.value.done else { return }
-        startTimer()
-    }
-
-    func succeed() {
-        guard !state.value.done else { return }
-        state.value.done = true
-        pauseDeadline()
-        authenticated.succeed(())
-    }
-
-    func fail(_ error: SSHError) {
-        guard !state.value.done else { return }
-        state.value.done = true
-        state.value.failure = error
-        pauseDeadline()
-        authenticated.fail(error)
-        state.value.channel?.close(promise: nil)
-    }
-
     private func startTimer() {
-        state.value.timer?.cancel()
+        cancelTimer()
         state.value.timer = loop.assumeIsolated().scheduleTask(in: timeout) { [self] in
-            fail(.timedOut)
+            complete(.failure(.timedOut))
         }
     }
 }
@@ -294,10 +345,12 @@ struct AuthenticationExhausted: Error {}
 /// nothing more (no NEWKEYS, so no user authentication) until the promise is completed.
 private final class HostKeyValidator: NIOSSHClientServerAuthenticationDelegate, Sendable {
     let handshake: Handshake
+    let channel: any Channel
     let validate: @Sendable (SSHHostKey) async -> Bool
 
-    init(handshake: Handshake, validate: @escaping @Sendable (SSHHostKey) async -> Bool) {
+    init(handshake: Handshake, channel: any Channel, validate: @escaping @Sendable (SSHHostKey) async -> Bool) {
         self.handshake = handshake
+        self.channel = channel
         self.validate = validate
     }
 
@@ -307,14 +360,15 @@ private final class HostKeyValidator: NIOSSHClientServerAuthenticationDelegate, 
             return
         }
         // A re-key after authentication is validated too, without touching the handshake deadline.
-        let duringHandshake = !handshake.isDone
-        if duringHandshake { handshake.pauseDeadline() }
+        let duringHandshake = !handshake.isSettled(channel)
+        if duringHandshake { handshake.validationStarted(on: channel) }
         let handshake = self.handshake
+        let channel = self.channel
         let validate = self.validate
         Task {
             let accepted = await validate(key)
             handshake.loop.execute {
-                if duringHandshake { handshake.resumeDeadline() }
+                if duringHandshake { handshake.validationEnded(on: channel) }
                 if accepted {
                     validationCompletePromise.succeed(())
                 } else {
@@ -385,7 +439,7 @@ private final class SessionHandler: ChannelInboundHandler {
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         if event is UserAuthSuccessEvent, !authenticated {
             authenticated = true
-            handshake.succeed()
+            handshake.succeed(on: context.channel)
             scheduleKeepalive(context: context)
         }
         context.fireUserInboundEventTriggered(event)
@@ -393,7 +447,7 @@ private final class SessionHandler: ChannelInboundHandler {
 
     func errorCaught(context: ChannelHandlerContext, error: any Error) {
         if !authenticated {
-            handshake.fail(Self.handshakeError(error))
+            handshake.fail(Self.handshakeError(error), on: context.channel)
         }
         context.close(promise: nil)
     }
