@@ -83,7 +83,12 @@ more things favour that:
    - **Check:** `swift test --filter testWeDontResizeTheWindow` passes, running both the new
      test and its sibling.
 
-3. **Manifest:** the `swift-docc-plugin` dependency is removed. It is a documentation-only
+3. **Modification notices (Apache-2.0 §4(b)):** every swift-nio-ssh file changed above starts
+   with `// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).`:
+   `SSHKeyExchangeStateMachine.swift`, `ChildChannelStateMachine.swift`, `SSHChildChannel.swift`
+   and `ChildChannelMultiplexerTests.swift`. `Package.swift` says so in its own comment.
+
+4. **Manifest:** the `swift-docc-plugin` dependency is removed. It is a documentation-only
    plugin, and it would be one more unpinned remote package for Xcode to fetch.
 
 ### Citadel
@@ -102,6 +107,13 @@ more things favour that:
      and SHA-1 RSA.
    - **Why:** this exposes that step to SSHKit, so `SSHPrivateKey` reads encrypted ed25519, RSA
      and ECDSA P-256 keys without a second crypto implementation. No existing file is edited.
+   - **KDF options are read by the wrapper, not by `OpenSSH.KDF(consuming:)`.** Citadel's reader
+     refuses bcrypt with 32 rounds or more, so keys made with `ssh-keygen -a 64` or `-a 100`
+     failed (reported as an unsupported KDF). The wrapper reads the options itself (string salt,
+     uint32 rounds, nothing after) and builds `OpenSSH.KDF.bcrypt` directly. It accepts
+     `bcryptRounds` = 1…1024; more is `malformed`, so a hostile file cannot stall the KDF (its
+     time grows linearly with the rounds). Tested by SSHKit's `parsesAKeyHardenedWith100BcryptRounds`
+     and `bcryptRoundsAboveTheCapThrowMalformed`.
 
 ## Updating
 

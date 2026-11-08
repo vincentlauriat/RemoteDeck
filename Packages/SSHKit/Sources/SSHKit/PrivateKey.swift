@@ -17,7 +17,7 @@ public enum SSHKeyError: Error, Equatable, Sendable {
     case malformed
 }
 
-/// A user's private key, read from an OpenSSH key file (`-----BEGIN OPENSSH PRIVATE KEY-----`, what
+/// A user's private key, read from an OpenSSH key file (the `openssh-key-v1` format, what
 /// `ssh-keygen` writes): ed25519, RSA (signing with RFC 8332 SHA-2 only) and ECDSA P-256, plain or
 /// encrypted with a passphrase.
 public struct SSHPrivateKey: Sendable {

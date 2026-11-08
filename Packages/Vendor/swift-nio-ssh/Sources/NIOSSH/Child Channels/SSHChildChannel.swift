@@ -1,3 +1,4 @@
+// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).
 //===----------------------------------------------------------------------===//
 //
 // This source file is part of the SwiftNIO open source project

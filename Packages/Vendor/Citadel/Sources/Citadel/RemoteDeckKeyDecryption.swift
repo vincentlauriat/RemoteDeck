@@ -11,13 +11,19 @@ public enum OpenSSHPrivateSectionDecryption {
     public enum Failure: Error, Equatable, Sendable {
         /// The container names a cipher Citadel does not implement (only `none`, `aes128-ctr`, `aes256-ctr`).
         case unsupportedCipher(String)
-        /// The container names a KDF Citadel does not implement, or its options are out of range.
+        /// The container names a KDF Citadel does not implement (only `none` and `bcrypt`).
         case unsupportedKDF(String)
         /// The KDF needs a passphrase and none was given.
         case passphraseRequired
-        /// The section's length or the KDF options are not well formed, or the cipher failed.
+        /// The section's length or the KDF options are not well formed (bcrypt rounds outside
+        /// `bcryptRounds` included), or the cipher failed.
         case malformed
     }
+
+    /// The bcrypt rounds accepted. ssh-keygen writes a default (24 from OpenSSH 10.5's ssh-keygen) and
+    /// users raise it with `-a` (64 and 100 are common). The KDF's time grows linearly with the
+    /// rounds, so a file asking for more than 1024 is treated as hostile rather than run.
+    public static let bcryptRounds: ClosedRange<UInt32> = 1 ... 1024
 
     /// Whether the container's cipher and KDF mean the private section is encrypted.
     public static func isEncrypted(cipherName: String, kdfName: String) -> Bool {
@@ -37,17 +43,24 @@ public enum OpenSSHPrivateSectionDecryption {
             throw .unsupportedCipher(cipherName)
         }
 
-        // Re-encode the two fields so Citadel's own reader validates them. (Not with its
-        // `writeSSHString(_: String)`, which moves the writer index past an unreserved buffer.)
-        var kdfBuffer = ByteBuffer()
-        kdfBuffer.writeInteger(UInt32(kdfName.utf8.count))
-        kdfBuffer.writeString(kdfName)
-        kdfBuffer.writeInteger(UInt32(kdfOptions.count))
-        kdfBuffer.writeBytes(kdfOptions)
+        // The KDF is read here rather than by Citadel's `OpenSSH.KDF(consuming:)`, which refuses
+        // bcrypt with 32 rounds or more, although `ssh-keygen -a 64` or `-a 100` keys are common.
+        // The rounds are capped at `bcryptRounds` instead, so a hostile file cannot stall the KDF.
         let kdf: OpenSSH.KDF
-        do {
-            kdf = try OpenSSH.KDF(consuming: &kdfBuffer)
-        } catch {
+        switch kdfName {
+        case "none":
+            guard kdfOptions.isEmpty else { throw .malformed }
+            kdf = .none
+        case "bcrypt":
+            var options = ByteBuffer(data: kdfOptions)
+            guard let saltLength: UInt32 = options.readInteger(),
+                  let salt = options.readSlice(length: Int(saltLength)),
+                  let rounds: UInt32 = options.readInteger(),
+                  options.readableBytes == 0,
+                  bcryptRounds.contains(rounds)
+            else { throw .malformed }
+            kdf = .bcrypt(salt: salt, iterations: rounds)
+        default:
             throw .unsupportedKDF(kdfName)
         }
 

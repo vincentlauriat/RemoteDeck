@@ -67,6 +67,20 @@ import Testing
         #expect(key.publicKey == (try SSHHostKey(openSSHPublicKey: fixture(name + ".pub"))))
     }
 
+    @Test func parsesAKeyHardenedWith100BcryptRounds() throws {
+        // `ssh-keygen -a 100`: more rounds than Citadel's own reader accepts (it stops at 31).
+        let text = try fixture("id_ed25519_100rounds")
+        let key = try SSHPrivateKey.parse(openSSH: text, passphrase: "test-pass")
+        #expect(key.publicKey == (try SSHHostKey(openSSHPublicKey: fixture("id_ed25519_100rounds.pub"))))
+        #expect(throws: SSHKeyError.wrongPassphrase) { try SSHPrivateKey.parse(openSSH: text, passphrase: "not-the-pass") }
+    }
+
+    @Test func bcryptRoundsAboveTheCapThrowMalformed() throws {
+        // The same key with its rounds field rewritten to 1025: refused before the KDF runs.
+        let text = try Self.rewritingBcryptRounds(of: fixture("id_ed25519_100rounds"), to: 1025)
+        #expect(throws: SSHKeyError.malformed) { try SSHPrivateKey.parse(openSSH: text, passphrase: "test-pass") }
+    }
+
     @Test func encryptedKeyWithoutPassphraseThrowsPassphraseRequired() throws {
         let text = try fixture("id_ed25519_encrypted")
         #expect(throws: SSHKeyError.passphraseRequired) { try SSHPrivateKey.parse(openSSH: text, passphrase: nil) }
@@ -98,6 +112,19 @@ import Testing
         #expect(throws: SSHKeyError.unsupportedKeyType("ssh-dss")) {
             try SSHPrivateKey.parse(openSSH: Self.container(publicKeyType: "ssh-dss"), passphrase: nil)
         }
+    }
+
+    /// `text` with the bcrypt rounds (the last uint32 of the KDF options) set to `rounds`.
+    static func rewritingBcryptRounds(of text: String, to rounds: UInt32) throws -> String {
+        let lines = text.split(separator: "\n")
+        var bytes = [UInt8](try #require(Data(base64Encoded: lines[1 ..< lines.count - 1].joined())))
+        var offset = 15
+        func skipString() { offset += 4 + Int(bytes[offset ..< offset + 4].reduce(0) { $0 << 8 | UInt32($1) }) }
+        skipString()  // cipher
+        skipString()  // kdf name
+        skipString()  // kdf options: string salt, uint32 rounds
+        bytes.replaceSubrange(offset - 4 ..< offset, with: withUnsafeBytes(of: rounds.bigEndian, Array.init))
+        return "\(lines[0])\n\(Data(bytes).base64EncodedString())\n\(lines[lines.count - 1])\n"
     }
 
     /// An unencrypted `openssh-key-v1` container whose public key names `publicKeyType` (no key material).

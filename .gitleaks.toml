@@ -1,0 +1,25 @@
+# gitleaks configuration for Scripts/prepublic-check.sh: the default rules, plus one path-scoped
+# allowlist for files whose "private keys" are test data or format constants (confirmed by reading
+# each flagged line, 2026-11-08, gitleaks 8.30.1). Unlike a `.gitleaksignore` history fingerprint,
+# a path survives the squash merge. Keep the list to named files: never a whole directory of code.
+# The fingerprints of the generated Apple DH vectors stay in `.gitleaksignore`.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "SSH key test data and key-file format constants (rule private-key)"
+targetRules = ["private-key"]
+paths = [
+  # Keys generated with ssh-keygen for SSHKit's tests only, never used anywhere else.
+  '''^Packages/SSHKit/Tests/SSHKitTests/Fixtures/''',
+  # `-----BEGIN … PRIVATE KEY-----` armor: SSHKit's format constant and its tests' fake key files.
+  '''^Packages/SSHKit/Sources/SSHKit/PrivateKey\.swift$''',
+  '''^Packages/SSHKit/Tests/SSHKitTests/PrivateKeyTests\.swift$''',
+  # The same armor in the vendored Citadel (format constants and detection code) and upstream
+  # swift-nio-ssh test keys.
+  '''^Packages/Vendor/Citadel/Sources/Citadel/OpenSSHKey\.swift$''',
+  '''^Packages/Vendor/Citadel/Sources/Citadel/SSHKeyTypeDetection\.swift$''',
+  '''^Packages/Vendor/swift-nio-ssh/Tests/NIOSSHTests/CertifiedKeyTests\.swift$''',
+  '''^Packages/Vendor/swift-nio-ssh/Tests/NIOSSHTests/UserAuthenticationStateMachineTests\.swift$''',
+]
