@@ -35,6 +35,8 @@ public actor SSHConnection {
 
     private var channel: (any Channel)?
     private var sshHandler: NIOLoopBound<NIOSSHHandler>?
+    /// The handshake of `open`, kept so `close()` can abort it in any phase.
+    private var handshake: Handshake?
     private var opened = false
     private var ended = false
     private let closedStream: AsyncStream<SSHError?>
@@ -53,18 +55,28 @@ public actor SSHConnection {
     }
 
     /// Yields one value when the connection ends, then finishes: nil after `close()`, the
-    /// `SSHError` otherwise (`.connectionClosed` when the server or the network ended it, or the
-    /// error `open` threw).
+    /// `SSHError` otherwise:
+    /// - `.connectionClosed` when the server or the network ended it, or keepalives went unanswered;
+    /// - `.hostKeyRejected(newKey)` when a re-key presented another host key;
+    /// - the error `open` threw, when it failed: that error is both thrown and yielded here.
+    ///
+    /// Single consumer: it is one `AsyncStream`, so read it from one place only.
     public var closed: AsyncStream<SSHError?> { closedStream }
 
     /// Connects and authenticates.
     ///
-    /// - `timeout` bounds each network wait: the TCP connection and key exchange up to the host
-    ///   key, then authentication after it. The time `validateHostKey` takes (a prompt) is not
-    ///   counted.
-    /// - `validateHostKey` runs during key exchange, before anything is sent to authenticate;
+    /// - `timeout` applies per phase, not to the whole call: the TCP connection, then key exchange
+    ///   up to the host key, then authentication after the validator answered. The time
+    ///   `validateHostKey` takes (a prompt) is never counted.
+    /// - `validateHostKey` runs once, during key exchange, before anything is sent to authenticate;
     ///   returning false fails with `.hostKeyRejected(key)`. An RSA host key is `ssh-rsa`, as in
-    ///   `known_hosts`, whichever RSA signature algorithm was negotiated.
+    ///   `known_hosts`, whichever RSA signature algorithm was negotiated. Its task is cancelled when
+    ///   the connection dies, on `close()` and when `open`'s task is cancelled: it should honour
+    ///   cancellation (dismiss a prompt), and its answer is then ignored. A later re-key is not
+    ///   validated again: the server must present the same key, or the connection ends with
+    ///   `.hostKeyRejected(newKey)` on `closed`.
+    /// - Cancelling the calling task, or calling `close()`, closes the connection at once in any
+    ///   phase; `open` then throws `.connectionClosed`.
     public func open(
         credentials: SSHCredentials, timeout: Duration,
         validateHostKey: @escaping @Sendable (SSHHostKey) async -> Bool
@@ -94,10 +106,12 @@ public actor SSHConnection {
                     let ssh = NIOSSHHandler(role: .client(configuration), allocator: channel.allocator, inboundChildChannelInitializer: nil)
                     let session = SessionHandler(ssh: ssh, handshake: handshake, keepalive: keepalive)
                     try channel.pipeline.syncOperations.addHandlers(ssh, session)
+                    handshake.register(channel)
                     // NIOSSHHandler does not pass channelInactive on, so the end is seen here.
                     channel.closeFuture.whenComplete { _ in
+                        handshake.attemptClosed(channel)
                         if handshake.isAuthenticated(channel) {
-                            onEnd(.connectionClosed)
+                            onEnd(handshake.endReason ?? .connectionClosed)
                         } else {
                             handshake.fail(.connectionClosed, on: channel)
                         }
@@ -105,47 +119,57 @@ public actor SSHConnection {
                 }
             }
 
-        let channel: any Channel
-        do {
-            channel = try await bootstrap.connect(host: host, port: Int(port)).get()
-        } catch {
-            let failure = Self.connectError(error)
-            handshake.authenticated.fail(failure)  // never left pending, when no attempt was made
-            finish(failure)
+        self.handshake = handshake
+        let host = self.host
+        let port = Int(self.port)
+        let result: Result<Void, SSHError> = await withTaskCancellationHandler {
+            await establish(bootstrap: bootstrap, host: host, port: port, handshake: handshake)
+        } onCancel: {
+            handshake.abort(local: false)
+        }
+        if case .failure(let failure) = result {
+            handshake.abort(local: false)  // the promise is failed and every attempt closed
+            finish(failure)                // no-op after close(): `closed` already yielded nil
             throw failure
         }
-        guard !ended else {
-            // close() ran while connecting.
+    }
+
+    /// The connection and handshake of `open`. Every failure path leaves `handshake` failed.
+    private func establish(bootstrap: ClientBootstrap, host: String, port: Int, handshake: Handshake) async -> Result<Void, SSHError> {
+        let channel: any Channel
+        do {
+            channel = try await bootstrap.connect(host: host, port: port).get()
+        } catch {
+            return .failure(ended || Task.isCancelled ? .connectionClosed : Self.connectError(error))
+        }
+        guard !ended, !Task.isCancelled else {
+            // close() or cancellation while connecting.
             channel.close(promise: nil)
-            throw .connectionClosed
+            return .failure(.connectionClosed)
         }
         self.channel = channel
         // The winning attempt: from now on the handshake follows it, under the deadline.
-        try? await loop.submit { handshake.arm(channel) }.get()
+        try? await handshake.loop.submit { handshake.arm(channel) }.get()
 
         let ssh: NIOLoopBound<NIOSSHHandler>
         do {
             try await handshake.authenticated.futureResult.get()
             ssh = try await channel.pipeline.handler(type: NIOSSHHandler.self).map {
-                NIOLoopBound($0, eventLoop: loop)
+                NIOLoopBound($0, eventLoop: handshake.loop)
             }.get()
         } catch {
-            channel.close(promise: nil)
-            let failure = (error as? SSHError) ?? .connectionClosed
-            finish(failure)
-            throw failure
+            return .failure(ended ? .connectionClosed : (error as? SSHError) ?? .connectionClosed)
         }
-        guard !ended else {
-            // close() ran while authenticating.
-            channel.close(promise: nil)
-            throw .connectionClosed
+        guard !ended, !Task.isCancelled else {
+            return .failure(.connectionClosed)
         }
         sshHandler = ssh
+        return .success(())
     }
 
     /// Opens a shell on a pseudo-terminal of `columns` x `rows`, with `TERM` set to `term`.
     public func openShell(term: String, columns: Int, rows: Int) async throws(SSHError) -> SSHShell {
-        guard !ended, let channel, let sshHandler else { throw .connectionClosed }
+        guard !ended, let channel, let sshHandler, let handshake else { throw .connectionClosed }
         let (output, continuation) = AsyncThrowingStream.makeStream(of: Data.self, throwing: (any Error).self)
         let ready = channel.eventLoop.makePromise(of: Void.self)
         let created = channel.eventLoop.makePromise(of: (any Channel).self)
@@ -157,7 +181,7 @@ public actor SSHConnection {
             sshHandler.value.createChannel(created, channelType: .session) { child, _ in
                 child.eventLoop.makeCompletedFuture {
                     try child.pipeline.syncOperations.addHandler(
-                        ShellChannelHandler(request: request, ready: ready, output: continuation)
+                        ShellChannelHandler(request: request, ready: ready, output: continuation, handshake: handshake)
                     )
                 }
             }
@@ -181,6 +205,7 @@ public actor SSHConnection {
         guard !ended else { return }
         let channel = self.channel
         finish(nil)
+        handshake?.abort(local: true)
         try? await channel?.close()
     }
 
@@ -231,6 +256,14 @@ final class Handshake: Sendable {
         var timer: Scheduled<Void>?
         var done = false
         var succeeded = false
+        /// Every connection attempt still open, so an abort can close them all.
+        var channels: [ObjectIdentifier: any Channel] = [:]
+        /// The caller's validator, running for these attempts.
+        var validations: [ObjectIdentifier: Task<Void, Never>] = [:]
+        var aborted = false
+        var closedLocally = false
+        /// Why the authenticated connection ended, when it is not just `.connectionClosed`.
+        var endReason: SSHError?
     }
 
     init(loop: any EventLoop, timeout: TimeAmount) {
@@ -243,6 +276,7 @@ final class Handshake: Sendable {
     /// `channel` is the connection the bootstrap kept: apply what it already reported, else start
     /// the deadline (unless its host key is being validated).
     func arm(_ channel: any Channel) {
+        guard !state.value.aborted else { return }
         let attempt = state.value.attempts[ObjectIdentifier(channel)] ?? Attempt()
         state.value.winner = channel
         state.value.attempts = [:]
@@ -251,6 +285,60 @@ final class Handshake: Sendable {
         } else if !attempt.validating {
             startTimer()
         }
+    }
+
+    /// A new connection attempt (one per resolved address).
+    func register(_ channel: any Channel) {
+        guard !state.value.aborted else {
+            channel.close(promise: nil)
+            return
+        }
+        state.value.channels[ObjectIdentifier(channel)] = channel
+    }
+
+    /// The attempt's channel closed: its validator is no longer wanted.
+    func attemptClosed(_ channel: any Channel) {
+        let id = ObjectIdentifier(channel)
+        state.value.channels[id] = nil
+        state.value.validations.removeValue(forKey: id)?.cancel()
+    }
+
+    /// Keeps the handle of the validator running for `channel`, to cancel it if the attempt ends.
+    func track(_ validation: Task<Void, Never>, on channel: any Channel) {
+        guard !state.value.aborted, state.value.channels[ObjectIdentifier(channel)] != nil else {
+            validation.cancel()
+            return
+        }
+        state.value.validations[ObjectIdentifier(channel)] = validation
+    }
+
+    /// Whether another attempt already won: this one must not reach the caller's validator.
+    func isLoser(_ channel: any Channel) -> Bool {
+        state.value.winner.map { $0 !== channel } ?? false
+    }
+
+    /// Ends the attempt from any thread (`close()`, task cancellation): the handshake fails with
+    /// `.connectionClosed` unless it is already over, validators are cancelled and every attempt's
+    /// channel is closed. `local` marks a `close()`, after which open shells end normally.
+    func abort(local: Bool) {
+        loop.execute { [self] in
+            state.value.aborted = true
+            if local { state.value.closedLocally = true }
+            complete(.failure(.connectionClosed))
+            for validation in state.value.validations.values { validation.cancel() }
+            state.value.validations = [:]
+            for channel in state.value.channels.values { channel.close(promise: nil) }
+            state.value.winner?.close(promise: nil)
+        }
+    }
+
+    /// Whether `close()` ended the connection. On the loop only.
+    var closedLocally: Bool { state.value.closedLocally }
+
+    /// Why the authenticated connection ended. On the loop only.
+    var endReason: SSHError? {
+        get { state.value.endReason }
+        set { state.value.endReason = newValue }
     }
 
     /// Whether `channel` is the winner and authenticated.
@@ -270,7 +358,11 @@ final class Handshake: Sendable {
 
     /// The validator answered: a fresh deadline for authentication.
     func validationEnded(on channel: any Channel) {
-        guard !state.value.done else { return }
+        guard !state.value.done else {
+            state.value.validations[ObjectIdentifier(channel)] = nil
+            return
+        }
+        state.value.validations[ObjectIdentifier(channel)] = nil
         if isWinner(channel) {
             startTimer()
         } else if state.value.winner == nil {
@@ -347,6 +439,8 @@ private final class HostKeyValidator: NIOSSHClientServerAuthenticationDelegate, 
     let handshake: Handshake
     let channel: any Channel
     let validate: @Sendable (SSHHostKey) async -> Bool
+    /// The key the caller accepted during the handshake: a re-key must present the same one.
+    private let accepted = Mutex<SSHHostKey?>(nil)
 
     init(handshake: Handshake, channel: any Channel, validate: @escaping @Sendable (SSHHostKey) async -> Bool) {
         self.handshake = handshake
@@ -359,23 +453,43 @@ private final class HostKeyValidator: NIOSSHClientServerAuthenticationDelegate, 
             validationCompletePromise.fail(SSHError.remote("unreadable host key"))
             return
         }
-        // A re-key after authentication is validated too, without touching the handshake deadline.
-        let duringHandshake = !handshake.isSettled(channel)
-        if duringHandshake { handshake.validationStarted(on: channel) }
+        if handshake.isLoser(channel) {
+            // Another connection attempt won: this one never reaches the caller's validator.
+            validationCompletePromise.fail(SSHError.connectionClosed)
+            return
+        }
+        if handshake.isSettled(channel) {
+            // A re-key: the server must keep the key accepted at connection, and the caller is not
+            // asked again. Another key ends the connection with `.hostKeyRejected(newKey)`.
+            if accepted.withLock({ $0 }) == key {
+                validationCompletePromise.succeed(())
+            } else {
+                handshake.endReason = .hostKeyRejected(key)
+                validationCompletePromise.fail(HostKeyRejected(key: key))
+            }
+            return
+        }
+
+        handshake.validationStarted(on: channel)
         let handshake = self.handshake
         let channel = self.channel
         let validate = self.validate
-        Task {
-            let accepted = await validate(key)
+        let validation = Task { [self] in
+            let ok = await validate(key)
+            let cancelled = Task.isCancelled
             handshake.loop.execute {
-                if duringHandshake { handshake.validationEnded(on: channel) }
-                if accepted {
+                handshake.validationEnded(on: channel)
+                if cancelled {
+                    validationCompletePromise.fail(SSHError.connectionClosed)
+                } else if ok {
+                    self.accepted.withLock { $0 = key }
                     validationCompletePromise.succeed(())
                 } else {
                     validationCompletePromise.fail(HostKeyRejected(key: key))
                 }
             }
         }
+        handshake.track(validation, on: channel)
     }
 }
 
@@ -429,6 +543,7 @@ private final class SessionHandler: ChannelInboundHandler {
     private let keepalive: SSHKeepalive
     private var authenticated = false
     private var missed = 0
+    private var keepaliveTimer: Scheduled<Void>?
 
     init(ssh: NIOSSHHandler, handshake: Handshake, keepalive: SSHKeepalive) {
         self.ssh = ssh
@@ -445,6 +560,11 @@ private final class SessionHandler: ChannelInboundHandler {
         context.fireUserInboundEventTriggered(event)
     }
 
+    func handlerRemoved(context: ChannelHandlerContext) {
+        keepaliveTimer?.cancel()
+        keepaliveTimer = nil
+    }
+
     func errorCaught(context: ChannelHandlerContext, error: any Error) {
         if !authenticated {
             handshake.fail(Self.handshakeError(error), on: context.channel)
@@ -454,7 +574,7 @@ private final class SessionHandler: ChannelInboundHandler {
 
     private func scheduleKeepalive(context: ChannelHandlerContext) {
         guard keepalive.interval > .zero, keepalive.maxMissed > 0 else { return }
-        context.eventLoop.assumeIsolated().scheduleTask(in: TimeAmount(keepalive.interval)) { [self] in
+        keepaliveTimer = context.eventLoop.assumeIsolated().scheduleTask(in: TimeAmount(keepalive.interval)) { [self] in
             sendKeepalive(context: context)
         }
     }

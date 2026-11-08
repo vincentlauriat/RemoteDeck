@@ -4,9 +4,12 @@ import NIOCore
 
 /// An interactive shell on a pseudo-terminal, opened by `SSHConnection.openShell`.
 public final class SSHShell: Sendable {
-    /// The terminal's output. It ends normally when the remote shell exits, and throws
-    /// `SSHError.connectionClosed` if the connection ends under it. Ending the iteration closes
-    /// the shell.
+    /// The terminal's output. It ends normally when the remote shell exits or after the
+    /// connection's `close()`, and throws `SSHError.connectionClosed` if the connection is lost
+    /// under it. Ending the iteration closes the shell.
+    ///
+    /// Single consumer, and unbounded: chunks are buffered until read, so the consumer must keep
+    /// draining it (coalescing as it likes) while the shell runs.
     public let output: AsyncThrowingStream<Data, any Error>
     private let channel: any Channel
 
@@ -46,15 +49,17 @@ final class ShellChannelHandler: ChannelInboundHandler {
     private let request: SSHChannelRequestEvent.PseudoTerminalRequest
     private let ready: EventLoopPromise<Void>
     private let output: AsyncThrowingStream<Data, any Error>.Continuation
+    private let handshake: Handshake
     private var phase = Phase.starting
     /// The server said the shell is over (exit status or signal, or end of its output): a close
     /// after that is the shell's normal end, not a lost connection.
     private var remoteEnded = false
 
-    init(request: SSHChannelRequestEvent.PseudoTerminalRequest, ready: EventLoopPromise<Void>, output: AsyncThrowingStream<Data, any Error>.Continuation) {
+    init(request: SSHChannelRequestEvent.PseudoTerminalRequest, ready: EventLoopPromise<Void>, output: AsyncThrowingStream<Data, any Error>.Continuation, handshake: Handshake) {
         self.request = request
         self.ready = ready
         self.output = output
+        self.handshake = handshake
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
@@ -105,7 +110,8 @@ final class ShellChannelHandler: ChannelInboundHandler {
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        end(remoteEnded || context.channel.parent?.isActive == true ? nil : .connectionClosed)
+        let normal = remoteEnded || handshake.closedLocally || context.channel.parent?.isActive == true
+        end(normal ? nil : .connectionClosed)
         context.fireChannelInactive()
     }
 

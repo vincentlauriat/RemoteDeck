@@ -3,7 +3,7 @@ import _CryptoExtras
 import Foundation
 import NIOCore
 import NIOPosix
-@preconcurrency import NIOSSH
+@preconcurrency @testable import NIOSSH
 import Synchronization
 @testable import SSHKit
 
@@ -35,6 +35,8 @@ final class TestSSHServer: Sendable {
         var ptyTerms: [String] = []
         /// The number of TCP connections accepted.
         var connections = 0
+        /// The number of key exchanges the RSA host key signed (initial plus re-keys).
+        var hostKeySignatures = 0
     }
 
     let port: UInt16
@@ -42,18 +44,20 @@ final class TestSSHServer: Sendable {
     let hostKey: SSHHostKey
     private let channel: any Channel
     private let state: Shared
+    private let rsaHostKey: TestRSAHostPrivateKey?
 
-    private init(port: UInt16, hostKey: SSHHostKey, channel: any Channel, state: Shared) {
+    private init(port: UInt16, hostKey: SSHHostKey, channel: any Channel, state: Shared, rsaHostKey: TestRSAHostPrivateKey?) {
         self.port = port
         self.hostKey = hostKey
         self.channel = channel
         self.state = state
+        self.rsaHostKey = rsaHostKey
     }
 
     static func start(_ configuration: Configuration = .init()) async throws -> TestSSHServer {
         RSASHA2.register()
-        let (privateKey, publicKey) = try hostKeys(configuration.hostKey)
         let state = Shared()
+        let (privateKey, publicKey, rsaHostKey) = try hostKeys(configuration.hostKey, state: state)
         let auth = AuthDelegate(configuration: configuration, state: state)
 
         let bootstrap = ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
@@ -82,7 +86,7 @@ final class TestSSHServer: Sendable {
             }
         let channel = try await bootstrap.bind(host: "127.0.0.1", port: 0).get()
         guard let port = channel.localAddress?.port else { throw TestServerError.noPort }
-        return TestSSHServer(port: UInt16(port), hostKey: publicKey, channel: channel, state: state)
+        return TestSSHServer(port: UInt16(port), hostKey: publicKey, channel: channel, state: state, rsaHostKey: rsaHostKey)
     }
 
     var record: Record { state.withLock { $0.record } }
@@ -93,6 +97,26 @@ final class TestSSHServer: Sendable {
         state.withLock { $0.silent = true }
     }
 
+    /// Starts a key re-exchange on every connection (swift-nio-ssh's test-only `_rekey`).
+    func rekey() async throws {
+        let children = state.withLock { $0.children }
+        for child in children {
+            try await child.eventLoop.submit {
+                try child.pipeline.syncOperations.handler(type: NIOSSHHandler.self)._rekey()
+            }.get()
+        }
+    }
+
+    /// From now on an RSA server signs key exchanges with `id_rsa_encrypted`: a re-key then
+    /// presents another host key. The new key's public half is returned.
+    func rotateRSAHostKey() throws -> SSHHostKey {
+        guard let rsaHostKey else { throw TestServerError.notRSA }
+        let next = try SSHPrivateKey.parse(openSSH: try fixture("id_rsa_encrypted"), passphrase: "test-pass")
+        guard case .rsa(let key, let body) = next.material else { throw TestServerError.notRSA }
+        rsaHostKey.rotate(to: key, body: body)
+        return next.publicKey
+    }
+
     func stop() async {
         let children = state.withLock { $0.children }
         for child in children {
@@ -101,7 +125,7 @@ final class TestSSHServer: Sendable {
         try? await channel.close()
     }
 
-    private static func hostKeys(_ kind: HostKeyKind) throws -> (NIOSSHPrivateKey, SSHHostKey) {
+    private static func hostKeys(_ kind: HostKeyKind, state: Shared) throws -> (NIOSSHPrivateKey, SSHHostKey, TestRSAHostPrivateKey?) {
         let file = switch kind {
         case .ed25519: "host_ed25519"
         case .rsa: "id_rsa"
@@ -110,11 +134,12 @@ final class TestSSHServer: Sendable {
         let key = try SSHPrivateKey.parse(openSSH: try fixture(file), passphrase: nil)
         switch key.material {
         case .ed25519(let ed):
-            return (NIOSSHPrivateKey(ed25519Key: ed), key.publicKey)
+            return (NIOSSHPrivateKey(ed25519Key: ed), key.publicKey, nil)
         case .rsa(let rsa, let body):
-            return (NIOSSHPrivateKey(custom: TestRSAHostPrivateKey(key: rsa, body: body)), key.publicKey)
+            let host = TestRSAHostPrivateKey(key: rsa, body: body, state: state)
+            return (NIOSSHPrivateKey(custom: host), key.publicKey, host)
         case .ecdsaP256(let p256):
-            return (NIOSSHPrivateKey(p256Key: p256), key.publicKey)
+            return (NIOSSHPrivateKey(p256Key: p256), key.publicKey, nil)
         }
     }
 
@@ -135,25 +160,32 @@ final class TestSSHServer: Sendable {
 
 enum TestServerError: Error {
     case noPort
+    case notRSA
     case unsupportedChannel
 }
 
 /// An RSA host key as OpenSSH serves it: negotiated as `rsa-sha2-512`, sent as a blob typed
 /// `ssh-rsa`, signing the exchange hash with SHA-512.
-private final class TestRSAHostPrivateKey: NIOSSHPrivateKeyProtocol, Sendable {
+final class TestRSAHostPrivateKey: NIOSSHPrivateKeyProtocol, Sendable {
     static let keyPrefix = RSASHA512.name
-    let key: _RSA.Signing.PrivateKey
-    let body: RSAPublicBody
+    private let current: Mutex<(key: _RSA.Signing.PrivateKey, body: RSAPublicBody)>
+    private let state: TestSSHServer.Shared
 
-    init(key: _RSA.Signing.PrivateKey, body: RSAPublicBody) {
-        self.key = key
-        self.body = body
+    init(key: _RSA.Signing.PrivateKey, body: RSAPublicBody, state: TestSSHServer.Shared) {
+        current = Mutex((key, body))
+        self.state = state
     }
 
-    var publicKey: NIOSSHPublicKeyProtocol { SSHRSAHostKey(body: body) }
+    func rotate(to key: _RSA.Signing.PrivateKey, body: RSAPublicBody) {
+        current.withLock { $0 = (key, body) }
+    }
+
+    var publicKey: NIOSSHPublicKeyProtocol { SSHRSAHostKey(body: current.withLock { $0.body }) }
 
     func signature<D: DataProtocol>(for data: D) throws -> NIOSSHSignatureProtocol {
-        RSASHA2Signature<RSASHA512>(rawRepresentation: try RSASHA512.sign(key, Data(data)))
+        state.withLock { $0.record.hostKeySignatures += 1 }
+        let key = current.withLock { $0.key }
+        return RSASHA2Signature<RSASHA512>(rawRepresentation: try RSASHA512.sign(key, Data(data)))
     }
 }
 
@@ -305,6 +337,42 @@ final class SilentTCPServer: Sendable {
     }
 
     func stop() async {
+        try? await channel.close()
+    }
+}
+
+/// A listener on 127.0.0.1 that never accepts, with its backlog filled by `fillers` connections:
+/// a further TCP connect stays pending (the SYN goes unanswered) until the client gives up.
+final class StalledTCPServer: Sendable {
+    let port: UInt16
+    private let channel: any Channel
+    private let fillers: [any Channel]
+
+    private init(port: UInt16, channel: any Channel, fillers: [any Channel]) {
+        self.port = port
+        self.channel = channel
+        self.fillers = fillers
+    }
+
+    static func start() async throws -> StalledTCPServer {
+        let channel = try await ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+            .serverChannelOption(.backlog, value: 1)
+            .serverChannelOption(.autoRead, value: false)
+            .bind(host: "127.0.0.1", port: 0).get()
+        guard let port = channel.localAddress?.port else { throw TestServerError.noPort }
+        var fillers: [any Channel] = []
+        for _ in 0 ..< 8 {
+            let filler = try? await ClientBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+                .connectTimeout(.milliseconds(200))
+                .connect(host: "127.0.0.1", port: port).get()
+            guard let filler else { break }
+            fillers.append(filler)
+        }
+        return StalledTCPServer(port: UInt16(port), channel: channel, fillers: fillers)
+    }
+
+    func stop() async {
+        for filler in fillers { try? await filler.close() }
         try? await channel.close()
     }
 }

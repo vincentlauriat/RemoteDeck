@@ -226,6 +226,146 @@ struct SSHConnectionLoopbackTests {
         #expect(await transcript.waitForEnd() == .failed(.connectionClosed))
     }
 
+    // MARK: Aborting open, timeouts
+
+    @Test func closeWhileHandshakeIsPendingThrowsConnectionClosed() async throws {
+        let server = try await SilentTCPServer.start()
+        let connection = SSHConnection(host: "127.0.0.1", port: server.port)
+        let closed = Ending(await connection.closed)
+        let opening = Task { await openError(connection, .password(user: user, password: password), timeout: .seconds(30)) }
+        try await Task.sleep(for: .milliseconds(100))
+        await connection.close()
+        #expect(try await bounded(.seconds(2)) { await opening.value } == .connectionClosed)
+        #expect(await closed.value(within: .seconds(5)) == .some(nil))
+        #expect(await closed.finished(within: .seconds(5)))
+        #expect(closed.count == 1)
+        await server.stop()
+    }
+
+    @Test func closeWhileTCPConnectIsPendingThrowsConnectionClosed() async throws {
+        let server = try await StalledTCPServer.start()
+        let connection = SSHConnection(host: "127.0.0.1", port: server.port)
+        let closed = Ending(await connection.closed)
+        let opening = Task { await openError(connection, .password(user: user, password: password), timeout: .seconds(30)) }
+        try await Task.sleep(for: .milliseconds(100))
+        let start = ContinuousClock.now
+        await connection.close()
+        #expect(try await bounded(.seconds(5)) { await opening.value } == .connectionClosed)
+        #expect(ContinuousClock.now - start < .seconds(1))
+        #expect(await closed.value(within: .seconds(5)) == .some(nil))
+        #expect(closed.count == 1)
+        await server.stop()
+    }
+
+    @Test func closeWhileValidatorIsPendingCancelsIt() async throws {
+        let server = try await TestSSHServer.start()
+        let connection = SSHConnection(host: "127.0.0.1", port: server.port)
+        let closed = Ending(await connection.closed)
+        let validator = Locked<(started: Bool, cancelled: Bool)>((false, false))
+        let opening = Task {
+            await openError(connection, .password(user: user, password: password)) { _ in
+                validator.withLock { $0.started = true }
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                    return true
+                } catch {
+                    validator.withLock { $0.cancelled = true }
+                    return true  // ignored: the connection is gone
+                }
+            }
+        }
+        #expect(await poll(within: .seconds(5)) { validator.withLock { $0.started } })
+        await connection.close()
+        #expect(try await bounded(.seconds(2)) { await opening.value } == .connectionClosed)
+        #expect(await poll(within: .seconds(2)) { validator.withLock { $0.cancelled } })
+        #expect(await closed.value(within: .seconds(5)) == .some(nil))
+        #expect(closed.count == 1)
+        #expect(server.record.userauthRequests.isEmpty)
+        await server.stop()
+    }
+
+    @Test func cancellingOpenClosesPromptly() async throws {
+        let server = try await SilentTCPServer.start()
+        let connection = SSHConnection(host: "127.0.0.1", port: server.port)
+        let opening = Task { () -> SSHError? in
+            do {
+                try await connection.open(credentials: .password(user: user, password: password), timeout: .seconds(30)) { _ in true }
+                return nil
+            } catch let error as SSHError {
+                return error
+            } catch {
+                return .remote("untyped \(error)")
+            }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        let start = ContinuousClock.now
+        opening.cancel()
+        #expect(try await bounded(.seconds(2)) { await opening.value } == .connectionClosed)
+        #expect(ContinuousClock.now - start < .milliseconds(200))
+        await server.stop()
+    }
+
+    @Test func validatorTimeDoesNotCountTowardsTimeout() async throws {
+        let server = try await TestSSHServer.start()
+        let connection = SSHConnection(host: "127.0.0.1", port: server.port)
+        try await open(connection, .password(user: user, password: password), timeout: .milliseconds(500)) { _ in
+            try? await Task.sleep(for: .seconds(1))
+            return true
+        }
+        await connection.close()
+        await server.stop()
+    }
+
+    // MARK: Re-key
+
+    @Test func rekeyWithTheSameHostKeyKeepsTheSession() async throws {
+        let server = try await TestSSHServer.start(.init(hostKey: .rsa))
+        let calls = Locked(0)
+        let connection = SSHConnection(host: "127.0.0.1", port: server.port)
+        try await open(connection, .password(user: user, password: password)) { _ in
+            calls.withLock { $0 += 1 }
+            return true
+        }
+        let closed = Ending(await connection.closed)
+        let transcript = try await Transcript(try await openShell(connection))
+        let signed = server.record.hostKeySignatures
+        try await server.rekey()
+        #expect(await poll(within: .seconds(5)) { server.record.hostKeySignatures > signed })
+        try await transcript.shell.write(Data("after rekey\n".utf8))
+        #expect(await transcript.waitFor { $0.contains("after rekey") })
+        #expect(calls.withLock { $0 } == 1)
+        #expect(await closed.value(within: .milliseconds(200)) == nil)
+        await connection.close()
+        await server.stop()
+    }
+
+    @Test func rekeyWithAnotherHostKeyEndsWithHostKeyRejected() async throws {
+        let server = try await TestSSHServer.start(.init(hostKey: .rsa))
+        let calls = Locked(0)
+        let connection = SSHConnection(host: "127.0.0.1", port: server.port)
+        try await open(connection, .password(user: user, password: password)) { _ in
+            calls.withLock { $0 += 1 }
+            return true
+        }
+        let closed = Ending(await connection.closed)
+        let newKey = try server.rotateRSAHostKey()
+        #expect(newKey != server.hostKey)
+        try await server.rekey()
+        #expect(await closed.value(within: .seconds(5)) == .some(.hostKeyRejected(newKey)))
+        #expect(calls.withLock { $0 } == 1)
+        await server.stop()
+    }
+
+    @Test func localCloseEndsShellOutputNormally() async throws {
+        let server = try await TestSSHServer.start()
+        let connection = SSHConnection(host: "127.0.0.1", port: server.port)
+        try await open(connection, .password(user: user, password: password))
+        let transcript = try await Transcript(try await openShell(connection))
+        await connection.close()
+        #expect(await transcript.waitForEnd() == .finished)
+        await server.stop()
+    }
+
     // MARK: Helpers
 
     private func publicKey(_ name: String) throws -> SSHHostKey {
