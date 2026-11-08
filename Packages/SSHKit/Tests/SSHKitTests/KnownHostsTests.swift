@@ -67,7 +67,6 @@ import Testing
         let key = try ed25519().openSSHPublicKey
         let text = """
         # raspcorse \(key)
-        @revoked raspcorse \(key)
         @cert-authority raspcorse \(key)
 
         *.example \(key)
@@ -77,5 +76,48 @@ import Testing
         let hosts = KnownHosts(parsing: text)
         #expect(hosts.lookup(host: "raspcorse", port: 22, key: try ed25519()) == .notFound)
         #expect(hosts.lookup(host: "a.example", port: 22, key: try ed25519()) == .notFound)
+    }
+
+    @Test func revokedExactKeyBlocksEvenWhenAnotherLineMatches() throws {
+        let key = try ed25519().openSSHPublicKey
+        let text = "raspcorse \(key)\n@revoked * \(key)\n"
+        let hosts = KnownHosts(parsing: text)
+        #expect(hosts.lookup(host: "raspcorse", port: 22, key: try ed25519()) == .mismatch)
+        #expect(hosts.lookup(host: "unrelated", port: 22, key: try ed25519()) == .mismatch)
+    }
+
+    @Test func revokedDifferentKeyHasNoEffect() throws {
+        let text = "raspcorse \(try ed25519().openSSHPublicKey)\n@revoked raspcorse \(try other().openSSHPublicKey)\n"
+        let hosts = KnownHosts(parsing: text)
+        #expect(hosts.lookup(host: "raspcorse", port: 22, key: try ed25519()) == .match)
+        #expect(hosts.lookup(host: "unrelated", port: 22, key: try ed25519()) == .notFound)
+    }
+
+    @Test func certAuthorityLineStaysIgnored() throws {
+        let hosts = KnownHosts(parsing: "@cert-authority * \(try ed25519().openSSHPublicKey)\n")
+        #expect(hosts.lookup(host: "raspcorse", port: 22, key: try ed25519()) == .notFound)
+    }
+
+    @Test func ipv6Hosts() throws {
+        let key = try ed25519().openSSHPublicKey
+        let hosts = KnownHosts(parsing: "[::1]:2222 \(key)\n::1 \(key)\n")
+        #expect(hosts.lookup(host: "::1", port: 2222, key: try ed25519()) == .match)
+        #expect(hosts.lookup(host: "::1", port: 22, key: try ed25519()) == .match)
+        #expect(hosts.lookup(host: "::1", port: 2223, key: try ed25519()) == .notFound)
+    }
+
+    @Test func hashedEntryWithBadBase64IsSkipped() throws {
+        let key = try ed25519().openSSHPublicKey
+        let text = "|1|!!!|@@@ \(key)\n|1|onlyone \(key)\nraspcorse \(key)\n"
+        let hosts = KnownHosts(parsing: text)
+        #expect(hosts.lookup(host: "raspcorse", port: 22, key: try ed25519()) == .match)
+        #expect(hosts.lookup(host: "x", port: 22, key: try ed25519()) == .notFound)
+    }
+
+    @Test func crlfLineEndingsParse() throws {
+        let text = "a \(try ed25519().openSSHPublicKey)\r\nb \(try other().openSSHPublicKey)\r\n"
+        let hosts = KnownHosts(parsing: text)
+        #expect(hosts.lookup(host: "a", port: 22, key: try ed25519()) == .match)
+        #expect(hosts.lookup(host: "b", port: 22, key: try other()) == .match)
     }
 }

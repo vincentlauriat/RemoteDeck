@@ -15,7 +15,11 @@ public enum KnownHostsMatch: Equatable, Sendable {
 ///
 /// Supported: plain names (case-insensitive), `[host]:port`, comma lists, and hashed entries
 /// (`|1|salt|hash`, HMAC-SHA1). Not supported, so never matching: wildcard or negated patterns
-/// (`*`, `?`, `!`) and the `@revoked` / `@cert-authority` markers. Malformed lines are skipped.
+/// (`*`, `?`, `!`) and `@cert-authority` lines, which are ignored. Malformed lines are skipped.
+///
+/// A `@revoked <hosts> <key>` line blocks that key for every host, whatever its host field says
+/// (OpenSSH refuses a revoked key everywhere): `lookup` answers `.mismatch` for it, even when
+/// another line matches.
 public struct KnownHosts: Sendable {
     private enum HostPattern: Sendable {
         case plain(String)
@@ -28,11 +32,18 @@ public struct KnownHosts: Sendable {
     }
 
     private let entries: [Entry]
+    private let revoked: [SSHHostKey]
 
     public init(parsing text: String) {
         var entries: [Entry] = []
+        var revoked: [SSHHostKey] = []
         for line in text.split(whereSeparator: \.isNewline) {
             let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            if fields.count >= 4, fields[0] == "@revoked",
+               let key = try? SSHHostKey(openSSHPublicKey: "\(fields[2]) \(fields[3])") {
+                revoked.append(key)
+                continue
+            }
             guard fields.count >= 3, !fields[0].hasPrefix("#"), !fields[0].hasPrefix("@"),
                   let key = try? SSHHostKey(openSSHPublicKey: "\(fields[1]) \(fields[2])")
             else { continue }
@@ -51,21 +62,25 @@ public struct KnownHosts: Sendable {
             if !patterns.isEmpty { entries.append(Entry(patterns: patterns, key: key)) }
         }
         self.entries = entries
+        self.revoked = revoked
     }
 
     public func lookup(host: String, port: Int, key: SSHHostKey) -> KnownHostsMatch {
         let name = port == 22 ? host : "[\(host)]:\(port)"
         let lowered = name.lowercased()
         let family = Self.keyType(key.algorithm)
+        if revoked.contains(where: { $0.blob == key.blob && Self.keyType($0.algorithm) == family }) {
+            return .mismatch
+        }
         var result = KnownHostsMatch.notFound
-        for entry in entries where entry.patterns.contains(where: { Self.matches($0, name: name, lowered: lowered) }) {
+        for entry in entries where entry.patterns.contains(where: { Self.matches($0, lowered: lowered) }) {
             if entry.key.blob == key.blob && Self.keyType(entry.key.algorithm) == family { return .match }
             if Self.keyType(entry.key.algorithm) == family { result = .mismatch }
         }
         return result
     }
 
-    private static func matches(_ pattern: HostPattern, name: String, lowered: String) -> Bool {
+    private static func matches(_ pattern: HostPattern, lowered: String) -> Bool {
         switch pattern {
         case .plain(let value):
             return value == lowered
