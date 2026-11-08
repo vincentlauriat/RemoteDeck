@@ -83,12 +83,23 @@ more things favour that:
    - **Check:** `swift test --filter testWeDontResizeTheWindow` passes, running both the new
      test and its sibling.
 
-3. **Modification notices (Apache-2.0 §4(b)):** every swift-nio-ssh file changed above starts
-   with `// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).`:
-   `SSHKeyExchangeStateMachine.swift`, `ChildChannelStateMachine.swift`, `SSHChildChannel.swift`
-   and `ChildChannelMultiplexerTests.swift`. `Package.swift` says so in its own comment.
+3. **Keepalive global request**, in `Sources/NIOSSH/NIOSSHHandler.swift`.
+   - **Change:** adds the public `NIOSSHHandler.sendKeepalive(promise:)`. It sends the
+     `keepalive@openssh.com` global request with want-reply through the existing internal
+     `sendGlobalRequestMessage`, and succeeds the promise on either reply: servers answer it with
+     `SSH_MSG_REQUEST_FAILURE`, which still proves the peer is alive.
+   - **Why:** SSHKit's `SSHConnection` sends it every `SSHKeepalive.interval` and closes after
+     `maxMissed` unanswered requests, as `ssh`'s `ServerAliveInterval` / `ServerAliveCountMax` do.
+     swift-nio-ssh sends only TCP forwarding global requests publicly; the generic sender and the
+     message type are internal.
 
-4. **Manifest:** the `swift-docc-plugin` dependency is removed. It is a documentation-only
+4. **Modification notices (Apache-2.0 §4(b)):** every swift-nio-ssh file changed above starts
+   with `// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).`:
+   `SSHKeyExchangeStateMachine.swift`, `ChildChannelStateMachine.swift`, `SSHChildChannel.swift`,
+   `NIOSSHHandler.swift` and `ChildChannelMultiplexerTests.swift`. `Package.swift` says so in its
+   own comment.
+
+5. **Manifest:** the `swift-docc-plugin` dependency is removed. It is a documentation-only
    plugin, and it would be one more unpinned remote package for Xcode to fetch.
 
 ### Citadel

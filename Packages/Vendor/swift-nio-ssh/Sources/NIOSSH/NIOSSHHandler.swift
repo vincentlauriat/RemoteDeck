@@ -1,3 +1,4 @@
+// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).
 //===----------------------------------------------------------------------===//
 //
 // This source file is part of the SwiftNIO open source project
@@ -291,6 +292,30 @@ extension NIOSSHHandler {
     func sendGlobalRequestMessage(_ message: SSHMessage.GlobalRequestMessage, promise: EventLoopPromise<ByteBuffer?>? = nil) {
         self.pendingGlobalRequests.append((value: message, promise: promise.map { .unknown($0) }))
         self.sendGlobalRequestsIfPossible()
+    }
+
+    /// RemoteDeck patch (see Packages/Vendor/PATCHES.md): sends OpenSSH's `keepalive@openssh.com`
+    /// global request with want-reply, as `ssh` does for `ServerAliveInterval`.
+    ///
+    /// The promise succeeds on any reply: servers answer this request with `SSH_MSG_REQUEST_FAILURE`
+    /// (they do not know it), which still proves the peer is alive. It fails only if the request
+    /// could not be sent or the connection went away first.
+    ///
+    /// This function is **not** thread-safe: it may only be called from on the channel.
+    public func sendKeepalive(promise: EventLoopPromise<Void>) {
+        let reply = promise.futureResult.eventLoop.makePromise(of: ByteBuffer?.self)
+        reply.futureResult.whenComplete { result in
+            switch result {
+            case .success:
+                promise.succeed(())
+            case .failure(let error as NIOSSHError) where error.type == .globalRequestRefused:
+                promise.succeed(())
+            case .failure(let error):
+                promise.fail(error)
+            }
+        }
+        let message = SSHMessage.GlobalRequestMessage(wantReply: true, type: .unknown("keepalive@openssh.com", ByteBuffer()))
+        self.sendGlobalRequestMessage(message, promise: reply)
     }
 
     private func dropAllPendingGlobalRequests(_ error: Error) {
