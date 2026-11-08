@@ -8,7 +8,7 @@ Date: 2026-11-08. Spec: `2026-11-08-ssh-terminal-design.md`. The scratch package
 
 | | Answer |
 |---|---|
-| **(a) SSH library** | **Citadel 0.12.0** on **Joannis/swift-nio-ssh 0.3.5**, plus two additions. First, a small SSHKit-side adapter for RFC 8332 `rsa-sha2-256/512` and for parsing OpenSSH ECDSA keys. Second, a **3-line patch to swift-nio-ssh** so it accepts an `ssh-rsa` host-key blob under a negotiated `rsa-sha2-*` algorithm. Keyboard-interactive auth is **not** available (see Gaps). |
+| **(a) SSH library** | **Citadel 0.12.0** on **Joannis/swift-nio-ssh 0.3.5**, plus two additions. First, a small SSHKit-side adapter for RFC 8332 `rsa-sha2-256/512` and for parsing OpenSSH ECDSA keys. Second, a **3-line patch to swift-nio-ssh** so it accepts an `ssh-rsa` host-key blob under a negotiated `rsa-sha2-*` algorithm. **The patched package(s) must be vendored as local packages under `Packages/Vendor/`** (see "How to pin it"). Keyboard-interactive auth is **not** available (see Gaps). |
 | **(b) Terminal engine** | **Option 2**: libghostty-vt **1.0.0** through its C API, drawn by our own renderer. Use the official prebuilt XCFramework `https://release.files.ghostty.org/libghostty-vt/1.0.0/ghostty-vt-1.0.0.xcframework.zip`. Its SHA-256 is `2c32b7409b2b6c2ef6cfd606526de357762ad458bdc27134ad074e86506a8bc2`, which equals the `swift package compute-checksum` value. The minisign signature was verified with Ghostty's release key. Alternatively, build it from the signed source tarball with **Zig 0.17.1**. Tag `vt-1.0.0`, commit `0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec`. |
 | **(c) Bytes in and out, no process** | **Yes.** `ghostty_terminal_vt_write` takes the SSH channel's bytes. The `GHOSTTY_TERMINAL_OPT_WRITE_PTY` callback returns the terminal's replies, such as DA and DSR. The key encoder (`ghostty_key_encoder_encode`, mode-aware through `ghostty_key_encoder_set_from_terminal`) returns the bytes to write to the channel. No pty or child process is involved anywhere. |
 
@@ -63,11 +63,13 @@ Matrix (`ssh-check`, Swift 6 mode):
 - **Spike limitation:** the spike adapter parses unencrypted RSA and ECDSA files only. Encrypted RSA and ECDSA keys need `bcrypt_pbkdf` plus AES. Citadel has both internally, but they are not public, so SSHKit must bring its own or reuse them through the fork.
 - **Upstream PR #135** follows the same RFC 8332 approach for user auth, using Citadel internals. It is still open and does not cover host keys.
 
-**How to pin it (builder's decision; affects Task 2).**
+**How to pin it (controller ruling; affects Task 2).**
 
-- Citadel's manifest names `Joannis/swift-nio-ssh` by URL, and a root package cannot override a transitive URL without per-user SwiftPM mirrors.
-- The patch therefore needs **a pinned fork of both** packages: `swift-nio-ssh` 0.3.5 plus the patch, and Citadel 0.12.0 with its manifest pointing at that fork.
-- They can be GitHub forks pinned by `revision`, or local packages vendored under `Packages/`. Vendoring keeps the "no third-party network fetch at release" property and makes the patch reviewable in-repo.
+- **Chosen form: local packages vendored under `Packages/Vendor/`.** A GitHub fork pinned by `revision` does not satisfy the project's `exactVersion` pinning rule, so it is not an option. Vendoring also keeps the patch reviewable in-repo, and the release build fetches nothing from a third party for it.
+- Citadel's manifest names `Joannis/swift-nio-ssh` by URL. Whether a root-level path dependency on the vendored `swift-nio-ssh` overrides that transitive URL (same package identity) is **not verified**. The spike's `swift package edit` override applies only to the local checkout.
+- **Task 2 tests that first:**
+  - If the override works, only `swift-nio-ssh` 0.3.5 plus the patch is vendored.
+  - If not, both are vendored: that `swift-nio-ssh`, and Citadel 0.12.0 with its manifest pointing at the vendored copy.
 - Also cherry-pick from the Wellz26 fork: "Don't send a window adjust after a locally-initiated close" (`a9376132`).
 
 **Why Citadel 0.12.0 and not 0.12.1.** 0.12.1 (2026-04-04) switched its swift-nio-ssh dependency to `Wellz26/swift-nio-ssh`, a personal fork with zero stars, for Mac Catalyst. 0.12.0 uses `Joannis/swift-nio-ssh`, the fork of Citadel's own author.
@@ -107,7 +109,7 @@ ColorizeSwift is only used by Citadel's example target and is not linked.
   - The only Swift artefact upstream is `example/swift-vt-xcframework`, which uses a local-path `binaryTarget` and has no renderer.
   - No Swift renderer or Swift bindings announcement could be confirmed. Mitchell Hashimoto's own GitHub repos include only `go-libghostty` among those matching "ghostty" or "swift". His tangled.org page shows `tack` and `go-libghostty`; 2 of its 4 repos were not visible.
 - **Option 2 works with the stable Xcode.** A SwiftPM `binaryTarget` on the XCFramework links under Swift 6 with no C++ runtime or extra flags.
-  - The source build also succeeded: `zig build --system <deps> -Doptimize=ReleaseFast -Dcpu=baseline -Demit-xcframework=true` with Homebrew **Zig 0.17.1**, offline from the deps tarball, in **79.8 s** (exit 0).
+  - The source build also succeeded: `zig build --system <deps> -Doptimize=ReleaseFast -Dcpu=baseline -Demit-xcframework=true` with Homebrew **Zig 0.17.1**, offline from the deps tarball, in **79.8 s** (exit 0). That was a cold cache: a new, empty `ZIG_GLOBAL_CACHE_DIR`.
   - Recommendation: the prebuilt XCFramework as `binaryTarget(url:checksum:)`, so there is no Zig in `release.sh` or CI. That exact form (the URL and checksum above) was proven: it resolves, links and `ghostty_version()` prints `1.0.0`. Keep the Zig build as the reproducibility fallback.
 - **Render check.** A minimal spike renderer did the drawing: an NSView that walks the render-state API (rows, cells, graphemes, style, resolved fg/bg, cursor, wide flag) and draws each cell with AppKit text drawing.
   - The terminal was fed only from the Citadel PTY channel of the local sshd. The shell was `bash`, because htop and tmux are not installed on this Mac.
@@ -143,7 +145,7 @@ Both were measured with release builds and stripped binaries (`strip -x`) agains
 | Component | Build time added | Binary size added |
 |---|---|---|
 | libghostty-vt 1.0.0 (prebuilt XCFramework, terminal, render state and key encoder used) | ≈ 0 (link only). From source with Zig: +80 s, once per version. | **+1.2 MB** (51 KB → 1.21 MB). This is a floor: dead-stripping removed the unused API. Upper bound ≈ 2.1 MB, the size of the full dylib. |
-| Citadel 0.12.0 stack (NIO, swift-nio-ssh, swift-crypto/BoringSSL, BigInt, …) | Clean release build of the spike app with Citadel and libghostty: **38 s**. The SizeProbe package with all three probes: 43 s. | **+8.4 MB** (51 KB → 8.49 MB). RemoteDeck uses neither NIO nor swift-crypto today, so all of it is new. |
+| Citadel 0.12.0 stack (NIO, swift-nio-ssh, swift-crypto/BoringSSL, BigInt, …) | **Absolute, not a delta** (no baseline without Citadel was measured): the clean release build of the spike app with Citadel and libghostty took 38 s, and the SizeProbe package with all three probes took 43 s. libghostty is link-only, so nearly all of that is the Citadel stack compiling. | **+8.4 MB** (51 KB → 8.49 MB). RemoteDeck uses neither NIO nor swift-crypto today, so all of it is new. |
 
 ## Licences
 
@@ -170,7 +172,7 @@ All licences found allow a public repo and binary distribution.
    - Debian and Raspberry Pi OS ship `KbdInteractiveAuthentication no` with the `password` method allowed, so raspcorse should accept a password. **This is unverified in the spike** and is on the live checklist.
    - **Options:** (i) v1 without it; (ii) add it to the same swift-nio-ssh fork, a moderate state-machine change.
    - Recommendation: (i), and record it as a spec deviation, unless the Azure VM turns out to need it during the live check.
-2. **A patched dependency.** SSHKit will depend on a pinned fork of swift-nio-ssh and Citadel (3-line patch plus manifest URL). See "How to pin it".
+2. **A patched dependency.** SSHKit will depend on a vendored, patched swift-nio-ssh under `Packages/Vendor/`, and on a vendored Citadel too if a root path override does not work. Task 2 tests this. See "How to pin it".
 3. **Live checklist additions (Vincent):**
    - raspcorse and the Azure VM, both directly and over Tailscale: ed25519 key in place, host-key fingerprint prompt, `htop`, `tmux`, `vim`;
    - a password login on a real OpenSSH server;
