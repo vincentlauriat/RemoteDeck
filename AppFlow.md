@@ -14,12 +14,13 @@
 |---|---|---|
 | Onboarding Sheet | Explain the app, ask for local network and notification permissions, offer to enable iCloud Sync | AppSettings |
 | Library Window | Sidebar with Favorites (pinned; a favorite is listed there only, so each machine has one row), groups (by sort order, then name; empty groups shown unless searching) and ungrouped Machines; search; toolbar (add, discover, connect) | Machine, MachineGroup |
-| Machine Editor | Create or edit a machine: name, kind (Mac ARD / VNC / Anthropic VM), host, port, user, password, group (or "New Group…"), watch, favorite, scaling, shared clipboard (new machines default to AppSettings `defaultSharedClipboard`, except an Anthropic VM, off by default; the default follows the kind until the toggle is touched, T5.3). A host typed as a public IP address shows an orange note under the field: "Public address: the connection will travel unencrypted over the Internet. Prefer a VPN or the local network." | Machine, MachineGroup, KeychainCredential, AppSettings |
+| Machine Editor | Create or edit a machine: name, kind (Mac ARD / VNC / Anthropic VM / SSH, post-1.0: its own fields and "Import from ~/.ssh/config" are in Machine Editor › SSH machines below), host, port, user, password, group (or "New Group…"), watch, favorite, scaling, shared clipboard (new machines default to AppSettings `defaultSharedClipboard`, except an Anthropic VM, off by default; the default follows the kind until the toggle is touched, T5.3). A host typed as a public IP address shows an orange note under the field: "Public address: the connection will travel unencrypted over the Internet. Prefer a VPN or the local network." | Machine, MachineGroup, KeychainCredential, AppSettings |
 | Discovery Panel | Sheet listing the hosts found on the LAN through Bonjour (`_rfb._tcp` and `_net-assistant._udp`, merged per host; this Mac is left out), with "Add" per row | Live Bonjour results, Machine (for "Already added") |
-| Session Window | Remote framebuffer with tabs, toolbar (scaling, clipboard, Ctrl-Alt-Del equivalents, Claude, disconnect) | Machine, KeychainCredential, SessionRecord |
+| Session Window | Remote framebuffer with tabs, toolbar (scaling, clipboard, Ctrl-Alt-Del equivalents, Claude, disconnect); an SSH machine's tab shows a terminal instead of a framebuffer (post-1.0, Session Window › Terminal tab) | Machine, KeychainCredential, SessionRecord |
+| Host Key Sheet, Passphrase Sheet, File Transfer Sheet, SSH Config Import Sheet | Post-1.0 (SSH machines): trust an unknown host key; ask a key's passphrase; upload and download files; pick a `Host` block of `~/.ssh/config` | Machine, KeychainCredential, trusted host keys |
 | Claude Assistant Panel | Inspector beside the Session Window (320 pt): token counter and New Conversation at the top, transcript (prompts, progress notes, answers, actions with Confirm/Skip), prompt field with Ask/Stop at the bottom | AssistantAction, KeychainCredential, SessionRecord.assistantTokens |
 | Session History View | Table of past sessions and a 30-day summary | SessionRecord |
-| Settings Window | General, iCloud Sync, Claude (API key, model), Notifications, Shared Clipboard default | AppSettings, KeychainCredential |
+| Settings Window | General, iCloud Sync, Claude (API key, model), Notifications, Shared Clipboard default, Terminal (post-1.0: "Use ⌥ as Meta", font size) | AppSettings, KeychainCredential |
 | Menu Bar Extra | Favorites and recents, "Open Library…", "Session History…", "Quit RemoteDeck" | Machine, SessionRecord |
 | Help Window | Help › RemoteDeck Help (⌘?): the README of the public repository, read live from GitHub and rendered natively | README.md on `main` (GitHub) |
 | What's New Window | Help › What's New…: the notes of the last 10 GitHub Releases, newest first | GitHub Releases API |
@@ -27,6 +28,8 @@
 ## Main path
 
 `Library Window -> double-click machine -> Session Window (connecting) -> first frame -> remote control active`
+
+SSH machine (post-1.0): `Library Window -> double-click machine -> Session Window (terminal tab, connecting) -> host key check (sheet on first sight) -> authentication -> shell prompt`
 
 First-time variant: `Onboarding Sheet -> Discovery Panel -> Add -> Machine Editor -> Save -> Library Window -> double-click -> Session Window`
 
@@ -63,6 +66,22 @@ Anthropic VM: no user field (a user name typed under another kind is not saved),
 
 Changing kind, host, port, user or password clears a Test result (and cancels a running test): it no longer applies to the fields.
 
+#### SSH machines (post-1.0)
+
+Kind "SSH": port 22 (switching kind to SSH sets 22 only if the port was never touched), user name required. The editor shows host, port, user, authentication method and the port forwards, and hides what only makes sense for screens: scaling and Shared Clipboard. Watch works as for any machine (TCP probe on the port). A Library entry has one address: the Azure VM reached directly and over Tailscale is two entries (each asks once for its host key).
+
+| Action | Trigger | Validation | Loading | Success | Error | Next |
+|---|---|---|---|---|---|---|
+| Choose the authentication method | Picker: Password / Key in ~/.ssh / Imported key | Password: as for Mac ARD (Keychain, synchronizable). Key in ~/.ssh: a key file name relative to `~/.ssh` (e.g. `id_ed25519`), no `/..`. Imported key: a key file chosen in an open panel | — | Password: field. Key in ~/.ssh: file name field and, on a Mac without the folder grant, a "Grant access to ~/.ssh…" button. Imported key: "Import Key…" button, then the key's algorithm shown (the key text is never shown) | "Key file name required"; unsupported or malformed key; an encrypted imported key asks its passphrase on Save, with "Remember in Keychain" | — |
+| Import a key | "Import Key…" (open panel) | The file parses as an OpenSSH private key (ed25519, RSA, ECDSA; encrypted or not) | — | Key kept in memory until Save, then stored as a synchronizable Keychain item (never in the store); on another Mac of the same Apple ID the machine connects without importing again | "Unsupported key type", "Not a private key", "Wrong passphrase" | — |
+| Import from ~/.ssh/config | "Import from ~/.ssh/config…" (shown once the `~/.ssh` folder is granted; the button asks for the grant otherwise) | Only `Host` blocks with a single non-wildcard alias are listed | — | The SSH Config Import Sheet lists the aliases; choosing one pre-fills name, host (`HostName`, else the alias), user, port and key (`IdentityFile` relative to `~/.ssh`, authentication "Key in ~/.ssh") | Config unreadable or no usable `Host` block: a message in the sheet | Machine Editor |
+| Edit port forwards | "+" / "−" in the Port forwards list: label (optional), local port, remote host (`localhost` by default, i.e. the machine itself), remote port | Local port 1024–65535, remote port 1–65535, local ports unique within the machine | — | The forward is saved with the machine (synced) and starts with each session | Inline errors under the fields | — |
+| Save | ⌘S / "Save" | As the Save row above for name, host (valid hostname/IPv4/IPv6; no public-address note: SSH is encrypted), port and duplicate `host:port`; plus user required, and the SSH rules above | — | As above; an imported key goes to the Keychain before the store | Keychain refusal: error under the key or password, nothing saved | Library Window |
+| Test connection | "Test" button | As Save | "Testing…" (timeout 5 s) | Green check once the host key is trusted and authentication succeeds; the connection is closed at once | An unknown key opens the same Host Key Sheet as a session (Trust → the test goes on and the key is trusted; Cancel → "Host key not trusted"); a changed key reports the block; plus unreachable / no answer within 5 s / authentication failed / passphrase required / key file missing / unsupported key | — |
+| Remove from RemoteDeck's trusted keys… | Button in the editor, shown when the machine has a trusted key | Confirm dialog naming the host | — | The trusted entry for this `host:port` is forgotten; the next Connect asks again | — | — |
+
+Editing host or port keeps the old host's trusted key (trusted keys are keyed by `host:port`): the new address asks once; deleting the machine removes its SSH secrets and trusted keys (BackendSchema › Retention and deletion).
+
 ### Discovery Panel
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
@@ -86,6 +105,38 @@ Changing kind, host, port, user or password clears a Test result (and cancels a 
 | Switch tab | ⌘1…⌘9 / click tab | — | — | Tab shown | — | — |
 | Open Claude | Toolbar sparkle toggle (always) / ⌘K (keyboard released: while captured, ⌘K goes to the remote like every combo but ⌘1…⌘9) | — | — | Claude Assistant Panel opens with the prompt field focused, which takes the keyboard from the remote (capture off, everything held released) | No key → "Add your API key in Settings to use Claude" + "Open Settings…" | Claude Assistant Panel |
 | Disconnect | ⌘W (keyboard released) / toolbar "Disconnect" / window close button | — | — | Tab closes, SessionRecord saved | — | Library Window if no tab is left |
+
+#### Terminal tab (SSH machines, post-1.0)
+
+An SSH session is a tab of the Session Window like a screen session: one session per machine (a second Connect brings its tab forward), ⌘1…⌘9, ended only by its window's `willClose`; screen and SSH tabs mix in one window. It has no Claude Assistant Panel, no scaling, no Shared Clipboard and no "Internet" badge (SSH is encrypted: the "Unencrypted connection over the Internet" sheet never shows).
+
+| Action | Trigger | Validation | Loading | Success | Error | Next |
+|---|---|---|---|---|---|---|
+| Connect | Tab opens | Credentials resolvable (below) | "Connecting to <name>…" overlay with Cancel (Esc) until the shell is open | Terminal shown and focused, `TERM=xterm-256color`, window size sent to the server | Banner (Terminal errors below) | — |
+| Trust a host key | First connection to a `host:port` whose key is neither in RemoteDeck's list nor in `~/.ssh/known_hosts` (read only when the folder is granted) | Stopped before any authentication | — | Host Key Sheet: host, port, algorithm, SHA256 fingerprint. **Trust**: remembered for this `host:port` on this Mac (not synced), authentication goes on. **Cancel** (Esc): the session ends without authenticating, nothing remembered | — | SessionRecord `hostKeyRejected` |
+| Changed host key | The key differs from the trusted one (own list, or `known_hosts` for the same algorithm) | Stopped before any authentication, at every attempt including automatic reconnects | — | Red banner: both fingerprints and "The identity of this server has changed." **No button continues the connection**; nothing is trusted silently | The way out is outside the banner: Machine Editor › Remove from RemoteDeck's trusted keys…, or fix `known_hosts` yourself (the app never writes it) | Buttons: Close |
+| Ask a passphrase | The key is encrypted and no passphrase is remembered (user-attempt Connect only) | — | — | Passphrase Sheet: secure field, "Remember in Keychain", Connect / Cancel. Remembered with an imported key = synchronizable item; for a key in `~/.ssh` = a local item on this Mac | "Wrong passphrase" stays in the sheet. Cancel: the attempt ends, outcome `cancelled` | — |
+| Ask for the `~/.ssh` folder | A machine set to "Key in ~/.ssh" on a Mac without the folder grant | — | — | Open panel on `~/.ssh`; granted once per Mac | Refused: banner "Access to ~/.ssh is needed to read this key" with Retry | — |
+| Type / paste / copy | Keys, ⌘V, ⌘C | App shortcuts keep priority (⌘1…⌘9, ⌘W, ⌘Y, ⌘?, ⌘0, ⌘,); everything else goes to the terminal | — | ⌘V pastes with bracketed paste when the remote asked for it; ⌘C copies the selection; ⌥ types its AZERTY characters unless Settings › Terminal › "Use ⌥ as Meta" is on; mouse reporting when the remote enables it | — | — |
+| Font size | ⌘+ / ⌘− | — | — | Terminal font larger or smaller, remembered (`AppSettings.terminalFontSize`); the default is Ghostty's | — | — |
+| Resize | Window or pane resize | — | — | New columns × rows sent to the server (`window-change`) | — | — |
+| Port forwards | Toolbar menu "Port forwards" (a `network` symbol) | See Machine Editor | Each forward "Starting…" | One row per forward: label or `localhost:8080 → localhost:80`, state (active / failed / stopped) and **Open in Browser** (`http://localhost:<port>`) | That forward alone shows the error, e.g. "Port 8080 is already in use" (another app, or two machines both on 8080); the shell and the other forwards go on | — |
+| Upload File… | ⌘U (menu item), or dropping files on the terminal | Folders in a drop are refused ("Folders are not supported yet"); several files are allowed | — | File Transfer Sheet: remote destination folder (pre-filled with the remote home), then progress, then Done. A remote file of the same name asks first ("Replace <name>?"); names arrive byte for byte | "No such folder" (nothing is created), "SFTP is not available on this server", connection errors; a failed upload leaves no partial file; Cancel stops the transfer | — |
+| Download File… | ⇧⌘D (menu item) | Remote path typed in the sheet | — | Sheet asks the remote path, a save panel the local place, then progress, then Done | "No such file", "SFTP is not available on this server", write errors | — |
+| Disconnect | ⌘W / toolbar / window close | — | — | Forwards stopped, shell closed, then the connection; tab closes, SessionRecord saved | — | Library Window if no tab is left |
+
+Terminal errors (banner, 32 pt at the top, last output stays visible and dimmed; the same layout as Session errors):
+
+| Cause | Banner | Button | SessionRecord.outcome |
+|---|---|---|---|
+| Network error, refused, no answer within 10 s | "Unreachable — check VPN or network" / "…no answer within 10 s" | Retry | `unreachable` |
+| Wrong password or key refused, key file missing or unreadable, unsupported key, password not in the Keychain | "Authentication failed" / the specific reason | Edit credentials | `authFailed` |
+| The user declines an unknown host key | Banner "Host key not trusted" with Retry (the tab stays open) | — | `hostKeyRejected` |
+| Changed host key | Changed-key banner (above) | — | `hostKeyRejected` |
+| Dropped after the shell was up | No banner at first: one automatic attempt (Interruptions below); then "Connection lost" | Reconnect | `dropped` |
+| The automatic attempt needs a passphrase that was not remembered, or the host key changed meanwhile | "Connection lost" / the changed-key banner; no prompt, no silent trust | Reconnect / Close | that attempt's own outcome |
+
+Interruptions follow the screen-session rules (above): a drop after the session was up gets one automatic attempt after 2 s, sleep/wake and network loss are handled the same way, and the 60 s re-arm rule applies. The remote shell's state is lost on reconnect: a separator line in the terminal marks where the previous shell ended. Forwards stop with the session and restart after an automatic reconnect. SSH keepalives go every 30 s; 4 missed end the connection.
 
 #### Session errors (T3.5)
 
@@ -182,6 +233,7 @@ Content: Favorites (by name), then Recent: the 5 most recent other machines (dis
 | Remove API key | "Remove Key" | A key is stored | — | "Key removed." | Keychain error with its status | — |
 | Toggle iCloud Sync | "iCloud Sync" switch (Settings › iCloud, AppSettings `iCloudSyncEnabled`) | Turning it on needs an available iCloud account (the switch is disabled otherwise); off is always possible | "Checking the iCloud account…", then "Syncing…" while CloudKit imports or exports | "Last synced: <date>", or "Your library syncs with iCloud." before the first event; changed since launch: "Quit and reopen RemoteDeck to start (stop) syncing." (the store takes the setting at launch) | "iCloud unavailable: …" (a failed mirroring event, or the CloudKit store failed to open and the library stays on this Mac); account restricted or temporarily unavailable; a build not signed for iCloud says so | — |
 | Toggle notifications | "Status notifications" switch (Settings › Notifications, AppSettings `notificationsEnabled`, on by default) | — | — | Off: no Status Notification is posted (probes and dots go on) | Under the switch, the macOS permission: not asked yet → "Allow notifications" (the system prompt, on that click only); denied → "Notifications are off in System Settings › Notifications" (text pointer, no deep link); request failed → Retry; allowed → "Notifications allowed" | — |
+| Terminal options (post-1.0) | Settings › Terminal: "Use ⌥ as Meta" (`AppSettings.terminalOptionAsMeta`, off by default as in Ghostty, so AZERTY ⌥ characters keep working) | — | — | Applies to open terminals at once; the font size (`AppSettings.terminalFontSize`) is set with ⌘+ / ⌘− in a terminal tab | — | — |
 
 ### Help and What's New
 
@@ -198,6 +250,7 @@ Under the hosted tests neither window ever fetches (it would show "This page is 
 ## Navigation rules
 
 - One Library Window, one Session History View window, one Session Window containing native macOS window tabs (one per open machine, each with its own connection), and one Settings Window (⌘,). A tab can be moved to its own window or windows merged back (Window menu); a new session joins the frontmost Session Window (visible and not minimised; else the one opened last). The tab bar's "+" brings the Library Window forward, where the next machine is picked. Switching tabs, minimising and full screen never disconnect; only closing a tab does.
+- Post-1.0 (SSH terminal tab): ⌘U Upload File…, ⇧⌘D Download File…, ⌘+ / ⌘− terminal font size. Checked against every shortcut listed in this document (⌘N, ⌘D Discover, ⌘F, ⌘S, ⌘W, ⌘Q, ⌘K, ⌘Y, ⌘?, ⌘0, ⌘1…⌘9, ⌘⌥S, ⌘Return, ⌘., ⌘,, ⌃⌥⌘R): no clash (⇧⌘D differs from ⌘D); ⌘U, ⇧⌘D and ⌘+/⌘− are Claude's call (plan Task 12 asks to check them against the existing menus, which the builder must repeat against the real menu bar). They apply to a terminal tab only. On AZERTY, ⌘+ is the physical "=" key with ⇧ (shortcuts match the key code, Keyboard capture).
 - ⌘0 Library, ⌘1…⌘9 session tabs (Window › Session Tabs; the physical top-row keys, so AZERTY's ⌘& ⌘é… too, captured or not), ⌘K Claude Assistant Panel, ⌘Y Session History View, ⌘? Help (Help › What's New… has no shortcut).
 - Only the selected tab of the key window captures the keyboard, runs the system-shortcut tap and reads the local clipboard; leaving a tab releases every key held on its remote, and a background tab stops drawing but stays connected and up to date.
 - While a session has the keyboard captured, key combos go to the remote machine, with the exceptions in Keyboard capture below.
@@ -225,13 +278,15 @@ Capture states:
 
 Leaving Captured always releases, on the remote, every key, modifier (including the ⌃⌥⌘ of ⌃⌥⌘R) and mouse button still held.
 
+A terminal tab (SSH, post-1.0) has none of this: no capture state, no ⌃⌥⌘R, no `SystemShortcutTap`, no Accessibility prompt. Its view takes the keys a terminal needs while it is first responder and leaves the app's shortcuts (⌘1…⌘9, ⌘W, ⌘Y, ⌘?…) to the app.
+
 Accessibility prompt flow (system combos):
 1. Never at launch. The first time a capture starts in an app run without Accessibility access, the app shows the system prompt once ("RemoteDeck would like to control this computer using accessibility features"), then keeps working with the local shortcuts only.
 2. While access is missing and the keyboard is captured, the toolbar shows a button "System shortcuts need Accessibility access — Open Settings" next to the capture pill (T3.5); it opens System Settings › Privacy & Security › Accessibility. No further prompt in that run.
 3. Once granted, the next capture (click, or focus coming back) takes the system combos, without a restart *(expected; not yet verified live)*. If access is revoked while captured, the app drops the tap as soon as macOS announces the change; revoking with a tap active is a known macOS risk (system input can become unresponsive, Apple bug FB24619068, TRD › Input), so releasing the capture (⌃⌥⌘R) first is safer.
 ## Empty and blocked states
 
-Each state can be reproduced: by a hosted test through its model, or with a Debug `-LibraryDemo` mode (`empty`, `store-error`, `discovery-empty`, `discovery-blocked`, `discovery-failed`; `session` for the auth-failure banner; `watch` for the status dots and Status Notifications: three watched sample machines on fake probes every 3 s, "NAS" going offline and back, notifications printed on stderr instead of posted; `history` for the Session History View: fixed past records of every outcome, one older than 30 days, one left open by a "killed run", two of deleted machines, and a live "Mac mini" session in progress; `resilience` for the Interruptions: "Mac mini" and "NAS" drop 4 s after their first frame, "Mac mini" reconnects on its own, the automatic attempt of "NAS" fails to "Connection lost"; the network path and sleep/wake are the real ones, the connections stay fake). States marked with a later task are not built yet.
+Each state can be reproduced: by a hosted test through its model, or with a Debug `-LibraryDemo` mode (`empty`, `store-error`, `discovery-empty`, `discovery-blocked`, `discovery-failed`; `session` for the auth-failure banner; `watch` for the status dots and Status Notifications: three watched sample machines on fake probes every 3 s, "NAS" going offline and back, notifications printed on stderr instead of posted; `history` for the Session History View: fixed past records of every outcome, one older than 30 days, one left open by a "killed run", two of deleted machines, and a live "Mac mini" session in progress; `resilience` for the Interruptions: "Mac mini" and "NAS" drop 4 s after their first frame, "Mac mini" reconnects on its own, the automatic attempt of "NAS" fails to "Connection lost"; the network path and sleep/wake are the real ones, the connections stay fake). `ssh` (post-1.0) for the SSH terminal: one "Raspberry" SSH machine with two forwards, a fake connection printing a scripted login banner and prompt, a fake host-key prompt on the first Connect and a fake transfer, no network and no real `SSHConnection`. States marked with a later task are not built yet.
 
 - **Library in memory** (the on-disk store could not be opened): persistent orange banner across the bottom of the Library Window (at the top, the sidebar's search field covered it), "The library could not be opened — The library runs in memory: nothing you do now is saved, passwords included."
 - **Empty library:** illustration-free message "No machines yet", with two buttons: "Discover on network" (opens the Discovery Panel) and "Add manually".
