@@ -241,14 +241,23 @@ extension LibraryDemo {
 
     // MARK: Panels
 
+    /// Open in Browser: printed on stderr, never opened (nothing listens on the demo's ports).
+    struct URLOpener: URLOpening {
+        func open(_ url: URL) {
+            FileHandle.standardError.write(Data("[LibraryDemo ssh] open in browser: \(url.absoluteString)\n".utf8))
+        }
+    }
+
     /// Upload File… answers with a sample file written in the app's temporary folder (an accented
     /// name, 1.2 MB); Download File… saves into that folder. Never a real panel.
     @MainActor
     struct FileTransferPanels: RemoteDeck.FileTransferPanels {
         static let sampleName = "config été.toml"
 
+        /// Written once per run, then reused (the temporary folder keeps one copy).
         func chooseFilesToUpload() async -> [URL] {
             let url = FileManager.default.temporaryDirectory.appending(path: Self.sampleName)
+            if FileManager.default.fileExists(atPath: url.path) { return [url] }
             let line = "# RemoteDeck demo: sample configuration, uploaded nowhere\n"
             let text = String(repeating: line, count: 1_200_000 / line.utf8.count)
             guard (try? Data(text.utf8).write(to: url)) != nil else { return [] }

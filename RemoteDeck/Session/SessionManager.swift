@@ -201,7 +201,7 @@ final class SessionManager {
         let terminal = TerminalSessionModel(machine: machine, context: context, resolver: ssh.resolver(passwords: passwords),
                                             trust: ssh.trustedHostKeys, secrets: ssh.secrets, clock: clock,
                                             resilience: resilience, reconnectClock: reconnectClock,
-                                            makeConnection: makeSSHConnection)
+                                            urlOpener: AppPanels.urlOpener(), makeConnection: makeSSHConnection)
         terminal.isNetworkAvailable = { [weak self] in self?.isNetworkAvailable ?? true }
         openCount += 1
         terminal.openOrder = openCount

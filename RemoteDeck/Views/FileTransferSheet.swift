@@ -120,7 +120,7 @@ struct FileTransferSheet: View {
             } else {
                 ProgressView().progressViewStyle(.linear)
             }
-            Text(settings.t("transfer_progress", Self.bytes(done)).replacingOccurrences(of: "%@", with: Self.bytes(total)))
+            Text(settings.t("transfer_progress", bytes(done)).replacingOccurrences(of: "%@", with: bytes(total)))
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.secondary)
         }
@@ -150,8 +150,9 @@ struct FileTransferSheet: View {
         }
     }
 
-    private static func bytes(_ count: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
+    /// In the app's language (Settings › Language), as Session History does, not the system's.
+    private func bytes(_ count: Int64) -> String {
+        count.formatted(.byteCount(style: .file).locale(Locale(identifier: settings.localeIdentifier)))
     }
 
     // MARK: Buttons

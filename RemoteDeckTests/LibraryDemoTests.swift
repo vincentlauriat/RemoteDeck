@@ -83,10 +83,17 @@ struct LibraryDemoTests {
         #expect(AppPanels.fileTransferPanels(demo: true) is LibraryDemo.FileTransferPanels)
         #expect(AppPanels.keyFilePicker(demo: false) is OpenPanelKeyFilePicker)
         #expect(AppPanels.fileTransferPanels(demo: false) is SystemFileTransferPanels)
+        #expect(AppPanels.urlOpener(demo: true) is LibraryDemo.URLOpener)
+        #expect(AppPanels.urlOpener(demo: false) is WorkspaceURLOpener)
         // The demo's upload panel answers with a file it made in the app's temporary folder.
         let urls = await LibraryDemo.FileTransferPanels().chooseFilesToUpload()
         #expect(urls.count == 1)
         #expect(urls.allSatisfy { $0.path.hasPrefix(FileManager.default.temporaryDirectory.path) })
+        // One copy per run: a second ⌘U reuses it (same file, not rewritten).
+        let url = try #require(urls.first)
+        let written = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        #expect(await LibraryDemo.FileTransferPanels().chooseFilesToUpload() == urls)
+        #expect(try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate == written)
     }
 
     @Test func testSSHDemoUploadShowsProgressThenFinishes() async throws {
