@@ -1,4 +1,5 @@
 import AppKit
+import GhosttyEngine
 
 /// How the terminal looks: light or dark (the window's effective appearance), the font size
 /// (`AppSettings.terminalFontSize`, ⌘+ / ⌘−) and ⌥ as Meta (Settings › Terminal).
@@ -29,4 +30,314 @@ protocol TerminalSurface: AnyObject {
     func feed(_ data: Data)
     func showSeparator(_ text: String)
     func apply(_ appearance: TerminalAppearance)
+}
+
+/// The engine adapter (TRD › Architecture › SSH › Terminal engine): libghostty-vt (`VTTerminal`)
+/// fed with the shell's output, drawn by `TerminalView` from a row cache.
+///
+/// - Output: `feed` only queues the bytes; each frame parses at most `maxBytesPerFrame` of them, in
+///   `sliceSize` slices, and stops early when `frameBudget` is spent, then refreshes the dirty rows.
+///   What is left waits for the next frame: a flood (`yes`, the `cat` of a large log) never holds the
+///   main actor for more than about one budget, and no byte is ever dropped. The first bytes after a
+///   quiet spell are parsed at once (a typed key echoes without a frame of delay).
+/// - Frame: parse, `update()` the render state, rebuild only the dirty rows' layouts, invalidate their
+///   rects. `draw(_:)` reads the cache only, so drawing (and an offscreen `cacheDisplay`) never calls
+///   the engine.
+/// - Input: keys through libghostty-vt's key encoder (cursor-key mode, Kitty flags…), mouse through
+///   its mouse encoder while the program tracks the mouse, pastes bracketed when the program asked
+///   (mode 2004); the terminal's own replies (device attributes, status reports) go to `onInput` too.
+///   OSC 52 is ignored (no clipboard callback is installed).
+@MainActor
+final class GhosttyTerminalSurface: TerminalSurface {
+    static let sliceSize = 64 * 1024
+
+    let terminal: VTTerminal
+    private let terminalView: TerminalView
+    var view: NSView { terminalView }
+
+    var onInput: (Data) -> Void = { _ in }
+    /// Called with the current grid as soon as it is set, then on every change.
+    var onResize: (_ columns: Int, _ rows: Int) -> Void = { _, _ in } {
+        didSet { onResize(terminal.columns, terminal.rows) }
+    }
+    /// ⌘+ / ⌘− in the terminal (+1 / −1): the view stores the size (`AppSettings.terminalFontSize`)
+    /// and applies it back.
+    var onFontSizeStep: (Int) -> Void = { _ in }
+    /// ⌘1…⌘9 in the terminal (tab index from 0).
+    var onSelectTab: (Int) -> Void = { _ in }
+
+    /// One display frame.
+    static let frameInterval = 1.0 / 60
+    /// Most bytes parsed in one frame.
+    var maxBytesPerFrame = 2 << 20
+    /// Parsing stops once a frame has spent this long (checked between slices): half a frame, so
+    /// the rest of the main actor's work (drawing, input, the coalescer's delivery) keeps its share.
+    var frameBudget: Duration = .milliseconds(8)
+    /// Runs the next frame's work after the delay (what is left of the frame that just ran).
+    var scheduleFrame: (_ delay: TimeInterval, _ work: @escaping @MainActor () -> Void) -> Void = { delay, work in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated { work() } }
+    }
+
+    private(set) var appearance = TerminalAppearance(isDark: true, fontSize: TerminalFonts.defaultSize, optionAsMeta: false)
+    private(set) var theme = TerminalTheme.dark
+    let builder: TerminalRowBuilder
+    private(set) var rowLayouts: [TerminalRowLayout]
+
+    private var pending: [Data] = []
+    private var pendingOffset = 0
+    /// Bytes queued and not parsed yet.
+    private(set) var pendingBytes = 0
+    /// The most bytes ever queued at once (flood measurement).
+    private(set) var peakPendingBytes = 0
+    /// Bytes parsed since creation.
+    private(set) var parsedBytes = 0
+    private(set) var framesRun = 0
+    private var frameScheduled = false
+    private var needsFullRefresh = true
+    private var lastCursor: VTCursor?
+    private var lastFocused = false
+
+    init(columns: Int = 80, rows: Int = 24) {
+        terminal = VTTerminal(columns: columns, rows: rows)
+        builder = TerminalRowBuilder(fonts: TerminalFonts(size: TerminalFonts.defaultSize))
+        rowLayouts = Array(repeating: .empty, count: rows)
+        terminalView = TerminalView(frame: .zero)
+        terminalView.surface = self
+        terminal.onReply = { [weak self] bytes in self?.onInput(Data(bytes)) }
+        applyTheme()
+        refresh()
+    }
+
+    var grid: TerminalGrid { builder.grid }
+
+    // MARK: TerminalSurface
+
+    func feed(_ data: Data) {
+        guard !data.isEmpty else { return }
+        enqueue(data)
+    }
+
+    /// A dim full-width line where the previous shell ended. It goes through the same queue as the
+    /// output, after the old shell's last bytes; first it leaves whatever state that shell left
+    /// (a sequence cut mid-way, the alternate screen, mouse tracking, bracketed paste).
+    func showSeparator(_ text: String) {
+        let label = " \(text) "
+        let dashes = max(2, terminal.columns - label.count - 2)
+        let line = "──" + label + String(repeating: "─", count: dashes)
+        let reset = "\u{18}\u{1B}[0m\u{1B}[!p\u{1B}[?1049l\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1003l\u{1B}[?1006l\u{1B}[?2004l"
+        enqueue(Data((reset + "\r\n\u{1B}[2m" + line + "\u{1B}[0m\r\n").utf8))
+    }
+
+    func apply(_ appearance: TerminalAppearance) {
+        let previous = self.appearance
+        self.appearance = appearance
+        if appearance.fontSize != previous.fontSize || appearance.fontSize != builder.fonts.size {
+            builder.setFonts(TerminalFonts(size: appearance.fontSize))
+            layoutGrid()
+        }
+        if appearance.isDark != previous.isDark || theme != TerminalTheme.forAppearance(isDark: appearance.isDark) {
+            applyTheme()
+        }
+        needsFullRefresh = true
+        refresh()
+    }
+
+    private func applyTheme() {
+        theme = TerminalTheme.forAppearance(isDark: appearance.isDark)
+        terminal.setDefaultColors(foreground: theme.foreground, background: theme.background, cursor: theme.cursor)
+        terminal.setPalette(overriding: theme.ansi)
+        terminalView.themeChanged()
+        needsFullRefresh = true
+    }
+
+    // MARK: Output queue
+
+    private func enqueue(_ data: Data) {
+        pending.append(data)
+        pendingBytes += data.count
+        peakPendingBytes = max(peakPendingBytes, pendingBytes)
+        if !frameScheduled { runFrame() }
+    }
+
+    /// One frame: parse what the budget allows, refresh, and schedule the next frame if bytes are left.
+    func runFrame() {
+        frameScheduled = false
+        framesRun += 1
+        let clock = ContinuousClock()
+        let start = clock.now
+        var parsed = 0
+        while pendingBytes > 0, parsed < maxBytesPerFrame {
+            let chunk = pending[0]
+            let count = min(Self.sliceSize, chunk.count - pendingOffset, maxBytesPerFrame - parsed)
+            chunk.withUnsafeBytes { raw in
+                terminal.write(UnsafeRawBufferPointer(rebasing: raw[pendingOffset..<(pendingOffset + count)]))
+            }
+            pendingOffset += count
+            if pendingOffset == chunk.count {
+                pending.removeFirst()
+                pendingOffset = 0
+            }
+            parsed += count
+            pendingBytes -= count
+            if clock.now - start >= frameBudget { break }
+        }
+        parsedBytes += parsed
+        refresh()
+        if pendingBytes > 0 {
+            frameScheduled = true
+            let spent = clock.now - start
+            let left = max(0, Self.frameInterval - Double(spent.components.attoseconds) / 1e18 - Double(spent.components.seconds))
+            scheduleFrame(left) { [weak self] in self?.runFrame() }
+        }
+    }
+
+    // MARK: Grid
+
+    /// Columns and rows from the view's size; the engine and the server follow every change. Until
+    /// the view has a size the grid stays as created (80 × 24).
+    func layoutGrid() {
+        let bounds = terminalView.bounds.size
+        let grid = builder.grid
+        guard bounds.width >= grid.cellWidth + 2 * TerminalGrid.padding,
+              bounds.height >= grid.cellHeight + 2 * TerminalGrid.padding else { return }
+        let size = grid.size(fitting: bounds)
+        let scale = terminalView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let changed = size.columns != terminal.columns || size.rows != terminal.rows
+        terminal.resize(columns: size.columns, rows: size.rows,
+                        cellWidth: Int((grid.cellWidth * scale).rounded()), cellHeight: Int((grid.cellHeight * scale).rounded()))
+        if rowLayouts.count != terminal.rows { rowLayouts = Array(repeating: .empty, count: terminal.rows) }
+        needsFullRefresh = true
+        refresh()
+        if changed { onResize(terminal.columns, terminal.rows) }
+    }
+
+    // MARK: Render
+
+    /// Takes the engine's changes into the row cache and invalidates the rows that changed.
+    func refresh() {
+        let dirty = terminal.update()
+        let cursor = terminal.cursor
+        let focused = terminalView.isFocused
+        let cursorMoved = cursor != lastCursor || focused != lastFocused
+        guard needsFullRefresh || dirty != .clean || cursorMoved else { return }
+        let full = needsFullRefresh || dirty == .full || cursorMoved
+        let style = TerminalFrameStyle(theme: theme, colors: terminal.colors, cursor: cursor, focused: focused)
+        if rowLayouts.count != terminal.rows { rowLayouts = Array(repeating: .empty, count: terminal.rows) }
+        var changed: [Int] = []
+        for row in terminal.rows(onlyDirty: !full) where row.y < rowLayouts.count {
+            rowLayouts[row.y] = builder.layout(row, columns: terminal.columns, style: style)
+            changed.append(row.y)
+        }
+        terminal.markClean()
+        lastCursor = cursor
+        lastFocused = focused
+        if needsFullRefresh || dirty == .full {
+            terminalView.needsDisplay = true
+        } else {
+            for y in changed { terminalView.setNeedsDisplay(grid.rowRect(y, width: terminalView.bounds.width)) }
+        }
+        needsFullRefresh = false
+        terminalView.contentChanged()
+    }
+
+    /// The visible text, one line per row (accessibility).
+    var visibleText: String { rowLayouts.map(\.text).joined(separator: "\n") }
+
+    // MARK: Input
+
+    /// Encodes key events and sends their bytes. Typing scrolls back to the bottom and clears the
+    /// selection, as Ghostty does.
+    func send(_ events: [VTKeyEvent]) {
+        var sent = false
+        for event in events {
+            let bytes = terminal.encodeKey(event, optionAsAlt: appearance.optionAsMeta)
+            guard !bytes.isEmpty else { continue }
+            onInput(Data(bytes))
+            sent = true
+        }
+        if sent { inputSent() }
+    }
+
+    /// Text typed without a key event of its own (the character palette, an input method's commit).
+    func sendText(_ text: String) {
+        let sanitized = TerminalKeyTranslator.sanitized(text)
+        guard !sanitized.isEmpty else { return }
+        send([VTKeyEvent(key: .unidentified, text: sanitized)])
+    }
+
+    func paste(_ text: String) {
+        let bytes = terminal.encodePaste(text)
+        guard !bytes.isEmpty else { return }
+        onInput(Data(bytes))
+        inputSent()
+    }
+
+    private func inputSent() {
+        if terminal.hasSelection { terminal.clearSelection() }
+        if !terminal.isViewportAtBottom { terminal.scrollToBottom() }
+        refresh()
+    }
+
+    /// The selected text, as Ghostty copies it.
+    var selectionText: String? { terminal.selectionText() }
+
+    func select(from start: VTPoint, to end: VTPoint) {
+        terminal.select(from: start, to: end)
+        refresh()
+    }
+
+    func selectWord(at point: VTPoint) {
+        terminal.selectWord(at: point)
+        refresh()
+    }
+
+    func selectLine(at point: VTPoint) {
+        terminal.selectLine(at: point)
+        refresh()
+    }
+
+    func clearSelection() {
+        guard terminal.hasSelection else { return }
+        terminal.clearSelection()
+        refresh()
+    }
+
+    /// Reports a mouse event while the program tracks the mouse; `false` when it does not (the view
+    /// selects instead).
+    func reportMouse(_ event: VTMouseEvent, geometry: VTMouseGeometry, anyButtonPressed: Bool) -> Bool {
+        guard terminal.mouseTracking else { return false }
+        let bytes = terminal.encodeMouse(event, geometry: geometry, anyButtonPressed: anyButtonPressed)
+        if !bytes.isEmpty { onInput(Data(bytes)) }
+        return true
+    }
+
+    /// Scroll wheel by whole rows (negative: up). Reported as wheel buttons while the program tracks
+    /// the mouse; as arrow keys on the alternate screen with alternate scroll (mode 1007, a pager);
+    /// otherwise the viewport moves through the scrollback.
+    func scroll(rows: Int, at position: CGPoint, geometry: VTMouseGeometry, mods: VTMods) {
+        guard rows != 0 else { return }
+        if terminal.mouseTracking {
+            let button: VTMouseEvent.Button = rows < 0 ? .wheelUp : .wheelDown
+            for _ in 0..<abs(rows) {
+                let event = VTMouseEvent(action: .press, button: button, mods: mods, x: position.x, y: position.y)
+                let bytes = terminal.encodeMouse(event, geometry: geometry, anyButtonPressed: false)
+                if !bytes.isEmpty { onInput(Data(bytes)) }
+            }
+            return
+        }
+        if terminal.isAlternateScreen, terminal.mode(1007) {
+            let key: VTKey = rows < 0 ? .arrowUp : .arrowDown
+            for _ in 0..<abs(rows) {
+                let bytes = terminal.encodeKey(VTKeyEvent(key: key), optionAsAlt: false)
+                if !bytes.isEmpty { onInput(Data(bytes)) }
+            }
+            return
+        }
+        terminal.scroll(by: rows)
+        refresh()
+    }
+
+    func focusChanged() {
+        refresh()
+    }
 }

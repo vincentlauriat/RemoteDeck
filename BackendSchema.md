@@ -121,7 +121,7 @@ Lifecycle (T3.5, `SessionModel`): one record per attempt (Connect, Retry, Reconn
 | `onboardingCompleted` | Bool | false |
 | `historyRetentionDays` | Int | 365 |
 | `terminalOptionAsMeta` | Bool | false (post-1.0: Settings › Terminal › "Use ⌥ as Meta"; off as in Ghostty so AZERTY ⌥ characters keep working) |
-| `terminalFontSize` | Double | Ghostty's default size, to fix from the T7.1 report (post-1.0: ⌘+ / ⌘− in a terminal tab) |
+| `terminalFontSize` | Double | 13, Ghostty's default on macOS (T7.1 report); ⌘+ / ⌘− in a terminal tab or the Settings › Terminal stepper, kept within 8…36 |
 | `sshFolderBookmark` | Data | absent (post-1.0: the app-scoped security-scoped bookmark of the user's `~/.ssh` folder, made when the user grants it; per Mac, never synced; a stale bookmark reads as not granted) |
 | `trustedHostKeys` | `[String: [String: String]]` | empty (post-1.0: `["host:port": ["algorithm": "SHA256 fingerprint"]]`, host lowercased, algorithm = the key type (`rsa-sha2-256/512` stored as `ssh-rsa`), the host keys the user trusted on this Mac, and those `~/.ssh/known_hosts` matched (pinned); read entry by entry, a malformed value is dropped alone; per Mac, never synced; entries of a deleted machine are removed) |
 | `publicInternetConfirmed.<Machine.id>` | String | absent (T5.3: "Connect anyway" on the "Unencrypted connection over the Internet" sheet stores the host it was confirmed for, trimmed and lowercased; a different host counts as unconfirmed; per Mac, not synced; removed when the machine is deleted) |

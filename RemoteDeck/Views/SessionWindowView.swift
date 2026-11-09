@@ -43,7 +43,7 @@ struct SessionWindowView: View {
     let machineID: UUID
 
     @State private var session: SessionModel?
-    /// An SSH machine's terminal session (the terminal view comes with plan Task 9b).
+    /// An SSH machine's terminal session (`TerminalSessionView`).
     @State private var terminal: TerminalSessionModel?
     @State private var missing = false
     /// Another window already shows this machine: this one closes and leaves the session alone.
@@ -57,7 +57,7 @@ struct SessionWindowView: View {
             if let session {
                 content(session)
             } else if let terminal {
-                TerminalPlaceholderView(terminal: terminal, machineID: machineID)
+                TerminalSessionView(terminal: terminal, machineID: machineID)
             } else if missing {
                 ContentUnavailableView(settings.t("session_machine_missing"), systemImage: "questionmark.circle")
             } else {
@@ -335,52 +335,5 @@ struct SessionWindowView: View {
             }
             .help(settings.t("session_disconnect"))
         }
-    }
-}
-
-/// Stand-in for the terminal tab until the terminal view exists (plan Task 9b): the tab joins the
-/// Session Window and closes like a screen session (`willClose` → `SessionManager.close`), and shows
-/// the session's state.
-private struct TerminalPlaceholderView: View {
-    @Environment(AppSettings.self) private var settings
-    @Environment(SessionManager.self) private var manager
-    @Environment(\.dismissWindow) private var dismissWindow
-    let terminal: TerminalSessionModel
-    let machineID: UUID
-
-    var body: some View {
-        VStack(spacing: 12) {
-            switch terminal.phase {
-            case .connecting, .waiting:
-                ProgressView().controlSize(.large)
-                Text(settings.t(terminal.overlay == .reconnecting ? "session_reconnecting" : "session_connecting",
-                                terminal.target.name))
-            case .failed(let failure):
-                Text(failure.message(settings.t)).multilineTextAlignment(.center)
-                if failure.action != .close {
-                    Button(settings.t("session_retry")) { terminal.connect() }
-                }
-            case .ended:
-                Text(settings.t("terminal_shell_ended"))
-                Button(settings.t("session_reconnect")) { terminal.connect() }
-            case .idle, .connected, .closed:
-                Image(systemName: "terminal").font(.largeTitle)
-            }
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background {
-            SessionWindowAccessor(onAttach: { [terminal] window in
-                terminal.bringWindowForward = { [weak window] in
-                    if let window { SessionTabs.select(window) }
-                }
-                SessionTabs.prepare(window)
-                Task { @MainActor in SessionTabs.adopt(window, order: terminal.openOrder) }
-            }, onClose: { [machineID, manager] window in
-                SessionTabs.forget(window)
-                manager.close(machineID)
-            })
-        }
-        .navigationTitle(terminal.target.name)
     }
 }

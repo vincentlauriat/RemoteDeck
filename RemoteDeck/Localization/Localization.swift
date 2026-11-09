@@ -103,6 +103,8 @@ final class AppSettings {
         static let defaultSharedClipboard = "defaultSharedClipboard"
         static let onboardingCompleted = "onboardingCompleted"
         static let historyRetentionDays = "historyRetentionDays"
+        static let terminalOptionAsMeta = "terminalOptionAsMeta"
+        static let terminalFontSize = "terminalFontSize"
     }
 
     /// The Claude Assistant's model (`ClaudeAPI.defaultModel`, Claude Opus 5.5).
@@ -140,6 +142,24 @@ final class AppSettings {
     var historyRetentionDays: Int {
         didSet { defaults.set(historyRetentionDays, forKey: Key.historyRetentionDays) }
     }
+    /// Settings › Terminal › "Use ⌥ as Meta": off by default as in Ghostty, so ⌥ types the layout's
+    /// characters (AZERTY ⌥⇧L = |).
+    var terminalOptionAsMeta: Bool {
+        didSet { defaults.set(terminalOptionAsMeta, forKey: Key.terminalOptionAsMeta) }
+    }
+    /// The terminal font size in points (⌘+ / ⌘− in a terminal tab), Ghostty's 13 by default; the
+    /// steps and the stored value are kept within `terminalFontSizeRange`.
+    var terminalFontSize: Double {
+        didSet { defaults.set(terminalFontSize, forKey: Key.terminalFontSize) }
+    }
+    static let defaultTerminalFontSize: Double = 13
+    static let terminalFontSizeRange: ClosedRange<Double> = 8...36
+
+    /// One ⌘+ / ⌘− step.
+    func stepTerminalFontSize(_ step: Int) {
+        let next = (terminalFontSize + Double(step)).rounded()
+        terminalFontSize = min(max(next, Self.terminalFontSizeRange.lowerBound), Self.terminalFontSizeRange.upperBound)
+    }
 
     /// Clé API Anthropic, stockée dans le Keychain (compte `anthropic.apiKey`, non synchronisé),
     /// jamais dans UserDefaults. Changée seulement par `storeAPIKey` (après le contrôle du préfixe et
@@ -163,6 +183,9 @@ final class AppSettings {
         onboardingCompleted = defaults.object(forKey: Key.onboardingCompleted) as? Bool ?? false
         historyRetentionDays = defaults.object(forKey: Key.historyRetentionDays) as? Int
             ?? Self.defaultHistoryRetentionDays
+        terminalOptionAsMeta = defaults.object(forKey: Key.terminalOptionAsMeta) as? Bool ?? false
+        let storedFontSize = defaults.object(forKey: Key.terminalFontSize) as? Double ?? Self.defaultTerminalFontSize
+        terminalFontSize = min(max(storedFontSize, Self.terminalFontSizeRange.lowerBound), Self.terminalFontSizeRange.upperBound)
         do {
             anthropicAPIKey = try apiKeys.readKey() ?? ""
         } catch {

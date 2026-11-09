@@ -15,6 +15,12 @@ packages:
   # Packages/Vendor and reached only through SSHKit; see Packages/Vendor/PATCHES.md.
   SSHKit:
     path: Packages/SSHKit
+  # The SSH terminal's engine: libghostty-vt 1.0.0 (prebuilt XCFramework, pinned by URL and SHA-256 in
+  # its manifest) behind a thin Swift module, GhosttyEngine. Linked by the app only: the test bundle
+  # reaches it through `@testable import RemoteDeck` (a second copy of the static library would
+  # duplicate its globals).
+  GhosttyVT:
+    path: Packages/GhosttyVT
   # Auto-update (T6.3). Pinned to one release: Scripts/release.sh fetches the same version's
   # sign_update (SPARKLE_VERSION there), checked against the tarball's SHA-256.
   Sparkle:
@@ -37,6 +43,7 @@ schemes:
         - package: RemoteDeckCore/RemoteDeckCoreTests
         - package: ClaudeKit/ClaudeKitTests
         - package: SSHKit/SSHKitTests
+        - package: GhosttyVT/GhosttyEngineTests
 
 targets:
   RemoteDeck:
@@ -53,6 +60,8 @@ targets:
       - package: RemoteDeckCore
       - package: ClaudeKit
       - package: SSHKit
+      - package: GhosttyVT
+        product: GhosttyEngine
       - package: Sparkle
     settings:
       base:
