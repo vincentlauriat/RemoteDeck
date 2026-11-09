@@ -709,6 +709,61 @@ final class TerminalSessionModel {
         urlOpener.open(url)
     }
 
+    // MARK: File transfer (Task 12)
+
+    /// The File Transfer Sheet's model while it shows (one at a time); ended and dropped when the
+    /// sheet is done, and when the session stops (its SFTP session goes with the connection).
+    private(set) var fileTransfer: FileTransferModel?
+    @ObservationIgnored var fileTransferPanels: any FileTransferPanels = NoFileTransferPanels()
+    @ObservationIgnored var transferTemporaryRoot = FileManager.default.temporaryDirectory
+
+    /// Upload File… / Download File… and drops: only while the shell is up, one sheet at a time.
+    var canTransferFiles: Bool { phase == .connected && connection != nil && fileTransfer == nil }
+
+    /// A drop on the terminal, or the open panel's files: the sheet, pre-filled with the remote home.
+    func beginUpload(_ urls: [URL]) {
+        guard !urls.isEmpty, let model = makeFileTransfer(.upload) else { return }
+        fileTransfer = model
+        model.drop(urls)
+    }
+
+    /// Upload File… (⌘U): the open panel, then the sheet.
+    func chooseFilesToUpload() async {
+        guard canTransferFiles else { return }
+        let urls = await fileTransferPanels.chooseFilesToUpload()
+        guard canTransferFiles else { return }
+        beginUpload(urls)
+    }
+
+    /// Download File… (⇧⌘D): the sheet asks the remote path.
+    func beginDownload() {
+        guard let model = makeFileTransfer(.download) else { return }
+        fileTransfer = model
+        model.prepare()
+    }
+
+    /// The sheet's Cancel or Done: stops what runs and releases the SFTP session.
+    func endFileTransfer() {
+        fileTransfer?.cancel()
+        fileTransfer = nil
+    }
+
+    /// A model whose SFTP session is opened on this attempt's connection; one that opens after the
+    /// attempt is gone is closed at once (it would hold one of the server's `MaxSessions`).
+    private func makeFileTransfer(_ kind: FileTransferModel.Kind) -> FileTransferModel? {
+        guard canTransferFiles, let connection else { return nil }
+        let generation = generation
+        return FileTransferModel(kind: kind, panels: fileTransferPanels, temporaryRoot: transferTemporaryRoot) {
+            [weak self] in
+            let handle = try await connection.fileTransfer()
+            guard let self, self.isCurrent(connection, generation: generation) else {
+                await handle.close()
+                throw SSHError.connectionClosed
+            }
+            return handle
+        }
+    }
+
     // MARK: Host key
 
     /// The validator of attempt `generation`, on the main actor. Trusted: go on. Changed: refuse,
@@ -940,6 +995,8 @@ final class TerminalSessionModel {
         let coalescer = self.coalescer
         let forwards = Array(forwardHandles.values)
         let starting = Array(forwardTasks.values)
+        fileTransfer?.cancel()   // its SFTP session closes once the transfer stopped
+        fileTransfer = nil
         forwardHandles = [:]
         forwardTasks = [:]
         for id in forwardStates.keys { forwardStates[id] = .stopped }

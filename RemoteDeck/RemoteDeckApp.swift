@@ -251,6 +251,7 @@ struct RemoteDeckApp: App {
             UpdateCommands(settings: settings, updater: updater)
             LibraryCommands(settings: settings)
             SessionTabCommands(settings: settings, sessions: sessions)
+            FileTransferCommands(settings: settings)
             HelpCommands(settings: settings)
         }
 

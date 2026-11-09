@@ -17,6 +17,8 @@ struct TerminalSessionView: View {
 
     @State private var surface: GhosttyTerminalSurface?
     @State private var editorRequest: EditorRequest?
+    /// Files hover over the terminal and would be taken (Task 12).
+    @State private var isDropTargeted = false
 
     private var appearance: TerminalAppearance {
         TerminalAppearance(isDark: colorScheme == .dark, fontSize: CGFloat(settings.terminalFontSize),
@@ -41,6 +43,7 @@ struct TerminalSessionView: View {
                     .allowsHitTesting(false)
             }
             if let overlay = terminal.overlay { connectingOverlay(overlay) }
+            if isDropTargeted { dropHighlight }
         }
         .background(Color(nsColor: TerminalTheme.forAppearance(isDark: colorScheme == .dark).background.nsColor))
         .background {
@@ -73,6 +76,11 @@ struct TerminalSessionView: View {
             }
         }
         .navigationTitle(terminal.target.name)
+        .focusedSceneValue(\.terminalFileActions, TerminalFileActions(
+            canTransfer: terminal.canTransferFiles,
+            upload: { [terminal] in Task { await terminal.chooseFilesToUpload() } },
+            download: { [terminal] in terminal.beginDownload() }
+        ))
         .onAppear(perform: attachSurface)
         .onChange(of: appearance) { _, new in surface?.apply(new) }
         .onChange(of: terminal.phase) { _, phase in focusIfConnected(phase) }
@@ -85,6 +93,14 @@ struct TerminalSessionView: View {
                 if let prompt = terminal.hostKeyPrompt {
                     HostKeySheet(prompt: prompt, onTrust: { terminal.trustHostKey() },
                                  onCancel: { terminal.rejectHostKey() })
+                }
+            }
+        }
+        .background {
+            Color.clear.sheet(isPresented: Binding(get: { terminal.fileTransfer != nil }, set: { _ in })) {
+                if let transfer = terminal.fileTransfer {
+                    FileTransferSheet(model: transfer, machineName: terminal.target.name,
+                                      onEnd: { terminal.endFileTransfer() })
                 }
             }
         }
@@ -143,6 +159,11 @@ struct TerminalSessionView: View {
         engine.accessibilityLabel = settings.t("terminal_accessibility_label")
         engine.onFontSizeStep = { [settings] step in settings.stepTerminalFontSize(step) }
         engine.onSelectTab = { index in _ = SessionTabs.selectTab(at: index) }
+        let targeted = $isDropTargeted
+        engine.acceptsFileDrop = { [terminal] in terminal.canTransferFiles }
+        engine.onDropTargeted = { targeted.wrappedValue = $0 }
+        engine.onDropFiles = { [terminal] urls in terminal.beginUpload(urls) }
+        terminal.fileTransferPanels = SystemFileTransferPanels()
         terminal.separatorText = { [settings] in settings.t("terminal_reconnected_separator") }
         if terminal.surface !== engine { terminal.attach(engine) }
         surface = engine
@@ -155,6 +176,22 @@ struct TerminalSessionView: View {
         Task { @MainActor in
             if let window = view.window, window.firstResponder !== view { window.makeFirstResponder(view) }
         }
+    }
+
+    /// Files hovering over the terminal: an accent frame and where they go.
+    private var dropHighlight: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(Color.accentColor, lineWidth: 3)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.12)))
+            .overlay {
+                Label(settings.t("transfer_drop_hint", terminal.target.name), systemImage: "arrow.up.doc")
+                    .font(.system(size: 15, weight: .medium))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.regularMaterial, in: Capsule())
+            }
+            .padding(4)
+            .allowsHitTesting(false)
     }
 
     // MARK: Overlay and banners

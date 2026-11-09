@@ -69,6 +69,11 @@ final class GhosttyTerminalSurface: TerminalSurface {
     }
     /// ⌘1…⌘9 in the terminal (tab index from 0).
     var onSelectTab: (Int) -> Void = { _ in }
+    /// Files dragged onto the terminal (Task 12): whether a drop is taken now (the shell is up and
+    /// no transfer sheet shows), the highlight while one hovers, then the files dropped.
+    var acceptsFileDrop: () -> Bool = { false }
+    var onDropTargeted: (Bool) -> Void = { _ in }
+    var onDropFiles: ([URL]) -> Void = { _ in }
 
     /// One display frame.
     static let frameInterval = 1.0 / 60

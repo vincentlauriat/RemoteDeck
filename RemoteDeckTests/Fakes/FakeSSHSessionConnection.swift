@@ -37,10 +37,15 @@ actor FakeSSHSessionConnection: SSHSessionConnection {
     /// Every start asked, in order, and the forwards handed out.
     private(set) var forwardStarts: [(localPort: UInt16, remoteHost: String, remotePort: UInt16)] = []
     private(set) var forwards: [FakeForward] = []
+    /// What `fileTransfer()` hands out (Task 12); nil: `.sftpUnavailable`.
+    private let transfer: (any FileTransferring)?
+    private(set) var fileTransferOpenCount = 0
 
     init(log: SessionLog, hostKey: SSHHostKey, openResult: Result<Void, SSHError> = .success(()),
          shellResult: Result<Void, SSHError> = .success(()), hangsAfterValidation: Bool = false,
-         shellHangs: Bool = false, forwardFailures: [UInt16: SSHError] = [:], forwardHangs: Set<UInt16> = []) {
+         shellHangs: Bool = false, forwardFailures: [UInt16: SSHError] = [:], forwardHangs: Set<UInt16> = [],
+         fileTransfer: (any FileTransferring)? = nil) {
+        transfer = fileTransfer
         self.shellHangs = shellHangs
         self.forwardFailures = forwardFailures
         self.forwardHangs = forwardHangs
@@ -134,7 +139,11 @@ actor FakeSSHSessionConnection: SSHSessionConnection {
     }
 
     func fileTransfer() async throws(SSHError) -> any FileTransferring {
-        throw .sftpUnavailable
+        log.append("sftp")
+        fileTransferOpenCount += 1
+        guard !isClosed else { throw .connectionClosed }
+        guard let transfer else { throw .sftpUnavailable }
+        return transfer
     }
 
     func close() async {

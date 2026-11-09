@@ -38,6 +38,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityLabel("Terminal")
+        registerForDraggedTypes([.fileURL])
     }
 
     @available(*, unavailable)
@@ -134,6 +135,38 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         guard let surface else { return }
         let y = surface.terminal.cursor?.y ?? 0
         setNeedsDisplay(surface.grid.rowRect(y, width: bounds.width))
+    }
+
+    // MARK: File drop (Task 12)
+
+    /// The file URLs on a drag's pasteboard (the sandbox lets the app read the dropped files).
+    private func droppedFileURLs(_ info: any NSDraggingInfo) -> [URL] {
+        let objects = info.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                          options: [.urlReadingFileURLsOnly: true])
+        return (objects as? [URL]) ?? []
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        guard let surface, surface.acceptsFileDrop(), !droppedFileURLs(sender).isEmpty else { return [] }
+        surface.onDropTargeted(true)
+        return .copy
+    }
+
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        surface?.onDropTargeted(false)
+    }
+
+    override func draggingEnded(_ sender: any NSDraggingInfo) {
+        surface?.onDropTargeted(false)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard let surface else { return false }
+        surface.onDropTargeted(false)
+        let urls = droppedFileURLs(sender)
+        guard surface.acceptsFileDrop(), !urls.isEmpty else { return false }
+        surface.onDropFiles(urls)
+        return true
     }
 
     // MARK: Accessibility
