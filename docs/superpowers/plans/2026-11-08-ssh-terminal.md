@@ -116,7 +116,8 @@ git commit -m "docs: report the SSH library and terminal engine spike"
 @Test func commaSeparatedHostsAndIPs()        // "raspcorse,192.168.1.20 …" matches both names
 @Test func sameAlgorithmDifferentKeyIsMismatch()
 @Test func otherAlgorithmOnlyIsNotFound()     // Review Focus 1: file has ssh-rsa only, server shows ssh-ed25519 → .notFound
-@Test func markersAndCommentsIgnored()        // "@revoked", "@cert-authority", "#…" lines never match
+@Test func markersAndCommentsIgnored()        // "@cert-authority" and "#…" lines never match
+@Test func revokedExactKeyBlocksEvenWhenAnotherLineMatches()   // "@revoked" holding the presented key → .mismatch (blocked; ruling during Task 3: OpenSSH refuses revoked keys)
 ```
 
 - [ ] **Step 2: Run** `swift test --filter KnownHostsTests` — expected: FAIL.

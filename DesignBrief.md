@@ -29,7 +29,7 @@ System colors are used everywhere so that light/dark mode and the user's accent 
 | Warning (public IP, slow link) | `systemOrange` | `#FF9500` | `#FF9F0A` |
 | Error (offline, auth failed) | `systemRed` | `#FF3B30` | `#FF453A` |
 | Info / Claude activity | `systemPurple` | `#AF52DE` | `#BF5AF2` |
-| Terminal area (post-1.0) | Ghostty's palette, not a system color | A Ghostty light theme (the bundled one closest to Ghostty's default, picked by the builder) | Ghostty's default dark palette |
+| Terminal area (post-1.0) | Ghostty's palette, not a system color | Ghostty's bundled "Tomorrow" theme (chosen in T7.1) | Ghostty's default dark palette |
 
 The terminal follows the **system appearance** (Vincent, 2026-11-08): Ghostty's default dark palette in dark mode and a matching light palette in light mode (`TerminalAppearance.isDark` from the effective appearance). Vincent runs Ghostty 1.4.0 with no config file, so "like Ghostty" means its defaults: font, cursor, rendering, scrollback. The terminal fills its own area with the palette's background (not the fixed black of the screen session).
 
@@ -42,7 +42,7 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 - Body / forms: 13 pt regular.
 - Overlay message ("Connecting…"): 15 pt medium, white on 60 % black.
 - Monospaced values: SF Mono 12 pt.
-- Terminal text (post-1.0): Ghostty's default font and size, JetBrains Mono 13 pt (bundled, SIL OFL 1.1; the system monospaced font if it cannot be loaded), not SF Mono; ⌘+ / ⌘− change the size. Colours: dark = Ghostty's defaults (#282C34 / #FFFFFF, its built-in palette, selection by swapping foreground and background); light = Ghostty's bundled "Tomorrow" theme (#FFFFFF / #4D4D4C, selection #D6D6D6). Cursor: a block, hollow when the terminal is not focused.
+- Terminal text (post-1.0): Ghostty's default font and size, JetBrains Mono 13 pt (bundled, SIL OFL 1.1; the system monospaced font if it cannot be loaded), not SF Mono; ⌘+ / ⌘− change the size (no ⌘0 reset: ⌘0 stays the Library Window; Settings › Terminal has a "Text size" stepper). Colours: dark = Ghostty's defaults (#282C34 / #FFFFFF, its built-in palette, selection by swapping foreground and background); light = Ghostty's bundled "Tomorrow" theme (#FFFFFF / #4D4D4C, selection #D6D6D6). Cursor: a block, hollow when the terminal is not focused.
 
 ## Components
 
