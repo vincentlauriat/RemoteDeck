@@ -334,37 +334,8 @@ final class TerminalSessionModel {
     }
 
     private func run(generation: Int) async {
-        guard let credentials = await credentials(generation: generation) else { return }
-        guard generation == self.generation else { return }
-        let connection = makeConnection(target)
-        self.connection = connection
-        let validate: @Sendable (SSHHostKey) async -> Bool = { [weak self] key in
-            await self?.checkHostKey(key, generation: generation) ?? false
-        }
-        // Untyped closures: a typed-throws `Task` closure crashes the Swift 6.4 compiler (RFBKit note).
-        let opening = Task {
-            try await connection.open(credentials: credentials, timeout: Self.openTimeout, validateHostKey: validate)
-        }
-        self.opening = opening
-        let shell: any SSHShellChannel
-        var openedSize = size
-        do {
-            try await opening.value
-            openingEnded(generation: generation)
-            guard generation == self.generation else { return }
-            openedSize = size
-            let size = openedSize
-            shell = try await Task {
-                try await connection.openShell(term: Self.term, columns: size.columns, rows: size.rows)
-            }.value
-        } catch {
-            openingEnded(generation: generation)
-            dismissPrompts()   // `open` ended under a prompt: the connection died
-            guard generation == self.generation else { return }
-            await stop(failing: openFailure(error, generation: generation), generation: generation)
-            return
-        }
-        guard generation == self.generation else { return }
+        guard let (connection, shell, openedSize) = await establish(generation: generation),
+              generation == self.generation else { return }
         shellOpened(shell, size: openedSize)
         guard let coalescer else { return }
         let deliver: @MainActor @Sendable (Data) -> Void = { [weak self] data in
@@ -407,6 +378,45 @@ final class TerminalSessionModel {
             group.cancelAll()
             return first ?? nil
         }
+    }
+
+    /// Credentials, `open`, then the shell; nil when the attempt stopped (its failure is shown). The
+    /// credentials live only in this frame and in the `opening` task, so the long-running read of
+    /// the output never holds them (SSHKit's authentication handler keeps its own copy for the
+    /// connection's life).
+    private func establish(generation: Int) async
+        -> (connection: any SSHSessionConnection, shell: any SSHShellChannel, size: (columns: Int, rows: Int))? {
+        guard let credentials = await credentials(generation: generation) else { return nil }
+        guard generation == self.generation else { return nil }
+        let connection = makeConnection(target)
+        self.connection = connection
+        let validate: @Sendable (SSHHostKey) async -> Bool = { [weak self] key in
+            await self?.checkHostKey(key, generation: generation) ?? false
+        }
+        // Untyped closures: a typed-throws `Task` closure crashes the Swift 6.4 compiler (RFBKit note).
+        let opening = Task {
+            try await connection.open(credentials: credentials, timeout: Self.openTimeout, validateHostKey: validate)
+        }
+        self.opening = opening
+        let shell: any SSHShellChannel
+        var openedSize = size
+        do {
+            try await opening.value
+            openingEnded(generation: generation)
+            guard generation == self.generation else { return nil }
+            openedSize = size
+            let size = openedSize
+            shell = try await Task {
+                try await connection.openShell(term: Self.term, columns: size.columns, rows: size.rows)
+            }.value
+        } catch {
+            openingEnded(generation: generation)
+            dismissPrompts()   // `open` ended under a prompt: the connection died
+            guard generation == self.generation else { return nil }
+            await stop(failing: openFailure(error, generation: generation), generation: generation)
+            return nil
+        }
+        return (connection, shell, openedSize)
     }
 
     private func openingEnded(generation: Int) {
