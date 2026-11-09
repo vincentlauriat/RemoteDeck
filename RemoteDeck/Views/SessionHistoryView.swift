@@ -8,7 +8,9 @@ enum HistoryWindow {
 
 extension HistoryOutcome {
     var titleKey: String { "outcome_\(rawValue)" }
-    var isFailure: Bool { self == .authFailed || self == .unreachable || self == .dropped || self == .interrupted }
+    var isFailure: Bool {
+        self == .authFailed || self == .unreachable || self == .dropped || self == .hostKeyRejected || self == .interrupted
+    }
 }
 
 /// Session History View (AppFlow › Session History View, DesignBrief): the 30-day summary strip above
@@ -191,7 +193,8 @@ struct SessionHistoryView: View {
 
     private func failures(_ summary: HistorySummary) -> String {
         let parts = [(HistoryOutcome.authFailed, summary.authFailed), (.unreachable, summary.unreachable),
-                     (.dropped, summary.dropped), (.interrupted, summary.interrupted), (.cancelled, summary.cancelled)]
+                     (.dropped, summary.dropped), (.hostKeyRejected, summary.hostKeyRejected),
+                     (.interrupted, summary.interrupted), (.cancelled, summary.cancelled)]
             .map { "\(settings.t($0.0.titleKey)) \($0.1)" }
         return parts.joined(separator: " · ")
     }

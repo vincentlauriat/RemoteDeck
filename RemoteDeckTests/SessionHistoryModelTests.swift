@@ -283,3 +283,14 @@ struct MenuBarMenuTests {
         manager.close(nas.id)
     }
 }
+
+@MainActor
+struct HistoryOutcomeStyleTests {
+    /// A refused SSH host key (declined or changed) shows red like the other failures.
+    @Test func hostKeyRejectedIsAFailure() {
+        #expect(HistoryOutcome.hostKeyRejected.isFailure)
+        #expect(HistoryOutcome.authFailed.isFailure && HistoryOutcome.dropped.isFailure)
+        #expect(!HistoryOutcome.connected.isFailure && !HistoryOutcome.cancelled.isFailure)
+        #expect(english(HistoryOutcome.hostKeyRejected.titleKey) == "Host key rejected")
+    }
+}

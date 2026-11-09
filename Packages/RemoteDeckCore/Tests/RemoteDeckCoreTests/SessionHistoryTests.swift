@@ -49,6 +49,21 @@ struct HistorySummaryTests {
         #expect(summary.interrupted == 1)
     }
 
+    /// A refused SSH host key (declined or changed) is a failure of its own, never a session.
+    @Test func hostKeyRejectionsAreCountedAsFailures() {
+        let entries = [
+            entry(ago: 100, connect: 900, lasts: 60),
+            entry(nas, "NAS", ago: 200, lasts: 1, outcome: .hostKeyRejected),
+            entry(nas, "NAS", ago: 300, lasts: 12, outcome: .hostKeyRejected),   // a slow prompt: slow failure
+            entry(ago: 400, lasts: 1, outcome: .authFailed),
+        ]
+        let summary = HistorySummary(entries, now: now)
+        #expect(summary.hostKeyRejected == 2)
+        #expect(summary.authFailed == 1)
+        #expect(summary.sessions == 1)
+        #expect(summary.slowFailures == 1)
+    }
+
     /// Floored to 0.1 %: 89.96 % never shows as 90 %.
     @Test func displayedShareIsFloored() {
         #expect(HistorySummary.displayShare(0.8996) == 0.899)
