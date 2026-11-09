@@ -82,13 +82,44 @@ struct FileTransferLoopbackTests {
         await rig.stop()
     }
 
+    @Test func overwriteKeepsTheTargetsMode() async throws {
+        let rig = try await SFTPRig.start()
+        let transfer = try await rig.transfer()
+        for mode in [0o600, 0o755] as [mode_t] {
+            let local = try rig.makeLocalFile("tool-\(mode)", bytes: 4000)
+            let remote = rig.home.appendingPathComponent("tool-\(mode)")
+            try Data("old".utf8).write(to: remote)
+            #expect(chmod(remote.path, mode) == 0)
+            try await bounded {
+                try await transfer.upload(local, toDirectory: rig.homePath, overwrite: true) { _, _ in }
+            }
+            #expect(try sha256(remote) == sha256(local))
+            #expect(try fileMode(remote) == mode, "mode \(String(mode, radix: 8))")
+        }
+        await rig.stop()
+    }
+
+    @Test func stalePartFileIsReplaced() async throws {
+        // A part file left by a dropped connection, longer than the new upload: truncated and reused.
+        let rig = try await SFTPRig.start()
+        let local = try rig.makeLocalFile("app.conf", bytes: 1000)
+        try randomData(50_000).write(to: rig.home.appendingPathComponent("app.conf.remotedeck-part"))
+        let transfer = try await rig.transfer()
+        try await bounded {
+            try await transfer.upload(local, toDirectory: rig.homePath, overwrite: false) { _, _ in }
+        }
+        #expect(try sha256(rig.home.appendingPathComponent("app.conf")) == sha256(local))
+        #expect(rig.remoteNames() == [Array("app.conf".utf8)])
+        await rig.stop()
+    }
+
     @Test func missingDirectoryThrowsAndLeavesNothing() async throws {
         let rig = try await SFTPRig.start()
         let local = try rig.makeLocalFile("a.txt", bytes: 100)
         try Data("x".utf8).write(to: rig.home.appendingPathComponent("plain-file"))
         let transfer = try await rig.transfer()
         let before = try treeNames(rig.root)
-        for directory in [rig.homePath + "/missing", "/nowhere/at/all", rig.homePath + "/plain-file"] {
+        for directory in [rig.homePath + "/missing", "/nowhere/at/all", rig.homePath + "/plain-file", ""] {
             await #expect(throws: SSHError.noSuchDirectory(directory)) {
                 try await bounded {
                     try await transfer.upload(local, toDirectory: directory, overwrite: true) { _, _ in }
@@ -103,11 +134,12 @@ struct FileTransferLoopbackTests {
         // The server's TCP connection drops after 1 MB of a 3 MB upload. The target name never
         // appears: the bytes went to the part file, renamed only once complete. (The part file
         // itself can remain: with the connection gone, nothing can reach the server to remove it.)
+        // The rig has no keepalive and the bound is 10 s: the drop is seen from the TCP close.
         let rig = try await SFTPRig.start(dropConnectionAfterBytes: 1024 * 1024)
         let local = try rig.makeLocalFile("big.bin", bytes: 3 * 1024 * 1024)
         let transfer = try await rig.transfer()
         await #expect(throws: SSHError.connectionClosed) {
-            try await bounded(.seconds(30)) {
+            try await bounded(.seconds(10)) {
                 try await transfer.upload(local, toDirectory: rig.homePath, overwrite: false) { _, _ in }
             }
         }
@@ -245,7 +277,7 @@ struct FileTransferLoopbackTests {
         let transfer = try await rig.transfer()
         let destination = rig.local.appendingPathComponent("remote.bin")
         await #expect(throws: SSHError.connectionClosed) {
-            try await bounded(.seconds(30)) {
+            try await bounded(.seconds(10)) {
                 try await transfer.download(rig.homePath + "/remote.bin", to: destination) { _, _ in }
             }
         }
@@ -328,6 +360,52 @@ struct FileTransferLoopbackTests {
         await rig.stop()
     }
 
+    @Test func closedTransfersReleaseTheirSessions() async throws {
+        // The server allows 3 sessions at once; 15 transfers opened and closed in turn all work.
+        let rig = try await SFTPRig.start(maxSessions: 3)
+        let connection = rig.connection
+        for _ in 0 ..< 15 {
+            let transfer = try await bounded { try await connection.fileTransfer() }
+            #expect(try await bounded { try await transfer.homeDirectory() } == "/home/tester")
+            await transfer.close()
+            await transfer.close()  // idempotent
+            await #expect(throws: SSHError.connectionClosed) {
+                try await bounded { try await transfer.homeDirectory() }
+            }
+        }
+        #expect(rig.server.record.refusedSessions == 0)
+        #expect(await pollAsync(within: .seconds(5)) { rig.server.record.openSessions == 0 })
+        await rig.stop()
+    }
+
+    @Test func droppedTransferReleasesItsSession() async throws {
+        let rig = try await SFTPRig.start()
+        let connection = rig.connection
+        do {
+            let transfer = try await bounded { try await connection.fileTransfer() }
+            _ = try await bounded { try await transfer.homeDirectory() }
+        }
+        // The last reference is gone: deinit closed the channel.
+        #expect(await pollAsync(within: .seconds(5)) { rig.server.record.openSessions == 0 })
+        await rig.stop()
+    }
+
+    @Test func concurrentLookupsShareOneControlChannel() async throws {
+        let rig = try await SFTPRig.start()
+        let transfer = try await rig.transfer()
+        // Make the control channel need reopening, then ask from many tasks at once.
+        await transfer.dropControlChannelForTests()
+        #expect(await pollAsync(within: .seconds(5)) { rig.server.record.openSessions == 0 })
+        try await withThrowingTaskGroup(of: Bool.self) { group in
+            for _ in 0 ..< 8 {
+                group.addTask { try await transfer.exists(rig.homePath) }
+            }
+            for try await found in group { #expect(found) }
+        }
+        #expect(rig.server.record.openSessions == 1)
+        await rig.stop()
+    }
+
     @Test func closedConnectionIsConnectionClosed() async throws {
         let rig = try await SFTPRig.start()
         let transfer = try await rig.transfer()
@@ -357,7 +435,8 @@ private struct SFTPRig {
     let local: URL
 
     static func start(
-        sftp: Bool = true, dropConnectionAfterBytes: Int64? = nil, failWritesAfterBytes: Int64? = nil, refuseSessions: Bool = false
+        sftp: Bool = true, dropConnectionAfterBytes: Int64? = nil, failWritesAfterBytes: Int64? = nil, refuseSessions: Bool = false,
+        maxSessions: Int? = nil
     ) async throws -> SFTPRig {
         let base = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
             .appendingPathComponent("sshkit-sftp-\(UUID().uuidString)")
@@ -367,8 +446,9 @@ private struct SFTPRig {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
         let options = sftp ? TestSFTPOptions(root: root, dropConnectionAfterBytes: dropConnectionAfterBytes, failWritesAfterBytes: failWritesAfterBytes) : nil
-        let server = try await TestSSHServer.start(.init(sftp: options, refuseSessions: refuseSessions))
-        let connection = SSHConnection(host: "127.0.0.1", port: server.port)
+        let server = try await TestSSHServer.start(.init(sftp: options, refuseSessions: refuseSessions, maxSessions: maxSessions))
+        // No keepalive: a dropped connection must be seen from the TCP close, not a missed reply.
+        let connection = SSHConnection(host: "127.0.0.1", port: server.port, keepalive: .init(interval: .zero))
         try await bounded {
             try await connection.open(credentials: .password(user: "tester", password: "s3cret"), timeout: .seconds(5)) { _ in true }
         }
@@ -416,6 +496,12 @@ private func directoryNames(_ directory: URL) throws -> [[UInt8]] {
 /// Every path under `directory`, relative, sorted.
 private func treeNames(_ directory: URL) throws -> [String] {
     (FileManager.default.enumerator(atPath: directory.path)?.allObjects as? [String] ?? []).sorted()
+}
+
+private func fileMode(_ url: URL) throws -> mode_t {
+    var info = Darwin.stat()
+    guard lstat(url.path, &info) == 0 else { throw POSIXError(.init(rawValue: errno) ?? .EIO) }
+    return info.st_mode & 0o7777
 }
 
 private func randomData(_ count: Int) -> Data {

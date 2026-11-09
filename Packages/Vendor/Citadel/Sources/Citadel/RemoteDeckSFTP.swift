@@ -88,6 +88,15 @@ extension SFTPClient {
         guard status.errorCode == .ok else { throw status }
     }
 
+    /// `SSH_FXP_FSETSTAT` on an open handle.
+    public func remoteDeckSetAttributes(_ handle: ByteBuffer, to attributes: SFTPFileAttributes) async throws {
+        let response = try await sendRequest(.fsetstat(.init(
+            requestId: allocateRequestId(), handle: handle, attributes: attributes
+        )))
+        guard case .status(let status) = response else { throw SFTPError.invalidResponse }
+        guard status.errorCode == .ok else { throw status }
+    }
+
     /// Closes the SFTP channel without waiting: every request in flight fails at once with
     /// `SFTPError.connectionClosed`. Safe from any thread, and more than once.
     public func remoteDeckCloseChannel() {

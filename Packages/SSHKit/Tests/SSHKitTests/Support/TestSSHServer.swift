@@ -39,6 +39,9 @@ final class TestSSHServer: Sendable {
         var sftp: TestSFTPOptions?
         /// Every `session` channel open is refused (CHANNEL_OPEN_FAILURE).
         var refuseSessions = false
+        /// At most this many `session` channels open at once over all connections, further opens
+        /// refused (sshd's `MaxSessions`, per connection; the tests use one connection).
+        var maxSessions: Int?
     }
 
     struct ForwardTarget: Hashable, Sendable {
@@ -69,6 +72,10 @@ final class TestSSHServer: Sendable {
         var directTCPIPRequests: [DirectTCPIPRequest] = []
         /// The subsystem names requested on session channels.
         var subsystemRequests: [String] = []
+        /// The `session` channels open now.
+        var openSessions = 0
+        /// The `session` opens refused by `maxSessions`.
+        var refusedSessions = 0
     }
 
     let port: UInt16
@@ -105,6 +112,16 @@ final class TestSSHServer: Sendable {
                             case .session where configuration.refuseSessions:
                                 return child.eventLoop.makeFailedFuture(TestServerError.unsupportedChannel)
                             case .session:
+                                let admitted = state.withLock { value in
+                                    if let max = configuration.maxSessions, value.record.openSessions >= max {
+                                        value.record.refusedSessions += 1
+                                        return false
+                                    }
+                                    value.record.openSessions += 1
+                                    return true
+                                }
+                                guard admitted else { return child.eventLoop.makeFailedFuture(TestServerError.unsupportedChannel) }
+                                child.closeFuture.whenComplete { _ in state.withLock { $0.record.openSessions -= 1 } }
                                 return child.eventLoop.makeCompletedFuture {
                                     try child.pipeline.syncOperations.addHandler(EchoShellHandler(state: state, sftp: configuration.sftp, user: configuration.user))
                                 }

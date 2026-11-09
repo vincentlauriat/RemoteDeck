@@ -174,7 +174,7 @@ more things favour that:
      logger (Citadel logs paths at `info`). `RemoteDeckSFTP.installServer(on:delegate:username:)`
      puts Citadel's SFTP server on a channel (SSHKit's test server only). `SFTPClient` gains
      handle-level requests (`remoteDeckOpen`, `remoteDeckRead`, `remoteDeckWrite`,
-     `remoteDeckClose`) so several reads or writes can be in flight (`SFTPFile` sends one at a time
+     `remoteDeckClose`, `remoteDeckSetAttributes` = FSETSTAT) so several reads or writes can be in flight (`SFTPFile` sends one at a time
      and is not `Sendable`), and `remoteDeckCloseChannel()`, which fails every pending request at
      once (cancellation). `SFTPStatusCode` conforms to `Error` so a server delegate can throw a
      status. No protocol code is new: it calls Citadel's existing handlers, parser and serializer.

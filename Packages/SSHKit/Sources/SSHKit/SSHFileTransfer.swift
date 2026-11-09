@@ -98,10 +98,37 @@ public actor SSHFileTransfer {
     private let connection: SSHConnection
     /// For lookups and clean-up; reopened when it closed (a cancelled transfer never closes it).
     private var control: SFTPClient?
+    /// The control channel being opened, shared by concurrent callers so they open one channel.
+    private var opening: Task<SFTPClient, any Error>?
+    /// The channels of the transfers in progress, closed by `close()`.
+    private var transfers: [ObjectIdentifier: SFTPClient] = [:]
+    private var isClosed = false
 
     init(connection: SSHConnection, control: SFTPClient) {
         self.connection = connection
         self.control = control
+    }
+
+    deinit {
+        // Each SFTP channel is a session on the server (OpenSSH allows 10 per connection).
+        control?.remoteDeckCloseChannel()
+        for channel in transfers.values { channel.remoteDeckCloseChannel() }
+    }
+
+    /// Closes the SFTP channels: the shared one, and those of transfers in progress, which then
+    /// throw `.connectionClosed`. Every later call throws `.connectionClosed`; the SSH connection
+    /// stays open. Calling it again does nothing. Dropping the last reference closes them too,
+    /// without waiting.
+    public func close() async {
+        guard !isClosed else { return }
+        isClosed = true
+        let channels = [control].compactMap { $0 } + Array(transfers.values)
+        control = nil
+        transfers = [:]
+        opening?.cancel()
+        for channel in channels {
+            try? await channel.close()
+        }
     }
 
     /// The directory the server starts in: `realpath(".")`, the user's home on OpenSSH.
@@ -138,16 +165,21 @@ public actor SSHFileTransfer {
         let source = try LocalSource(local)
         defer { source.close() }
 
+        guard !toDirectory.isEmpty else { throw .noSuchDirectory(toDirectory) }
         let directory = try await attributes(toDirectory)
         // A server that sent no mode is trusted: the open of the part file then fails if need be.
         guard let directory, directory.isDirectory != false else { throw .noSuchDirectory(toDirectory) }
         let target = Self.join(toDirectory, source.name)
         let part = target + Self.partSuffix
-        let targetExists = try await attributes(target) != nil
+        let existing = try await attributes(target)
+        let targetExists = existing != nil
         if targetExists, !overwrite { throw .fileExists(target) }
+        // An overwritten file keeps its mode (as `scp` does); a new one gets the server's default.
+        var partAttributes = SFTPFileAttributes.none
+        if let mode = existing?.permissions { partAttributes.permissions = mode & 0o7777 }
 
-        let channel = try await connection.openSFTPClient()
-        defer { channel.remoteDeckCloseChannel() }
+        let channel = try await transferChannel()
+        defer { endTransfer(channel) }
         var partCreated = false
         var targetRemoved = false
         do {
@@ -155,7 +187,12 @@ public actor SSHFileTransfer {
                 // Set before the request: a server can still create the file after a cancel closed
                 // the channel under it, and removing a file that does not exist is harmless.
                 partCreated = true
-                let handle = try await channel.remoteDeckOpen(part, flags: [.write, .create, .truncate])
+                // Truncate: a part file a dropped connection left behind is replaced.
+                let handle = try await channel.remoteDeckOpen(part, flags: [.write, .create, .truncate], attributes: partAttributes)
+                if partAttributes.permissions != nil {
+                    // The open's mode applies to a new file only (and through the server's umask).
+                    try await channel.remoteDeckSetAttributes(handle, to: partAttributes)
+                }
                 do {
                     try await Self.write(source, to: channel, handle: handle, progress: progress)
                 } catch {
@@ -177,7 +214,7 @@ public actor SSHFileTransfer {
             do {
                 try await control.rename(at: part, to: target)
             } catch {
-                if !overwrite, try await attributes(target) != nil { throw SSHError.fileExists(target) }
+                if !overwrite, (try? await attributes(target)) != nil { throw SSHError.fileExists(target) }
                 throw error
             }
         } catch {
@@ -206,12 +243,12 @@ public actor SSHFileTransfer {
 
         let channel: SFTPClient
         do {
-            channel = try await connection.openSFTPClient()
+            channel = try await transferChannel()
         } catch {
             destination.discard()
             throw error
         }
-        defer { channel.remoteDeckCloseChannel() }
+        defer { endTransfer(channel) }
         do {
             try await withTaskCancellationHandler {
                 let handle = try await channel.remoteDeckOpen(remotePath, flags: .read)
@@ -333,11 +370,53 @@ public actor SSHFileTransfer {
     // MARK: Helpers
 
     private func controlClient() async throws(SSHError) -> SFTPClient {
+        guard !isClosed else { throw .connectionClosed }
         if let control, control.isActive { return control }
         control = nil
-        let client = try await connection.openSFTPClient()
-        control = client
-        return client
+        let task: Task<SFTPClient, any Error>
+        if let opening {
+            task = opening
+        } else {
+            // Unstructured: one caller's cancellation does not fail the others' open.
+            let connection = self.connection
+            task = Task { () async throws -> SFTPClient in try await connection.openSFTPClient() }
+            opening = task
+        }
+        let result = await task.result
+        if opening == task { opening = nil }
+        switch result {
+        case .success(let client):
+            guard !isClosed else {
+                client.remoteDeckCloseChannel()
+                throw .connectionClosed
+            }
+            if control == nil { control = client }
+            return client
+        case .failure(let error):
+            throw (error as? SSHError) ?? .connectionClosed
+        }
+    }
+
+    /// Closes the control channel without forgetting it, so the next lookup reopens it (tests).
+    func dropControlChannelForTests() async {
+        try? await control?.close()
+    }
+
+    /// A new SFTP channel for one transfer, closed by `close()`; end it with `endTransfer`.
+    private func transferChannel() async throws(SSHError) -> SFTPClient {
+        guard !isClosed else { throw .connectionClosed }
+        let channel = try await connection.openSFTPClient()
+        guard !isClosed else {
+            channel.remoteDeckCloseChannel()
+            throw .connectionClosed
+        }
+        transfers[ObjectIdentifier(channel)] = channel
+        return channel
+    }
+
+    private func endTransfer(_ channel: SFTPClient) {
+        transfers[ObjectIdentifier(channel)] = nil
+        channel.remoteDeckCloseChannel()
     }
 
     /// `stat` of `path`; nil when it does not exist.

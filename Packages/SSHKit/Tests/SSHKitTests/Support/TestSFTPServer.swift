@@ -60,7 +60,9 @@ final class TestSFTPDelegate: SFTPDelegate {
         if flags.contains(.truncate) { mode |= O_TRUNC }
         if flags.contains(.forceCreate) { mode |= O_EXCL }
         if flags.contains(.append) { mode |= O_APPEND }
-        let fd = realPath(filePath).withCString { Darwin.open($0, mode, 0o644) }
+        // As sftp-server: the requested mode for a new file, through the process umask.
+        let permissions = mode_t(withAttributes.permissions.map { $0 & 0o7777 } ?? 0o666)
+        let fd = realPath(filePath).withCString { Darwin.open($0, mode, permissions) }
         guard fd >= 0 else { throw Self.status(errno) }
         return TestSFTPFile(fd: fd, options: options, connection: connection)
     }
@@ -164,5 +166,9 @@ final class TestSFTPFile: SFTPFileHandle, Sendable {
         return TestSFTPDelegate.attributes(info)
     }
 
-    func setFileAttributes(to attributes: SFTPFileAttributes) async throws {}
+    func setFileAttributes(to attributes: SFTPFileAttributes) async throws {
+        if let permissions = attributes.permissions, fchmod(fd, mode_t(permissions & 0o7777)) != 0 {
+            throw TestSFTPDelegate.status(errno)
+        }
+    }
 }
