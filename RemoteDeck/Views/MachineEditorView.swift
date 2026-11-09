@@ -17,7 +17,7 @@ struct MachineEditorView: View {
             Form {
                 Section(settings.t("editor_section_connection")) {
                     Picker(settings.t("field_kind"), selection: $model.kind) {
-                        ForEach(MachineKind.allCases, id: \.self) { kind in
+                        ForEach(MachineKind.editorKinds, id: \.self) { kind in
                             Label(settings.t(kind.titleKey), systemImage: kind.symbolName).tag(kind)
                         }
                     }
@@ -186,6 +186,8 @@ struct MachineEditorView: View {
         case .port: model.portText
         case .username: model.username
         case .groupName: model.newGroupName
+        // SSH fields have no editor control yet (the Machine Editor gains them in Task 10).
+        case .sshKeyFileName, .portForwards: ""
         }
     }
 

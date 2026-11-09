@@ -341,6 +341,9 @@ extension MachineValidator.Reason {
         case (.duplicate, .groupName): return t("err_group_duplicate")
         case (.duplicate, _): return t("err_duplicate")
         case (.empty, .port): return t("err_port")
+        case (.missingKeyFile, _), (.empty, .sshKeyFileName): return t("err_ssh_key_file")
+        case (.invalidForwardPort, _), (.empty, .portForwards): return t("err_forward_port")
+        case (.duplicateLocalPort, _): return t("err_forward_duplicate")
         }
     }
 }

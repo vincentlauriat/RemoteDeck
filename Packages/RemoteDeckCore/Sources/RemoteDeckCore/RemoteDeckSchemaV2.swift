@@ -1,8 +1,10 @@
 import Foundation
 import SwiftData
 
-/// Version 2 of the SwiftData schema (BackendSchema › Tables), the current one. V2 adds
-/// `Machine.modifiedAt` (T4.3: the duplicate merge keeps the most recently modified machine).
+/// Version 2 of the SwiftData schema, frozen: the shape of the stores written from T4.3 until SSH
+/// machines, kept only so `RemoteDeckMigrationPlan` can open them (lightweight migration to V3). Never
+/// edit it; the app's models are `RemoteDeckSchemaV3`. V2 adds `Machine.modifiedAt` (T4.3: the
+/// duplicate merge keeps the most recently modified machine).
 ///
 /// Every stored property is optional or defaulted, relationships are optional and
 /// there is no `@Attribute(.unique)`: CloudKit rules, applied to the local models too.
@@ -197,8 +199,3 @@ public enum RemoteDeckSchemaV2: VersionedSchema {
         }
     }
 }
-
-public typealias Machine = RemoteDeckSchemaV2.Machine
-public typealias MachineGroup = RemoteDeckSchemaV2.MachineGroup
-public typealias SessionRecord = RemoteDeckSchemaV2.SessionRecord
-public typealias AssistantAction = RemoteDeckSchemaV2.AssistantAction

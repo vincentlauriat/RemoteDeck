@@ -206,6 +206,13 @@ struct ARDAuthenticationTests {
         #expect(RFBCredentials(kind: .anthropicVM, username: "vincent", password: nil).requiredSecurityType == nil)
     }
 
+    /// An SSH machine's secrets never reach an RFB handshake (routed to TerminalSessionModel in Task 9).
+    @Test func anSSHMachineGetsNoRFBCredentials() {
+        let credentials = RFBCredentials(kind: .ssh, username: "azureuser", password: "pw")
+        #expect(credentials.username == nil && credentials.password == nil)
+        #expect(credentials.requiredSecurityType == nil)
+    }
+
     @Test func theBannerExplainsTheMissingAppleAuthentication() throws {
         let error = RFBError.requiredSecurityTypeMissing(required: 30, offered: [1, 2])
         let failure = try #require(SessionFailure(openError: error))

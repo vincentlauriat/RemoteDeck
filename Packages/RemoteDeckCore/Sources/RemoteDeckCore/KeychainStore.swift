@@ -8,19 +8,30 @@ public enum KeychainAccount: Hashable, Sendable {
     case machine(UUID)
     /// The Anthropic API key, local to this Mac.
     case anthropicAPIKey
+    /// An SSH machine's imported private key (OpenSSH text), synced through iCloud Keychain.
+    case sshPrivateKey(UUID)
+    /// The remembered passphrase of an SSH machine's imported key, synced with the key.
+    case sshKeyPassphrase(UUID)
+    /// The remembered passphrase of a key used in place from `~/.ssh`, local to this Mac (the key
+    /// file itself is per Mac).
+    case sshLocalKeyPassphrase(UUID)
 
-    /// Keychain account string: `machine.<uuid>` or `anthropic.apiKey`.
+    /// Keychain account string: `machine.<uuid>`, `anthropic.apiKey`, `sshKey.<uuid>`,
+    /// `sshPassphrase.<uuid>` or `sshLocalPassphrase.<uuid>`.
     public var name: String {
         switch self {
         case .machine(let id): "machine.\(id.uuidString)"
         case .anthropicAPIKey: "anthropic.apiKey"
+        case .sshPrivateKey(let id): "sshKey.\(id.uuidString)"
+        case .sshKeyPassphrase(let id): "sshPassphrase.\(id.uuidString)"
+        case .sshLocalKeyPassphrase(let id): "sshLocalPassphrase.\(id.uuidString)"
         }
     }
 
     public var isSynchronizable: Bool {
         switch self {
-        case .machine: true
-        case .anthropicAPIKey: false
+        case .machine, .sshPrivateKey, .sshKeyPassphrase: true
+        case .anthropicAPIKey, .sshLocalKeyPassphrase: false
         }
     }
 }

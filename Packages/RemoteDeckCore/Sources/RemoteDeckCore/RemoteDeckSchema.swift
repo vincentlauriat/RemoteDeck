@@ -2,11 +2,13 @@ import Foundation
 import SwiftData
 
 /// Migration plan for the SwiftData schema. CloudKit-synced changes must stay additive
-/// (BackendSchema › Migrations): V1 → V2 only adds the optional `Machine.modifiedAt`.
+/// (BackendSchema › Migrations): V1 → V2 only adds the optional `Machine.modifiedAt`, V2 → V3 the
+/// optional SSH fields of `Machine` (`sshAuthMethod`, `sshKeyFileName`, `portForwardsData`).
 public enum RemoteDeckMigrationPlan: SchemaMigrationPlan {
-    public static var schemas: [any VersionedSchema.Type] { [RemoteDeckSchemaV1.self, RemoteDeckSchemaV2.self] }
+    public static var schemas: [any VersionedSchema.Type] { [RemoteDeckSchemaV1.self, RemoteDeckSchemaV2.self, RemoteDeckSchemaV3.self] }
     public static var stages: [MigrationStage] {
-        [.lightweight(fromVersion: RemoteDeckSchemaV1.self, toVersion: RemoteDeckSchemaV2.self)]
+        [.lightweight(fromVersion: RemoteDeckSchemaV1.self, toVersion: RemoteDeckSchemaV2.self),
+         .lightweight(fromVersion: RemoteDeckSchemaV2.self, toVersion: RemoteDeckSchemaV3.self)]
     }
 }
 
@@ -45,7 +47,7 @@ public enum RemoteDeckSchema {
     /// unentitled one fails to open the store. Ignored in memory.
     public static func makeContainer(inMemory: Bool = false, storeDirectory: URL? = nil,
                                      cloudKitContainer: String? = nil) throws -> ModelContainer {
-        try makeContainer(versionedSchema: RemoteDeckSchemaV2.self, syncedModels: syncedModels,
+        try makeContainer(versionedSchema: RemoteDeckSchemaV3.self, syncedModels: syncedModels,
                           localModels: localModels, inMemory: inMemory, storeDirectory: storeDirectory,
                           cloudKitContainer: cloudKitContainer)
     }
@@ -56,7 +58,7 @@ public enum RemoteDeckSchema {
         container.map { .private($0) } ?? .none
     }
 
-    /// Any schema version's container, with the migration plan: the migration tests write V1 stores.
+    /// Any schema version's container, with the migration plan: the migration tests write V1 and V2 stores.
     static func makeContainer(versionedSchema: any VersionedSchema.Type,
                               syncedModels: [any PersistentModel.Type],
                               localModels: [any PersistentModel.Type],

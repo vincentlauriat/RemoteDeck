@@ -54,6 +54,7 @@ enum Strings {
             "kind_macARD": "Mac (Gestion à distance)",
             "kind_vnc": "VNC",
             "kind_anthropicVM": "VM Anthropic",
+            "kind_ssh": "SSH",
             "scaling_fit": "Ajuster à la fenêtre",
             "scaling_actual": "Taille réelle",
 
@@ -120,6 +121,9 @@ enum Strings {
             "err_duplicate": "Une autre machine utilise déjà cet hôte et ce port.",
             "err_group_empty": "Saisis un nom de groupe.",
             "err_group_duplicate": "Un groupe porte déjà ce nom.",
+            "err_ssh_key_file": "Indique un fichier de clé dans ~/.ssh (chemin relatif, sans « .. »).",
+            "err_forward_port": "Port local entre 1024 et 65535, port distant entre 1 et 65535.",
+            "err_forward_duplicate": "Deux redirections utilisent le même port local.",
 
             // Test connection
             "test_testing": "Test en cours…",
@@ -388,6 +392,7 @@ enum Strings {
             "outcome_unreachable": "Injoignable",
             "outcome_cancelled": "Annulée",
             "outcome_dropped": "Connexion perdue",
+            "outcome_hostKeyRejected": "Clé d'hôte refusée",
             "outcome_connecting": "Connexion…",
             "outcome_interrupted": "Interrompue",
             "history_cannot_connect": "Connexion impossible",
@@ -455,6 +460,7 @@ enum Strings {
             "kind_macARD": "Mac (Remote Management)",
             "kind_vnc": "VNC",
             "kind_anthropicVM": "Anthropic VM",
+            "kind_ssh": "SSH",
             "scaling_fit": "Fit to window",
             "scaling_actual": "Actual size",
 
@@ -518,6 +524,9 @@ enum Strings {
             "err_duplicate": "Another machine already uses this host and port.",
             "err_group_empty": "Enter a group name.",
             "err_group_duplicate": "A group with this name already exists.",
+            "err_ssh_key_file": "Enter a key file in ~/.ssh (a relative path, without \"..\").",
+            "err_forward_port": "Local port between 1024 and 65535, remote port between 1 and 65535.",
+            "err_forward_duplicate": "Two forwards use the same local port.",
 
             "test_testing": "Testing…",
             "test_success": "Reachable, auth OK",
@@ -783,6 +792,7 @@ enum Strings {
             "outcome_unreachable": "Unreachable",
             "outcome_cancelled": "Cancelled",
             "outcome_dropped": "Connection lost",
+            "outcome_hostKeyRejected": "Host key rejected",
             "outcome_connecting": "Connecting…",
             "outcome_interrupted": "Interrupted",
             "history_cannot_connect": "Cannot connect",

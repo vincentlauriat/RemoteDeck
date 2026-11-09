@@ -90,6 +90,7 @@ struct SessionTarget: Equatable, Sendable {
     }
 
     /// ⌘ and ⌥ per machine kind (TRD › Input): Mac ARD → Alt/Meta, VNC and Anthropic VM → X11 Super/Alt.
+    /// `.ssh` takes X11 but never gets here once routed to TerminalSessionModel in Task 9.
     var modifierProfile: ModifierProfile {
         kind == .macARD ? .appleRemoteDesktop : .x11
     }
@@ -100,11 +101,15 @@ extension RFBCredentials {
     /// them: no user name for an Anthropic VM, a blank user name or password counts as none. A Mac
     /// (ARD) with a user name requires Apple DH (type 30, T5.3 M4): its macOS password never goes out
     /// as a VNC DES response, and the session never falls back to no authentication.
+    ///
+    /// `.ssh` gets no credentials at all: its password is an SSH secret and must never reach an RFB
+    /// handshake. SSH machines are routed to TerminalSessionModel in Task 9; until then one that reaches
+    /// RFB fails on the server's banner with nothing sent.
     init(kind: MachineKind, username: String?, password: String?) {
         let user = username?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let effectiveUser = kind == .anthropicVM || user?.isEmpty != false ? nil : user
+        let effectiveUser = kind == .anthropicVM || kind == .ssh || user?.isEmpty != false ? nil : user
         self.init(username: effectiveUser,
-                  password: password?.isEmpty == false ? password : nil,
+                  password: kind != .ssh && password?.isEmpty == false ? password : nil,
                   requiredSecurityType: kind == .macARD && effectiveUser != nil ? SecurityType.appleDiffieHellman : nil)
     }
 }
@@ -904,6 +909,7 @@ final class SessionModel {
 extension SessionModel: AssistantSessionPort {
     var assistantCanAct: Bool { phase == .connected && sender != nil }
 
+    /// `.ssh` has no desktop (routed to TerminalSessionModel in Task 9): X11 is the inert default.
     var assistantDesktop: RemoteDesktopKind { target.kind == .macARD ? .mac : .x11 }
 
     var assistantProfile: ModifierProfile { target.modifierProfile }

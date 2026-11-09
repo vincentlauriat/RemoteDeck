@@ -334,7 +334,7 @@ final class LibraryMerger {
                 guard let dropped = machinesByID[id], !hasSession(id),
                       let deletesPassword = foldPassword(of: id, into: merge.survivor) else { continue }
                 // Only from a copy that goes now: a kept duplicate keeps its own fields.
-                if id == merge.fieldsFrom { Self.copyFields(from: dropped, to: survivor) }
+                if id == merge.fieldsFrom { LibraryDeduplication.copyFields(from: dropped, to: survivor) }
                 survivor.lastConnectedAt = [survivor.lastConnectedAt, dropped.lastConnectedAt].compactMap { $0 }.max()
                 context.delete(dropped)
                 removed.append(id)
@@ -352,21 +352,6 @@ final class LibraryMerger {
         }
         for id in passwordsToDelete { try? passwords.deletePassword(for: id) }
         return removed
-    }
-
-    /// The user-visible fields of the most recently edited copy (its host and port share the key).
-    private static func copyFields(from source: Machine, to target: Machine) {
-        target.name = source.name
-        target.kind = source.kind
-        target.host = source.host
-        target.port = source.port
-        target.username = source.username
-        target.group = source.group
-        target.isFavorite = source.isFavorite
-        target.isWatched = source.isWatched
-        target.scalingMode = source.scalingMode
-        target.sharedClipboard = source.sharedClipboard
-        target.modifiedAt = source.modifiedAt
     }
 
     /// nil: keep the dropped machine for now. Otherwise it may go, and `true` says it has a password

@@ -13,6 +13,25 @@ struct KeychainStoreTests {
         #expect(KeychainAccount.anthropicAPIKey.name == "anthropic.apiKey")
     }
 
+    @Test func keychainAccountNamesAndSync() {
+        let id = UUID(uuidString: "6F9619FF-8B86-D011-B42D-00C04FC964FF")!
+        #expect(KeychainAccount.sshPrivateKey(id).name == "sshKey.6F9619FF-8B86-D011-B42D-00C04FC964FF")
+        #expect(KeychainAccount.sshKeyPassphrase(id).name == "sshPassphrase.6F9619FF-8B86-D011-B42D-00C04FC964FF")
+        #expect(KeychainAccount.sshLocalKeyPassphrase(id).name
+            == "sshLocalPassphrase.6F9619FF-8B86-D011-B42D-00C04FC964FF")
+        #expect(KeychainAccount.sshPrivateKey(id).isSynchronizable)
+        #expect(KeychainAccount.sshKeyPassphrase(id).isSynchronizable)
+        #expect(!KeychainAccount.sshLocalKeyPassphrase(id).isSynchronizable)
+        // The passphrase of a key used in place from ~/.ssh never leaves this Mac.
+        let local = KeychainStore().addAttributes(for: .sshLocalKeyPassphrase(id), data: Data("p".utf8))
+        #expect(local[kSecAttrSynchronizable as String] as? Bool == false)
+        #expect(local[kSecAttrAccessible as String] as? String
+            == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+        let synced = KeychainStore().addAttributes(for: .sshPrivateKey(id), data: Data("k".utf8))
+        #expect(synced[kSecAttrSynchronizable as String] as? Bool == true)
+        #expect(synced[kSecAttrAccessible as String] as? String == kSecAttrAccessibleAfterFirstUnlock as String)
+    }
+
     @Test func defaultServiceIsAppService() {
         #expect(KeychainStore().service == "fr.vincentlauriat.remotedeck")
     }

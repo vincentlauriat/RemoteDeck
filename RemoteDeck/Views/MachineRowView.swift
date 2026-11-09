@@ -8,10 +8,16 @@ extension MachineKind {
         case .macARD: "desktopcomputer"
         case .vnc: "display"
         case .anthropicVM: "sparkles"
+        case .ssh: "terminal"
         }
     }
 
     var titleKey: String { "kind_\(rawValue)" }
+
+    /// The kinds the Machine Editor offers. `.ssh` is left out until its sessions exist: SSH machines
+    /// are routed to TerminalSessionModel in Task 9 and edited from Task 10; until then one would
+    /// reach the RFB paths.
+    static var editorKinds: [MachineKind] { allCases.filter { $0 != .ssh } }
 }
 
 extension Machine {

@@ -52,7 +52,7 @@ public struct HistoryEntry: Sendable, Equatable, Identifiable {
 /// `connecting` while its session is open, else `interrupted` (the run was killed while connecting),
 /// never as a cancellation. Every other record shows its stored outcome.
 public enum HistoryOutcome: String, CaseIterable, Sendable {
-    case connected, authFailed, unreachable, cancelled, dropped, connecting, interrupted
+    case connected, authFailed, unreachable, cancelled, dropped, hostKeyRejected, connecting, interrupted
 
     public init(_ entry: HistoryEntry, liveRecordIDs: Set<UUID>) {
         if entry.endedAt == nil && entry.connectMillis == nil {

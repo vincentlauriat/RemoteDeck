@@ -191,6 +191,69 @@ struct ModelTests {
         #expect(machine.kindValue == .macARD && machine.scalingModeValue == .fit)
     }
 
+    // MARK: SSH machines (schema V3)
+
+    /// An older client's rule, kept: a kind this build does not know reads as a Mac.
+    @Test func unknownKindStillDecodesAsMacARD() {
+        let machine = Machine(kind: .ssh)
+        #expect(machine.kind == "ssh" && machine.kindValue == .ssh)
+        machine.kind = "future"
+        #expect(machine.kindValue == .macARD)
+    }
+
+    @Test func sshDefaultPortIs22() {
+        #expect(MachineKind.ssh.rawValue == "ssh")
+        #expect(MachineKind.ssh.defaultPort == 22)
+        for kind in [MachineKind.macARD, .vnc, .anthropicVM] {
+            #expect(kind.defaultPort == 5900)
+        }
+    }
+
+    @Test func sshAuthDefaultsToPasswordAndRoundTrips() {
+        let machine = Machine(kind: .ssh)
+        #expect(machine.sshAuthMethod == nil && machine.sshAuth == .password)
+        for method in SSHAuthMethod.allCases {
+            machine.sshAuth = method
+            #expect(machine.sshAuthMethod == method.rawValue && machine.sshAuth == method)
+        }
+        machine.sshAuthMethod = "future"
+        #expect(machine.sshAuth == .password)
+        #expect(SSHAuthMethod.allCases.map(\.rawValue) == ["password", "keyInSSHFolder", "importedKey"])
+    }
+
+    @Test func portForwardsRoundTripAndBadDataIsEmpty() throws {
+        let machine = Machine(kind: .ssh, host: "vm.example.com", port: 22)
+        #expect(machine.portForwardsData == nil && machine.portForwards.isEmpty)
+
+        let web = PortForward(label: "Web", localPort: 8080, remotePort: 80)
+        let db = PortForward(localPort: 15432, remoteHost: "db.internal", remotePort: 5432)
+        #expect(web.remoteHost == "localhost" && web.label == "Web")
+        machine.portForwards = [web, db]
+        #expect(machine.portForwardsData != nil)
+        context.insert(machine)
+        try context.save()
+        let fresh = ModelContext(container)
+        let fetched = try #require(try fresh.fetch(FetchDescriptor<Machine>()).first)
+        #expect(fetched.portForwards == [web, db])
+
+        machine.portForwardsData = Data("not json".utf8)
+        #expect(machine.portForwards.isEmpty)
+        machine.portForwardsData = Data(#"{"localPort":1}"#.utf8)
+        #expect(machine.portForwards.isEmpty)
+        // An emptied list stores nothing, as a machine that never had forwards.
+        machine.portForwards = []
+        #expect(machine.portForwardsData == nil)
+    }
+
+    @Test func hostKeyRejectedIsAStoredOutcome() throws {
+        #expect(SessionOutcome.hostKeyRejected.rawValue == "hostKeyRejected")
+        let record = SessionRecord(machineID: UUID(), machineName: "VM", outcome: .hostKeyRejected)
+        context.insert(record)
+        try context.save()
+        let fetched = try #require(try ModelContext(container).fetch(FetchDescriptor<SessionRecord>()).first)
+        #expect(fetched.outcomeValue == .hostKeyRejected)
+    }
+
     @Test func persistedRawValuesSurviveRefetch() throws {
         let machine = Machine(kind: .anthropicVM, scalingMode: .actual)
         context.insert(machine)

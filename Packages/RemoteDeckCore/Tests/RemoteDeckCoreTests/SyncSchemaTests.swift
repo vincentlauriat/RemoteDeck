@@ -28,6 +28,26 @@ struct SyncSchemaTests {
         }
     }
 
+    /// V3 (SSH machines) adds three optional Machine fields; the CloudKit rule above covers them, and
+    /// they must exist on the synced entity as optional attributes.
+    @Test func syncedV3PropertiesAreOptionalOrDefaulted() throws {
+        let model = try #require(NSManagedObjectModel.makeManagedObjectModel(for: RemoteDeckSchema.syncedModels))
+        let machine = try #require(model.entitiesByName["Machine"])
+        for name in ["sshAuthMethod", "sshKeyFileName", "portForwardsData"] {
+            let attribute = try #require(machine.attributesByName[name], "Machine.\(name) missing")
+            #expect(attribute.isOptional, "Machine.\(name) is required")
+        }
+        let v3 = try #require(NSManagedObjectModel.makeManagedObjectModel(
+            for: [RemoteDeckSchemaV3.Machine.self, RemoteDeckSchemaV3.MachineGroup.self]))
+        for entity in v3.entities {
+            for (attribute, description) in entity.attributesByName {
+                #expect(description.isOptional || description.defaultValue != nil,
+                        "\(entity.name ?? "?").\(attribute) is required without a default")
+            }
+        }
+        #expect(RemoteDeckSchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
+    }
+
     @Test func libraryStoreSyncsOnlyWhenGivenAContainer() {
         let none = String(describing: ModelConfiguration.CloudKitDatabase.none)
         #expect(String(describing: RemoteDeckSchema.libraryCloudKitDatabase(nil)) == none)
@@ -90,5 +110,55 @@ struct SyncSchemaTests {
         try v2.save()
         let reopened = ModelContext(try RemoteDeckSchema.makeContainer(storeDirectory: directory))
         #expect(try reopened.fetch(FetchDescriptor<Machine>()).first?.modifiedAt == edited)
+    }
+
+    /// A store written by the V2 app (schema V2) opens as V3: fields kept, the SSH ones nil.
+    @Test func v2StoreOpensAsV3OnDisk() throws {
+        let directory = URL.temporaryDirectory.appending(path: "RemoteDeckMigrationTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let created = Date(timeIntervalSince1970: 1_700_000_000)
+        let modified = Date(timeIntervalSince1970: 1_750_000_000)
+        let machineID = UUID()
+        do {
+            let v2 = try RemoteDeckSchema.makeContainer(
+                versionedSchema: RemoteDeckSchemaV2.self,
+                syncedModels: [RemoteDeckSchemaV2.Machine.self, RemoteDeckSchemaV2.MachineGroup.self],
+                localModels: [RemoteDeckSchemaV2.SessionRecord.self, RemoteDeckSchemaV2.AssistantAction.self],
+                inMemory: false, storeDirectory: directory, cloudKitContainer: nil)
+            let context = ModelContext(v2)
+            let group = RemoteDeckSchemaV2.MachineGroup(name: "Lab")
+            let machine = RemoteDeckSchemaV2.Machine(id: machineID, name: "Mini", kind: .vnc, host: "mini.local",
+                                                     port: 5901, username: "vincent", isWatched: true,
+                                                     createdAt: created, modifiedAt: modified)
+            context.insert(group)
+            context.insert(machine)
+            machine.group = group
+            context.insert(RemoteDeckSchemaV2.SessionRecord(machineID: machineID, machineName: "Mini",
+                                                             outcome: .dropped))
+            try context.save()
+        }
+
+        let v3 = ModelContext(try RemoteDeckSchema.makeContainer(storeDirectory: directory))
+        let machine = try #require(try v3.fetch(FetchDescriptor<Machine>()).first)
+        #expect(machine.id == machineID)
+        #expect(machine.name == "Mini" && machine.kindValue == .vnc && machine.host == "mini.local")
+        #expect(machine.port == 5901 && machine.username == "vincent" && machine.isWatched)
+        #expect(machine.createdAt == created && machine.modifiedAt == modified)
+        #expect(machine.group?.name == "Lab")
+        #expect(machine.sshAuthMethod == nil && machine.sshKeyFileName == nil && machine.portForwardsData == nil)
+        #expect(machine.sshAuth == .password && machine.portForwards.isEmpty)
+        let record = try #require(try v3.fetch(FetchDescriptor<SessionRecord>()).first)
+        #expect(record.outcomeValue == .dropped)
+
+        machine.kindValue = .ssh
+        machine.sshAuth = .keyInSSHFolder
+        machine.sshKeyFileName = "id_ed25519"
+        machine.portForwards = [PortForward(localPort: 8080, remotePort: 80)]
+        try v3.save()
+        let reopened = ModelContext(try RemoteDeckSchema.makeContainer(storeDirectory: directory))
+        let fetched = try #require(try reopened.fetch(FetchDescriptor<Machine>()).first)
+        #expect(fetched.kindValue == .ssh && fetched.sshAuth == .keyInSSHFolder)
+        #expect(fetched.sshKeyFileName == "id_ed25519")
+        #expect(fetched.portForwards.map(\.localPort) == [8080])
     }
 }

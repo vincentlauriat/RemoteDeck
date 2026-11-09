@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import RemoteDeckCore
 
@@ -102,5 +103,34 @@ struct LibraryDeduplicationTests {
         let macB = [GroupFacts(id: a, name: "Lab", sortOrder: 0), GroupFacts(id: b, name: "Lab", sortOrder: 3)]
         #expect(LibraryDeduplication.groupMerges(macA).first?.survivor == a)
         #expect(LibraryDeduplication.groupMerges(macB).first?.survivor == a)
+    }
+
+    /// The survivor of a merge takes the newest copy's user-visible fields, SSH ones included (V3).
+    @MainActor
+    @Test func dedupCopiesSSHFields() throws {
+        let context = ModelContext(try RemoteDeckSchema.makeContainer(inMemory: true))
+        let group = MachineGroup(name: "Cloud")
+        let survivor = Machine(name: "Old", kind: .vnc, host: "vm.example.com", port: 22, createdAt: early)
+        let newest = Machine(name: "Azure VM", kind: .ssh, host: "VM.example.com", port: 22, username: "azureuser",
+                             isFavorite: true, isWatched: true, scalingMode: .actual, sharedClipboard: false,
+                             lastConnectedAt: late, createdAt: late, modifiedAt: late)
+        newest.sshAuth = .keyInSSHFolder
+        newest.sshKeyFileName = "id_ed25519"
+        newest.portForwards = [PortForward(label: "Web", localPort: 8080, remotePort: 80)]
+        for model in [group, survivor, newest] as [any PersistentModel] { context.insert(model) }
+        newest.group = group
+
+        LibraryDeduplication.copyFields(from: newest, to: survivor)
+
+        #expect(survivor.name == "Azure VM" && survivor.kindValue == .ssh)
+        #expect(survivor.host == "VM.example.com" && survivor.port == 22 && survivor.username == "azureuser")
+        #expect(survivor.group?.name == "Cloud")
+        #expect(survivor.isFavorite && survivor.isWatched && survivor.scalingModeValue == .actual)
+        #expect(!survivor.sharedClipboard && survivor.modifiedAt == late)
+        #expect(survivor.sshAuthMethod == "keyInSSHFolder" && survivor.sshKeyFileName == "id_ed25519")
+        #expect(survivor.portForwardsData == newest.portForwardsData)
+        #expect(survivor.portForwards == newest.portForwards)
+        // Identity and history are the survivor's own: never copied.
+        #expect(survivor.id != newest.id && survivor.createdAt == early && survivor.lastConnectedAt == nil)
     }
 }

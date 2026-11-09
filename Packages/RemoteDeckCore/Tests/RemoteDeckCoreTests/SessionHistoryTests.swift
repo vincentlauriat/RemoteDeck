@@ -174,6 +174,15 @@ struct HistoryListTests {
         #expect(HistoryOutcome(entry(ago: 10, connect: 900), liveRecordIDs: []) == .connected)
     }
 
+    /// SSH (V3): a refused host key shows and exports as itself, never as the `cancelled` fallback.
+    @Test func hostKeyRejectedIsPresentedAsItself() {
+        let rejected = entry(ago: 60, lasts: 2, outcome: .hostKeyRejected)
+        #expect(HistoryOutcome(rejected, liveRecordIDs: []) == .hostKeyRejected)
+        #expect(SessionHistory.rows([rejected], liveRecordIDs: [], outcome: .hostKeyRejected).count == 1)
+        #expect(HistoryCSV.make([rejected], liveRecordIDs: []).contains(",hostKeyRejected,"))
+        #expect(HistorySummary([rejected], now: now).cancelled == 0)
+    }
+
     @Test func filtersBySearchMachineAndOutcome() {
         let entries = [
             entry(mini, "Mac mini", ago: 10, connect: 100, lasts: 1),

@@ -96,6 +96,82 @@ struct MachineValidatorTests {
         #expect(validator.validate(draft(kind: kind, username: nil)).isEmpty)
     }
 
+    // MARK: SSH machines
+
+    func ssh(
+        username: String? = "azureuser",
+        auth: SSHAuthMethod = .password,
+        keyFile: String? = nil,
+        forwards: [PortForward] = []
+    ) -> MachineDraft {
+        MachineDraft(name: "Azure VM", kind: .ssh, host: "vm.example.com", port: 22, username: username,
+                     sshAuth: auth, sshKeyFileName: keyFile, portForwards: forwards)
+    }
+
+    @Test func acceptsValidSSHMachine() {
+        #expect(validator.validate(ssh()).isEmpty)
+        #expect(validator.validate(ssh(auth: .importedKey)).isEmpty)
+        #expect(validator.validate(ssh(auth: .keyInSSHFolder, keyFile: "id_ed25519")).isEmpty)
+        #expect(validator.validate(ssh(auth: .keyInSSHFolder, keyFile: "azure/vm_key")).isEmpty)
+        #expect(validator.validate(ssh(forwards: [PortForward(localPort: 1024, remotePort: 1),
+                                                  PortForward(localPort: 65535, remotePort: 65535)])).isEmpty)
+    }
+
+    @Test func sshRequiresUserName() {
+        #expect(validator.validate(ssh(username: nil)) == [.init(.username, .empty)])
+        #expect(validator.validate(ssh(username: " ")) == [.init(.username, .empty)])
+    }
+
+    @Test(arguments: [nil, "", "  ", "../id_rsa", "a/../b", "keys/..", "/etc/ssh/id_rsa", "x/..y"])
+    func keyInFolderRequiresFileName(_ name: String?) {
+        #expect(validator.validate(ssh(auth: .keyInSSHFolder, keyFile: name)) == [.init(.sshKeyFileName, .missingKeyFile)])
+    }
+
+    /// Only a key used in place needs a file name; a stale one left by another method is not checked.
+    @Test(arguments: [SSHAuthMethod.password, .importedKey])
+    func fileNameIgnoredForOtherMethods(_ auth: SSHAuthMethod) {
+        #expect(validator.validate(ssh(auth: auth, keyFile: "../x")).isEmpty)
+    }
+
+    @Test(arguments: [0, 22, 80, 1023, 65536])
+    func forwardLocalPortBelow1024IsInvalid(_ port: Int) {
+        #expect(validator.validate(ssh(forwards: [PortForward(localPort: port, remotePort: 80)]))
+            == [.init(.portForwards, .invalidForwardPort)])
+    }
+
+    @Test(arguments: [0, -1, 65536])
+    func forwardRemotePortOutsideRangeIsInvalid(_ port: Int) {
+        #expect(validator.validate(ssh(forwards: [PortForward(localPort: 8080, remotePort: port)]))
+            == [.init(.portForwards, .invalidForwardPort)])
+    }
+
+    @Test func duplicateLocalPortsAreInvalid() {
+        let forwards = [PortForward(localPort: 8080, remotePort: 80),
+                        PortForward(localPort: 8080, remoteHost: "other", remotePort: 81),
+                        PortForward(localPort: 8443, remotePort: 443)]
+        #expect(validator.validate(ssh(forwards: forwards)) == [.init(.portForwards, .duplicateLocalPort)])
+    }
+
+    /// Screen machines keep their rules: SSH fields are not looked at.
+    @Test func sshFieldsIgnoredForScreenKinds() {
+        var vnc = ssh(username: nil, auth: .keyInSSHFolder, keyFile: nil,
+                      forwards: [PortForward(localPort: 1, remotePort: 0)])
+        vnc.kind = .vnc
+        vnc.port = 5900
+        #expect(validator.validate(vnc).isEmpty)
+    }
+
+    @Test func draftCopiesSSHFieldsFromMachine() {
+        let forward = PortForward(localPort: 8080, remotePort: 80)
+        let machine = Machine(name: "VM", kind: .ssh, host: "vm", port: 22, username: "u")
+        machine.sshAuth = .keyInSSHFolder
+        machine.sshKeyFileName = "id_ed25519"
+        machine.portForwards = [forward]
+        let draft = MachineDraft(machine)
+        #expect(draft.sshAuth == .keyInSSHFolder && draft.sshKeyFileName == "id_ed25519")
+        #expect(draft.portForwards == [forward])
+    }
+
     // MARK: uniqueness
 
     @Test func normalizedKeyLowercasesHost() {

@@ -60,10 +60,29 @@ struct ValidationMessageTests {
             (.empty, .groupName, "Enter a group name."),
             (.tooLong(max: 40), .groupName, "Use at most 40 characters."),
             (.duplicate, .groupName, "A group with this name already exists."),
+            (.missingKeyFile, .sshKeyFileName, english("err_ssh_key_file")),
+            (.invalidForwardPort, .portForwards, english("err_forward_port")),
+            (.duplicateLocalPort, .portForwards, english("err_forward_duplicate")),
         ]
         for (reason, field, message) in cases {
             #expect(reason.message(for: field, english) == message)
+            #expect(!message.hasPrefix("err_"), "\(message) has no English string")
         }
+    }
+
+    /// SSH (Task 7): the kind's label and the refused-host-key outcome exist in both languages.
+    @Test func sshKindAndOutcomeHaveLabels() throws {
+        for language in ["fr", "en"] {
+            let table = try #require(Strings.table[language])
+            #expect(table[MachineKind.ssh.titleKey] != nil)
+            #expect(table[HistoryOutcome.hostKeyRejected.titleKey] != nil)
+        }
+        #expect(MachineKind.ssh.symbolName == "terminal")
+    }
+
+    /// Until SSH sessions exist (Task 9) and the editor edits them (Task 10), the editor never offers SSH.
+    @Test func editorDoesNotOfferSSHYet() {
+        #expect(MachineKind.editorKinds == [.macARD, .vnc, .anthropicVM])
     }
 }
 
