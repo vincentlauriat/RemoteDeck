@@ -24,7 +24,7 @@ public struct SSHKeepalive: Sendable {
 }
 
 /// One SSH connection to one server: TCP, key exchange, host key check, user authentication, then
-/// channels (a pty shell here; port forwards and SFTP extend it).
+/// channels: a pty shell, local port forwards (`LocalForward.swift`), and later SFTP.
 ///
 /// The SSH library (swift-nio-ssh) stays behind this actor: its handlers run on a NIO event loop,
 /// and only `SSHError`, `SSHHostKey` and SSHKit types cross the boundary.
@@ -39,6 +39,8 @@ public actor SSHConnection {
     private var handshake: Handshake?
     private var opened = false
     private var ended = false
+    /// The local forwards started on this connection; all are stopped when it ends.
+    private var forwards: [LocalForwardHandle] = []
     private let closedStream: AsyncStream<SSHError?>
     private let closedContinuation: AsyncStream<SSHError?>.Continuation
 
@@ -200,23 +202,48 @@ public actor SSHConnection {
         return SSHShell(output: output, channel: child)
     }
 
-    /// Closes the connection; `closed` yields nil. Calling it again does nothing.
+    /// Closes the connection and stops its local forwards (their ports are free when this
+    /// returns); `closed` yields nil. Calling it again does nothing.
     public func close() async {
         guard !ended else { return }
         let channel = self.channel
+        let forwards = self.forwards
         finish(nil)
         handshake?.abort(local: true)
         try? await channel?.close()
+        for forward in forwards {
+            await forward.stop()
+        }
     }
 
-    /// Records how the connection ended, once.
+    /// Records how the connection ended, once, and stops the local forwards.
     private func finish(_ value: SSHError?) {
         guard !ended else { return }
         ended = true
         channel = nil
         sshHandler = nil
+        for forward in forwards {
+            forward.shutdown()
+        }
+        forwards = []
         closedContinuation.yield(value)
         closedContinuation.finish()
+    }
+
+    // MARK: For LocalForward.swift
+
+    /// The authenticated connection's event loop and SSH handler, nil once it ended or before `open`.
+    func forwardingContext() -> (loop: any EventLoop, ssh: NIOLoopBound<NIOSSHHandler>)? {
+        guard !ended, let channel, let sshHandler else { return nil }
+        return (channel.eventLoop, sshHandler)
+    }
+
+    /// Keeps `forward` to stop it with the connection; false (and nothing kept) once it ended.
+    func adopt(_ forward: LocalForwardHandle) -> Bool {
+        guard !ended else { return false }
+        forwards.removeAll { $0.isStopped }
+        forwards.append(forward)
+        return true
     }
 
     /// A failure to open the TCP connection.

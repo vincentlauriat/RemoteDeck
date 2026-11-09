@@ -10,8 +10,9 @@ import Synchronization
 /// An in-process SSH server on 127.0.0.1 and a random port, on swift-nio-ssh's server side, for the
 /// loopback tests. It authenticates one user by password or authorized public key, opens an echo
 /// shell on a pty (`window-change` is echoed back as `"\u{1b}[size cols rows]"`, a line `exit` ends
-/// the shell with status 0) and records what the client asked for. Never reachable from outside
-/// the machine, and never reads `~/.ssh`.
+/// the shell with status 0), forwards `direct-tcpip` channels to allow-listed targets on 127.0.0.1
+/// and records what the client asked for. Never reachable from outside the machine, and never
+/// reads `~/.ssh`.
 final class TestSSHServer: Sendable {
     enum HostKeyKind: Sendable {
         case ed25519, rsa, ecdsa
@@ -23,6 +24,24 @@ final class TestSSHServer: Sendable {
         var password: String? = "s3cret"
         /// Public keys accepted for `user`, as their `.pub` files hold them.
         var authorizedKeys: [SSHHostKey] = []
+        /// The `direct-tcpip` targets the server opens, each by connecting to 127.0.0.1 on the
+        /// target's port; any other target is refused.
+        var forwardTargets: [ForwardTarget] = []
+        /// Whether the server's socket to a forward target reads EOF as a half-close. When false,
+        /// the target closing makes the server send CHANNEL_EOF then CHANNEL_CLOSE at once.
+        var halfCloseTargets = true
+    }
+
+    struct ForwardTarget: Hashable, Sendable {
+        var host: String
+        var port: UInt16
+    }
+
+    /// One `direct-tcpip` open request.
+    struct DirectTCPIPRequest: Equatable, Sendable {
+        var target: ForwardTarget
+        var originatorHost: String
+        var originatorPort: Int
     }
 
     /// What the client sent, in order.
@@ -37,6 +56,8 @@ final class TestSSHServer: Sendable {
         var connections = 0
         /// The number of key exchanges the RSA host key signed (initial plus re-keys).
         var hostKeySignatures = 0
+        /// Every `direct-tcpip` open request, accepted or refused.
+        var directTCPIPRequests: [DirectTCPIPRequest] = []
     }
 
     let port: UInt16
@@ -69,11 +90,15 @@ final class TestSSHServer: Sendable {
                     try channel.pipeline.syncOperations.addHandlers(
                         SilenceHandler(state: state),
                         NIOSSHHandler(role: .server(server), allocator: channel.allocator) { child, type in
-                            guard case .session = type else {
+                            switch type {
+                            case .session:
+                                return child.eventLoop.makeCompletedFuture {
+                                    try child.pipeline.syncOperations.addHandler(EchoShellHandler(state: state))
+                                }
+                            case .directTCPIP(let request):
+                                return openDirectTCPIP(child, request, configuration: configuration, state: state)
+                            default:
                                 return child.eventLoop.makeFailedFuture(TestServerError.unsupportedChannel)
-                            }
-                            return child.eventLoop.makeCompletedFuture {
-                                try child.pipeline.syncOperations.addHandler(EchoShellHandler(state: state))
                             }
                         },
                         CloseOnErrorHandler()
@@ -95,6 +120,45 @@ final class TestSSHServer: Sendable {
     /// anything, keepalives included, like a peer behind a dead network.
     func stopAnswering() {
         state.withLock { $0.silent = true }
+    }
+
+    /// While true, every `direct-tcpip` open is refused, allow-listed or not (still recorded).
+    func refuseForwards(_ refuse: Bool) {
+        state.withLock { $0.refuseForwards = refuse }
+    }
+
+    /// Opens a `direct-tcpip` channel the way sshd does: connect to the target first, confirm the
+    /// channel only once connected, then glue the two (with half-closure on both sides).
+    private static func openDirectTCPIP(
+        _ child: any Channel, _ request: SSHChannelType.DirectTCPIP, configuration: Configuration, state: Shared
+    ) -> EventLoopFuture<Void> {
+        let target = ForwardTarget(host: request.targetHost, port: UInt16(request.targetPort))
+        let refused = state.withLock { value in
+            value.record.directTCPIPRequests.append(DirectTCPIPRequest(
+                target: target,
+                originatorHost: request.originatorAddress.ipAddress ?? "?",
+                originatorPort: request.originatorAddress.port ?? -1
+            ))
+            return value.refuseForwards
+        }
+        guard !refused, configuration.forwardTargets.contains(target) else {
+            return child.eventLoop.makeFailedFuture(TestServerError.forwardRefused)
+        }
+        let (socketGlue, channelGlue) = ForwardGlue.pair()
+        let socketHalf = NIOLoopBound(socketGlue, eventLoop: child.eventLoop)
+        let channelHalf = NIOLoopBound(channelGlue, eventLoop: child.eventLoop)
+        return ClientBootstrap(group: child.eventLoop)
+            .channelOption(.allowRemoteHalfClosure, value: configuration.halfCloseTargets)
+            .channelInitializer { socket in
+                socket.eventLoop.makeCompletedFuture {
+                    try socket.pipeline.syncOperations.addHandler(socketHalf.value)
+                }
+            }
+            .connect(host: "127.0.0.1", port: Int(target.port))
+            .flatMapThrowing { _ in
+                try child.syncOptions?.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
+                try child.pipeline.syncOperations.addHandlers(SSHChannelDataUnwrapper(), channelHalf.value)
+            }
     }
 
     /// Starts a key re-exchange on every connection (swift-nio-ssh's test-only `_rekey`).
@@ -147,6 +211,7 @@ final class TestSSHServer: Sendable {
         struct Value {
             var record = Record()
             var silent = false
+            var refuseForwards = false
             var children: [any Channel] = []
         }
 
@@ -162,6 +227,7 @@ enum TestServerError: Error {
     case noPort
     case notRSA
     case unsupportedChannel
+    case forwardRefused
 }
 
 /// An RSA host key as OpenSSH serves it: negotiated as `rsa-sha2-512`, sent as a blob typed

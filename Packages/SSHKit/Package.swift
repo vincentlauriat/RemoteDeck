@@ -54,6 +54,7 @@ let package = Package(
                 .product(name: "NIOSSH", package: "swift-nio-ssh"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOEmbedded", package: "swift-nio"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
             ],
