@@ -312,10 +312,10 @@ struct SSHServicesTests {
         // An automatic attempt never gets a prompt: nobody can answer it.
         #expect(summary(resolver.resolve(machine: machine, passphrase: nil, allowsInteraction: false))
                 == "failed(passphraseUnavailable)")
-        // A wrong passphrase asks again when someone can answer, else the key cannot be read.
+        // A wrong passphrase asks again when someone can answer, else nobody can: "Connection lost".
         #expect(summary(resolver.resolve(machine: machine, passphrase: "nope", allowsInteraction: true)) == "needsPassphrase")
         #expect(summary(resolver.resolve(machine: machine, passphrase: "nope", allowsInteraction: false))
-                == "failed(keyUnreadable)")
+                == "failed(passphraseUnavailable)")
         #expect(summary(resolver.resolve(machine: machine, passphrase: SSHTestKeys.passphrase, allowsInteraction: true))
                 == "key(vincent, ssh-ed25519)")
     }
@@ -336,9 +336,9 @@ struct SSHServicesTests {
         // A remembered passphrase that no longer opens the key (the key was re-encrypted).
         secrets.items[.sshLocalKeyPassphrase(id)] = "old"
         #expect(summary(resolver.resolve(machine: target(id: id, auth: .keyInSSHFolder, keyFile: "id_ed25519"),
-                                         passphrase: nil, allowsInteraction: false)) == "failed(keyUnreadable)")
+                                         passphrase: nil, allowsInteraction: false)) == "failed(passphraseUnavailable)")
         #expect(summary(resolver.resolve(machine: target(id: id, auth: .keyInSSHFolder, keyFile: "id_ed25519"),
-                                         passphrase: nil, allowsInteraction: true)) == "needsPassphrase")
+                                         passphrase: nil, allowsInteraction: true)) == "rememberedPassphraseRejected")
     }
 
     /// A remembered passphrase whose read would need a Keychain dialog, during an automatic attempt:
@@ -560,6 +560,7 @@ private func summary(_ resolution: CredentialResolution) -> String {
     case .ready(.password(let user, let password)): "password(\(user), \(password))"
     case .ready(.key(let user, let key)): "key(\(user), \(key.algorithm))"
     case .needsPassphrase: "needsPassphrase"
+    case .rememberedPassphraseRejected: "rememberedPassphraseRejected"
     case .needsFolderAccess: "needsFolderAccess"
     case .failed(let failure): "failed(\(failure))"
     }

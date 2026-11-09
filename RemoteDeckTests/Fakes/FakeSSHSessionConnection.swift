@@ -16,6 +16,11 @@ actor FakeSSHSessionConnection: SSHSessionConnection {
     private let openResult: Result<Void, SSHError>
     private let shellResult: Result<Void, SSHError>
     private let hangsAfterValidation: Bool
+    /// `openShell` never answers (until `close()`), as a server that never confirms the shell.
+    private let shellHangs: Bool
+    /// The validator's task returned (answered or was resumed by the model).
+    private(set) var validationEnded = false
+    private var shellHang: CheckedContinuation<Void, Never>?
     /// Set only once the validator accepted the key: what was sent to authenticate.
     private(set) var credentials: SSHCredentials?
     private(set) var validationStarted = false
@@ -25,7 +30,9 @@ actor FakeSSHSessionConnection: SSHSessionConnection {
     private var isClosed = false
 
     init(log: SessionLog, hostKey: SSHHostKey, openResult: Result<Void, SSHError> = .success(()),
-         shellResult: Result<Void, SSHError> = .success(()), hangsAfterValidation: Bool = false) {
+         shellResult: Result<Void, SSHError> = .success(()), hangsAfterValidation: Bool = false,
+         shellHangs: Bool = false) {
+        self.shellHangs = shellHangs
         self.log = log
         self.hostKey = hostKey
         self.openResult = openResult
@@ -49,6 +56,7 @@ actor FakeSSHSessionConnection: SSHSessionConnection {
             validation.cancel()
         }
         self.validation = nil
+        validationEnded = true
         guard !isClosed else { throw .connectionClosed }
         guard accepted else {
             log.append("hostKeyRejected")
@@ -71,6 +79,10 @@ actor FakeSSHSessionConnection: SSHSessionConnection {
         log.append("shell")
         guard !isClosed else { throw .connectionClosed }
         shellRequest = (term, columns, rows)
+        if shellHangs {
+            await withCheckedContinuation { shellHang = $0 }
+            throw .connectionClosed
+        }
         if case .failure(let error) = shellResult { throw error }
         return shell
     }
@@ -91,6 +103,8 @@ actor FakeSSHSessionConnection: SSHSessionConnection {
         validation?.cancel()
         hang?.resume()
         hang = nil
+        shellHang?.resume()
+        shellHang = nil
         closedContinuation.yield(nil)
         closedContinuation.finish()
     }

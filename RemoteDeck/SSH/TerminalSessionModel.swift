@@ -3,6 +3,7 @@ import Observation
 import SwiftData
 import RemoteDeckCore
 import SSHKit
+import Synchronization
 
 // MARK: - Failures
 
@@ -19,7 +20,8 @@ enum TerminalFailure: Equatable, Sendable {
     case sshFolderAccessNeeded
     /// The server's key differs from the trusted one (own list or `~/.ssh/known_hosts`). No action
     /// continues the connection: the way out is in the Machine Editor. `previousFingerprint` is
-    /// `HostKeyDecision.knownHostsConflict` when the conflict is in `known_hosts`.
+    /// `HostKeyDecision.knownHostsConflict` when the conflict is in `known_hosts`, and empty when the
+    /// previous key is not known (a re-key presented another key and no list holds the first one).
     case hostKeyChanged(previousFingerprint: String, newFingerprint: String)
     /// The connection ended after the shell was up without the user asking, and the automatic
     /// attempt (if any) did not bring it back.
@@ -102,9 +104,14 @@ enum TerminalFailure: Equatable, Sendable {
         case .sshFolderAccessNeeded:
             return t("terminal_ssh_folder_needed")
         case .hostKeyChanged(let previous, let new):
-            let before = previous == HostKeyDecision.knownHostsConflict
-                ? t("terminal_host_key_previous_known_hosts") : fill("terminal_host_key_previous", previous)
-            return [t("terminal_host_key_changed"), before, fill("terminal_host_key_new", new)].joined(separator: "\n")
+            var lines = [t("terminal_host_key_changed")]
+            if previous == HostKeyDecision.knownHostsConflict {
+                lines.append(t("terminal_host_key_previous_known_hosts"))
+            } else if !previous.isEmpty {
+                lines.append(fill("terminal_host_key_previous", previous))
+            }
+            lines.append(fill("terminal_host_key_new", new))
+            return lines.joined(separator: "\n")
         case .connectionLost:
             return t("session_connection_lost")
         }
@@ -170,7 +177,8 @@ final class TerminalSessionModel {
     private(set) var hostKeyPrompt: HostKeyPrompt?
     /// The Passphrase Sheet is up (`providePassphrase` / `cancelPassphrase`).
     private(set) var needsPassphrase = false
-    /// The last passphrase given in the sheet did not open the key: "Wrong passphrase" in the sheet.
+    /// The last passphrase tried (given in the sheet, or the remembered one) did not open the key:
+    /// "Wrong passphrase" in the sheet.
     private(set) var passphraseRejected = false
     /// The current attempt was started by the session itself.
     private(set) var isAutomaticAttempt = false
@@ -218,6 +226,12 @@ final class TerminalSessionModel {
     @ObservationIgnored private var input: AsyncStream<ShellInput>.Continuation?
     @ObservationIgnored private var writer: Task<Void, Never>?
     @ObservationIgnored private var size = TerminalSessionModel.defaultSize
+    /// Output that arrived before a surface was attached (the attempt starts before the window's
+    /// `onAppear`): fed first by `attach`. Bounded to the last `pendingOutputLimit` bytes, which is far
+    /// more than a login banner and prompt; cleared by a new attempt.
+    @ObservationIgnored private var pendingOutput = Data()
+    static let pendingOutputLimit = 1 << 20
+    var pendingOutputCount: Int { pendingOutput.count }
     /// A shell was shown in this tab: the next one gets a separator.
     @ObservationIgnored private var hadShell = false
 
@@ -291,6 +305,22 @@ final class TerminalSessionModel {
         self.surface = surface
         surface.onInput = { [weak self] data in self?.send(data) }
         surface.onResize = { [weak self] columns, rows in self?.resize(columns: columns, rows: rows) }
+        if !pendingOutput.isEmpty {
+            surface.feed(pendingOutput)
+            pendingOutput = Data()
+        }
+    }
+
+    /// Shell output on the main actor: to the surface, or kept until one is attached.
+    private func deliver(_ data: Data) {
+        if let surface {
+            surface.feed(data)
+            return
+        }
+        pendingOutput.append(data)
+        if pendingOutput.count > Self.pendingOutputLimit {
+            pendingOutput = Data(pendingOutput.suffix(Self.pendingOutputLimit))
+        }
     }
 
     /// Typed keys, pastes, mouse reports: written in order while the shell is up, dropped otherwise.
@@ -320,6 +350,7 @@ final class TerminalSessionModel {
         dismissPrompts()
         isAutomaticAttempt = automatic
         shellUptime = nil
+        pendingOutput = Data()
         generation += 1
         let generation = self.generation
         if let machine = fetchMachine() { target = SessionTarget(machine) }   // edited credentials
@@ -340,7 +371,7 @@ final class TerminalSessionModel {
         guard let coalescer else { return }
         let deliver: @MainActor @Sendable (Data) -> Void = { [weak self] data in
             guard let self, self.generation == generation else { return }
-            self.surface?.feed(data)
+            self.deliver(data)
         }
         do {
             try await coalescer.run(shell.output, deliver: deliver)
@@ -406,17 +437,41 @@ final class TerminalSessionModel {
             guard generation == self.generation else { return nil }
             openedSize = size
             let size = openedSize
-            shell = try await Task {
+            shell = try await Self.withinTimeout(shellTimeout) {
                 try await connection.openShell(term: Self.term, columns: size.columns, rows: size.rows)
-            }.value
+            }
         } catch {
             openingEnded(generation: generation)
+            guard generation == self.generation else { return nil }   // a stale open leaves newer prompts alone
             dismissPrompts()   // `open` ended under a prompt: the connection died
-            guard generation == self.generation else { return nil }
             await stop(failing: openFailure(error, generation: generation), generation: generation)
             return nil
         }
         return (connection, shell, openedSize)
+    }
+
+    /// How long the shell may take to open after authentication (`openTimeout`; shorter in tests).
+    /// Past it the attempt fails `.timedOut`, and its teardown closes the connection, which ends the
+    /// pending `openShell`.
+    @ObservationIgnored var shellTimeout: Duration = TerminalSessionModel.openTimeout
+
+    /// `work`'s result, or `SSHError.timedOut` after `limit`, without waiting for `work` to honour
+    /// cancellation (`SSHConnection.openShell` waits on NIO futures, which do not).
+    private nonisolated static func withinTimeout<T: Sendable>(
+        _ limit: Duration, _ work: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let once = ResumeOnce<T>()
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, any Error>) in
+            once.set(continuation)
+            let timer = Task {
+                try? await Task.sleep(for: limit)
+                once.resume(.failure(SSHError.timedOut))
+            }
+            Task {
+                do { once.resume(.success(try await work())) } catch { once.resume(.failure(error)) }
+                timer.cancel()
+            }
+        }
     }
 
     private func openingEnded(generation: Int) {
@@ -428,6 +483,8 @@ final class TerminalSessionModel {
     private func credentials(generation: Int) async -> SSHCredentials? {
         var given: String?
         var remember = false
+        /// The remembered passphrase was tried and is wrong.
+        var staleRemembered = false
         while true {
             let resolution = await resolver.resolveOffMain(machine: target, passphrase: given,
                                                            allowsInteraction: !isAutomaticAttempt)
@@ -435,10 +492,22 @@ final class TerminalSessionModel {
             switch resolution {
             case .ready(let credentials):
                 passphraseRejected = false
-                if remember, let given { rememberPassphrase(given) }
+                if let given {
+                    if remember {
+                        rememberPassphrase(given)
+                    } else if staleRemembered {
+                        forgetRememberedPassphrase()   // it no longer opens the key
+                    }
+                }
                 return credentials
-            case .needsPassphrase:
-                passphraseRejected = given != nil
+            case .needsPassphrase, .rememberedPassphraseRejected:
+                // Defence in depth: the resolver never asks for an automatic attempt.
+                guard !isAutomaticAttempt else {
+                    await stop(failing: .credentials(.passphraseUnavailable), generation: generation)
+                    return nil
+                }
+                if case .rememberedPassphraseRejected = resolution { staleRemembered = true }
+                passphraseRejected = given != nil || staleRemembered
                 guard let answer = await askPassphrase(generation: generation) else {
                     guard generation == self.generation else { return nil }
                     cancelAttempt(generation: generation)
@@ -464,6 +533,15 @@ final class TerminalSessionModel {
         switch target.sshAuth {
         case .keyInSSHFolder: try? secrets.setSecret(passphrase, for: .sshLocalKeyPassphrase(id))
         case .importedKey: try? secrets.setSecret(passphrase, for: .sshKeyPassphrase(id))
+        case .password: break
+        }
+    }
+
+    private func forgetRememberedPassphrase() {
+        let id = target.machineID
+        switch target.sshAuth {
+        case .keyInSSHFolder: try? secrets.deleteSecret(.sshLocalKeyPassphrase(id))
+        case .importedKey: try? secrets.deleteSecret(.sshKeyPassphrase(id))
         case .password: break
         }
     }
@@ -682,12 +760,14 @@ final class TerminalSessionModel {
     /// A re-key presented another host key (`closed` said `.hostKeyRejected`): blocked like a changed
     /// key at connect, no reconnect.
     private func rekeyRejected(_ key: SSHHostKey, generation: Int) async {
-        let previous = trustedFingerprint(of: key) ?? HostKeyDecision.knownHostsConflict
+        // The key of this session was trusted, but the list may hold none of the new key's type: then
+        // the previous key is not named (never "the one in known_hosts" without knowing it).
+        let previous = trustedFingerprint(of: key) ?? ""
         await stop(failing: .hostKeyChanged(previousFingerprint: previous, newFingerprint: key.fingerprintSHA256),
                    generation: generation)
     }
 
-    /// The fingerprint trusted now for this host and key type, if the own list says.
+    /// The fingerprint trusted now for this host and key type (or the known_hosts marker), if any.
     private func trustedFingerprint(of key: SSHHostKey) -> String? {
         if case .changed(let previous) = trust.decision(for: key, host: target.host, port: target.port) { return previous }
         return nil
@@ -882,6 +962,22 @@ final class TerminalSessionModel {
     /// History is best effort: a failed save never breaks the session.
     private func save() {
         try? context.save()
+    }
+}
+
+/// One continuation resumed once, by whichever of its racers answers first.
+private final class ResumeOnce<T: Sendable>: Sendable {
+    private let continuation = Mutex<CheckedContinuation<T, any Error>?>(nil)
+
+    func set(_ continuation: CheckedContinuation<T, any Error>) {
+        self.continuation.withLock { $0 = continuation }
+    }
+
+    func resume(_ result: Result<T, any Error>) {
+        continuation.withLock { continuation in
+            continuation?.resume(with: result)
+            continuation = nil
+        }
     }
 }
 

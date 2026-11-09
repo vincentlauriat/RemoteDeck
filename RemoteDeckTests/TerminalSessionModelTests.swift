@@ -47,7 +47,7 @@ final class TerminalHarness {
     var made: Int { fakes.count }
     var last: FakeSSHSessionConnection? { fakes.last }
 
-    func model() -> TerminalSessionModel {
+    func model(attaching: Bool = true) -> TerminalSessionModel {
         let model = TerminalSessionModel(
             machine: machine, context: context,
             resolver: SSHCredentialResolver(passwords: passwords, secrets: secrets, folder: folder),
@@ -57,7 +57,7 @@ final class TerminalHarness {
             fakes.append(fake)
             return fake
         }
-        model.attach(surface)
+        if attaching { model.attach(surface) }
         return model
     }
 
@@ -179,6 +179,58 @@ struct TerminalSessionModelTests {
         #expect(try harness.records().map(\.outcomeValue) == [.hostKeyRejected])
     }
 
+    /// A re-key to a key type no list holds: the banner never names known_hosts or a previous key it
+    /// does not know.
+    @Test func rekeyToAnotherTypeUsesTheGenericWording() async throws {
+        let harness = try TerminalHarness()
+        harness.trustServerKey()
+        let model = harness.model()
+        model.connect()
+        try await harness.connected(model)
+        let ecdsa = try SSHHostKey(openSSHPublicKey: SSHTestKeys.ecdsaPublic)
+        await harness.last?.rekeyRejected(ecdsa)
+        #expect(await waitUntil { model.failure != nil })
+        #expect(model.failure == .hostKeyChanged(previousFingerprint: "", newFingerprint: ecdsa.fingerprintSHA256))
+        let message = try #require(model.failure?.message(english))
+        #expect(!message.contains("known_hosts") && !message.contains("Trusted key"))
+        #expect(message.hasPrefix("The identity of this server has changed"))
+        #expect(message.contains(ecdsa.fingerprintSHA256))
+    }
+
+    /// Closing the tab while the Host Key Sheet is up: the sheet goes, the validator is answered
+    /// (nothing left waiting), nothing authenticates, the record ends `cancelled`.
+    @Test func closeWhileTheHostKeySheetIsUpResumesTheValidator() async throws {
+        let harness = try TerminalHarness()
+        let model = harness.model()
+        model.connect()
+        #expect(await waitUntil { model.hostKeyPrompt != nil })
+        let fake = try #require(harness.last)
+        await model.close()
+        #expect(model.hostKeyPrompt == nil)
+        #expect(model.phase == .closed)
+        #expect(await waitUntilAsync { await fake.validationEnded })
+        #expect(await fake.credentials == nil)
+        let record = try #require(try harness.records().first)
+        #expect(record.outcomeValue == .cancelled)
+        #expect(record.endedAt != nil)
+        #expect(harness.trust.decision(for: serverKey, host: "pi.local", port: 22) == .unknown)
+    }
+
+    /// A shell that never opens fails as an open timeout, and the connection is closed.
+    @Test func shellThatNeverOpensTimesOut() async throws {
+        let harness = try TerminalHarness()
+        harness.trustServerKey()
+        harness.makeFake = { _, log in FakeSSHSessionConnection(log: log, hostKey: serverKey, shellHangs: true) }
+        let model = harness.model()
+        model.shellTimeout = .milliseconds(100)
+        model.connect()
+        #expect(await waitUntil { model.failure != nil })
+        #expect(model.failure == .connect(.timedOut))
+        #expect(model.failure?.message(english) == "Unreachable — no answer within 10 s")
+        #expect(await waitUntil { harness.log.all.last == "close" })
+        #expect(try harness.records().map(\.outcomeValue) == [.unreachable])
+    }
+
     // MARK: Passphrase
 
     @Test func testPassphrasePromptThenRememberStoresLocalItem() async throws {
@@ -204,6 +256,25 @@ struct TerminalSessionModelTests {
             return
         }
         #expect(user == "vincent")
+        await model.close()
+    }
+
+    /// A remembered passphrase that no longer opens the key (re-encrypted): the sheet says it was
+    /// wrong, and the stale item goes once a typed one works, even without Remember.
+    @Test func staleRememberedPassphraseAsksAndIsDeletedOnSuccess() async throws {
+        let harness = try TerminalHarness(auth: .keyInSSHFolder, keyFile: "id_enc",
+                                          folderFiles: ["id_enc": SSHTestKeys.ed25519Encrypted])
+        harness.trustServerKey()
+        let id = harness.machine.id
+        harness.secrets.items[.sshLocalKeyPassphrase(id)] = "old"
+        let model = harness.model()
+        model.connect()
+        #expect(await waitUntil(timeout: .seconds(10)) { model.needsPassphrase })
+        #expect(model.passphraseRejected)
+        model.providePassphrase(SSHTestKeys.passphrase, remember: false)
+        try await harness.connected(model)
+        #expect(harness.secrets.items[.sshLocalKeyPassphrase(id)] == nil)
+        #expect(harness.secrets.deleted == [.sshLocalKeyPassphrase(id)])
         await model.close()
     }
 
@@ -255,6 +326,28 @@ struct TerminalSessionModelTests {
         harness.surface.type("l")
         harness.surface.type("s\n")
         #expect(await waitUntil { fake.shell.written == Data("ls\n".utf8) })
+        await model.close()
+    }
+
+    /// The attempt starts before the window attaches its surface: what the shell printed meanwhile
+    /// (banner, prompt) is fed on attach, byte for byte, before anything newer.
+    @Test func outputBeforeAttachIsFedOnAttach() async throws {
+        let harness = try TerminalHarness()
+        harness.trustServerKey()
+        let model = harness.model(attaching: false)
+        model.connect()
+        try await harness.connected(model)
+        let shell = try #require(harness.last).shell
+        let banner = Data((0..<3000).map { UInt8($0 % 251) })
+        shell.emit(banner)
+        shell.emit("$ ")
+        #expect(await waitUntil { model.pendingOutputCount == banner.count + 2 })
+        #expect(harness.surface.feeds == 0)
+        model.attach(harness.surface)
+        #expect(harness.surface.fed == banner + Data("$ ".utf8))
+        #expect(model.pendingOutputCount == 0)
+        shell.emit("ls")
+        #expect(await waitUntil { harness.surface.fedText.hasSuffix("$ ls") })
         await model.close()
     }
 
