@@ -76,8 +76,11 @@ struct RemoteDeckApp: App {
         // tests and the demo, which never write them.
         let publicConsents: any PublicAddressConsents = inMemory
             ? InMemoryPublicAddressConsents() : UserDefaultsPublicAddressConsents()
+        // SSH machines: `~/.ssh` access, trusted host keys and secrets, in memory under the hosted
+        // tests and the demo (no panel, no `~/.ssh`, no defaults), secrets following the library.
+        let ssh = SSHServices.app(usesUserState: !inMemory, isInMemory: isInMemory)
         _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords,
-                                                           publicConsents: publicConsents))
+                                                           publicConsents: publicConsents, ssh: ssh))
         var tester: any ConnectionTester = RFBConnectionTester()
         var makeConnection: @MainActor (SessionTarget) -> any SessionConnection = SessionManager.rfbConnection
         // The hosted tests never touch the real pasteboard.
@@ -183,7 +186,7 @@ struct RemoteDeckApp: App {
         }
         #endif
         let merger = opened.syncsWithICloud
-            ? LibraryMerger(context: container.mainContext, passwords: passwords,
+            ? LibraryMerger(context: container.mainContext, passwords: passwords, sshSecrets: ssh.secrets,
                             hasSession: { [sessions] id in sessions.sessions[id] != nil })
             : nil
         let sync = LibrarySync(isActive: syncActive, isEntitled: syncEntitled,
@@ -199,9 +202,11 @@ struct RemoteDeckApp: App {
         // the file keychain move to the data-protection keychain, local passwords to iCloud Keychain.
         // Detached: a file-keychain item that asks for its keychain password never holds the main actor.
         if !isInMemory {
-            let ids = ((try? container.mainContext.fetch(FetchDescriptor<Machine>())) ?? []).map(\.id)
+            let machines = (try? container.mainContext.fetch(FetchDescriptor<Machine>())) ?? []
+            let ids = machines.map(\.id)
+            let sshIDs = machines.filter { $0.kindValue == .ssh }.map(\.id)
             let keychain = KeychainStore.app
-            Task.detached(priority: .utility) { keychain.migrateAtLaunch(machineIDs: ids) }
+            Task.detached(priority: .utility) { keychain.migrateAtLaunch(machineIDs: ids, sshMachineIDs: sshIDs) }
         }
         let router = StatusNotificationRouter()
         _notificationRouter = State(initialValue: router)

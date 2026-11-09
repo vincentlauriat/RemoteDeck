@@ -381,7 +381,12 @@ extension KeychainStore {
     /// items from the shared service it used before T4.3 (moved: those machines are Debug's), and a
     /// copy of the API key (left in place: it may be the Release app's). Without a keychain access
     /// group (ad-hoc, CI) nothing moves.
-    func migrateAtLaunch(machineIDs: [UUID]) {
+    ///
+    /// SSH machines (post-1.0, `sshMachineIDs`): their local `sshKey.<id>` / `sshPassphrase.<id>`
+    /// move to synced items (`SSHSecretMigration`), and a local `sshLocalPassphrase.<id>` left in the
+    /// file keychain moves to the data-protection keychain. No adoption from the pre-T4.3 shared
+    /// service: SSH secrets did not exist then.
+    func migrateAtLaunch(machineIDs: [UUID], sshMachineIDs: [UUID]) {
         guard usesDataProtectionKeychain else { return }
         if service != KeychainStore.defaultService {
             // Data-protection store of the old service: also finds (and deletes) its file-keychain copies.
@@ -391,5 +396,7 @@ extension KeychainStore {
         }
         _ = try? migrateLegacyItem(.anthropicAPIKey)
         _ = migrateLocalMachinePasswordsToSynced(machineIDs)
+        for id in sshMachineIDs { _ = try? migrateLegacyItem(.sshLocalKeyPassphrase(id)) }
+        _ = SSHSecretMigration.migrateLocalToSynced(machineIDs: sshMachineIDs, keychain: self)
     }
 }

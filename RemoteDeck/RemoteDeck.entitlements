@@ -8,6 +8,9 @@
     <true/>
     <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
+    <!-- The per-Mac security-scoped bookmark of the ~/.ssh folder (SSH machines; read only). -->
+    <key>com.apple.security.files.bookmarks.app-scope</key>
+    <true/>
     <key>com.apple.developer.icloud-container-identifiers</key>
     <array>
         <string>iCloud.fr.vincentlauriat.remotedeck</string>

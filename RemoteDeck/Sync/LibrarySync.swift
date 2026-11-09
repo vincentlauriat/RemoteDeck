@@ -294,16 +294,25 @@ final class LibrarySync {
 /// saved (a failed save deletes nothing; an item orphaned by a later failure is harmless). A machine
 /// whose password cannot be read without a dialog, whose copy fails, or that has an open session on
 /// this Mac is left for a later merge.
+///
+/// SSH secrets (post-1.0) follow the same rules, the imported key and its remembered passphrase as
+/// one pair (`sshKey.<id>`, `sshPassphrase.<id>`): a survivor with its own key keeps its pair;
+/// otherwise the dropped copy's pair is copied and read back. The dropped machines' three SSH items
+/// are deleted after the save. `sshLocalPassphrase.<id>` (a key in this Mac's `~/.ssh`) is never
+/// copied: it is local by design, and the survivor asks again at its next Connect.
 @MainActor
 final class LibraryMerger {
     private let context: ModelContext
     private let passwords: any MachinePasswordStore
+    private let sshSecrets: any SSHSecretStore
     private let hasSession: @MainActor (UUID) -> Bool
 
     init(context: ModelContext, passwords: any MachinePasswordStore,
+         sshSecrets: any SSHSecretStore = InMemorySSHSecretStore(),
          hasSession: @escaping @MainActor (UUID) -> Bool = { _ in false }) {
         self.context = context
         self.passwords = passwords
+        self.sshSecrets = sshSecrets
         self.hasSession = hasSession
     }
 
@@ -332,7 +341,8 @@ final class LibraryMerger {
             guard let survivor = machinesByID[merge.survivor] else { continue }
             for id in merge.dropped {
                 guard let dropped = machinesByID[id], !hasSession(id),
-                      let deletesPassword = foldPassword(of: id, into: merge.survivor) else { continue }
+                      let deletesPassword = foldPassword(of: id, into: merge.survivor),
+                      foldSSHSecrets(of: id, into: merge.survivor) else { continue }
                 // Only from a copy that goes now: a kept duplicate keeps its own fields.
                 if id == merge.fieldsFrom { LibraryDeduplication.copyFields(from: dropped, to: survivor) }
                 survivor.lastConnectedAt = [survivor.lastConnectedAt, dropped.lastConnectedAt].compactMap { $0 }.max()
@@ -351,7 +361,35 @@ final class LibraryMerger {
             return []
         }
         for id in passwordsToDelete { try? passwords.deletePassword(for: id) }
+        for id in removed {
+            for account in [KeychainAccount.sshPrivateKey(id), .sshKeyPassphrase(id), .sshLocalKeyPassphrase(id)] {
+                try? sshSecrets.deleteSecret(account)
+            }
+        }
         return removed
+    }
+
+    /// False: keep the dropped machine for now (a read needs a dialog, or the copy did not read back).
+    /// Reads never ask.
+    private func foldSSHSecrets(of dropped: UUID, into survivor: UUID) -> Bool {
+        do throws(KeychainError) {
+            guard try sshSecrets.secret(.sshPrivateKey(survivor), allowsInteraction: false) == nil,
+                  let key = try sshSecrets.secret(.sshPrivateKey(dropped), allowsInteraction: false)
+            else { return true }
+            let passphrase = try sshSecrets.secret(.sshKeyPassphrase(dropped), allowsInteraction: false)
+            try sshSecrets.setSecret(key, for: .sshPrivateKey(survivor))
+            if let passphrase {
+                try sshSecrets.setSecret(passphrase, for: .sshKeyPassphrase(survivor))
+            } else {
+                // A passphrase the survivor kept without a key cannot belong to the copied one.
+                try sshSecrets.deleteSecret(.sshKeyPassphrase(survivor))
+            }
+            let copiedKey = try sshSecrets.secret(.sshPrivateKey(survivor), allowsInteraction: false)
+            let copiedPassphrase = try sshSecrets.secret(.sshKeyPassphrase(survivor), allowsInteraction: false)
+            return copiedKey == key && copiedPassphrase == passphrase
+        } catch {
+            return false
+        }
     }
 
     /// nil: keep the dropped machine for now. Otherwise it may go, and `true` says it has a password

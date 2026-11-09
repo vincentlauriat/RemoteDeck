@@ -13,6 +13,8 @@ targetRules = ["private-key"]
 paths = [
   # Keys generated with ssh-keygen for SSHKit's tests only, never used anywhere else.
   '''^Packages/SSHKit/Tests/SSHKitTests/Fixtures/''',
+  # Copies of two of those fixtures, embedded for the hosted app tests (which cannot read the package).
+  '''^RemoteDeckTests/Fakes/SSHTestKeys\.swift$''',
   # `-----BEGIN … PRIVATE KEY-----` armor: SSHKit's format constant and its tests' fake key files.
   '''^Packages/SSHKit/Sources/SSHKit/PrivateKey\.swift$''',
   '''^Packages/SSHKit/Tests/SSHKitTests/PrivateKeyTests\.swift$''',

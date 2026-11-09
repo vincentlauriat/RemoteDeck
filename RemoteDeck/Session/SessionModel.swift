@@ -78,6 +78,11 @@ struct SessionTarget: Equatable, Sendable {
     var port: Int
     var username: String?
     var scalingMode: ScalingMode
+    /// SSH machines only (meaningless for screen sessions): how they authenticate, the key file in
+    /// `~/.ssh` for `keyInSSHFolder`, and the saved local port forwards.
+    var sshAuth: SSHAuthMethod = .password
+    var sshKeyFileName: String?
+    var portForwards: [PortForward] = []
 
     init(_ machine: Machine) {
         machineID = machine.id
@@ -87,6 +92,9 @@ struct SessionTarget: Equatable, Sendable {
         port = machine.port
         username = machine.username
         scalingMode = machine.scalingModeValue
+        sshAuth = machine.sshAuth
+        sshKeyFileName = machine.sshKeyFileName
+        portForwards = machine.portForwards
     }
 
     /// ⌘ and ⌥ per machine kind (TRD › Input): Mac ARD → Alt/Meta, VNC and Anthropic VM → X11 Super/Alt.
