@@ -130,11 +130,8 @@ final class MachineLibraryModel {
         }
         if selection == id { selection = nil }
         publicConsents.forget(id)
-        let entryKey = HostKeyTrust.entryKey(host: host, port: port)
-        let remaining = (try? context.fetch(FetchDescriptor<Machine>())) ?? []
-        if !remaining.contains(where: { HostKeyTrust.entryKey(host: $0.host, port: $0.port) == entryKey }) {
-            ssh.trustedHostKeys.forget(host: host, port: port)
-        }
+        ssh.trustedHostKeys.forget(host: host, port: port,
+                                   unlessUsedBy: (try? context.fetch(FetchDescriptor<Machine>())) ?? [])
         var firstError: KeychainError?
         do {
             try passwords.deletePassword(for: id)

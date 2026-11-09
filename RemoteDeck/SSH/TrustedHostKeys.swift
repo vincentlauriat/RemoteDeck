@@ -1,4 +1,5 @@
 import Foundation
+import RemoteDeckCore
 import SSHKit
 
 /// What to do with a server's host key (TRD › Security › Host keys).
@@ -40,6 +41,9 @@ protocol TrustedHostKeys: AnyObject {
     func trust(_ key: SSHHostKey, host: String, port: Int)
     /// The machine was deleted, or "Remove from RemoteDeck's trusted keys…".
     func forget(host: String, port: Int)
+    /// RemoteDeck's own list has a key for this `host:port` (what "Remove from RemoteDeck's trusted
+    /// keys…" removes; `~/.ssh/known_hosts` is never consulted nor changed).
+    func hasTrustedKeys(host: String, port: Int) -> Bool
     /// Set by each `decision`: why `known_hosts` was not consulted, nil when it was or when there
     /// is no grant to consult.
     var lastKnownHostsProblem: KnownHostsProblem? { get }
@@ -143,6 +147,21 @@ extension TrustedHostKeyStore {
 
     func forget(host: String, port: Int) {
         entries[HostKeyTrust.entryKey(host: host, port: port)] = nil
+    }
+
+    func hasTrustedKeys(host: String, port: Int) -> Bool {
+        entries[HostKeyTrust.entryKey(host: host, port: port)]?.isEmpty == false
+    }
+}
+
+extension TrustedHostKeys {
+    /// Forgets `host:port` unless one of `others` (the machines that remain, or the other machines
+    /// of the library) still has it, a synced duplicate not merged yet for instance: the machine was
+    /// deleted, or its host or port edited.
+    func forget(host: String, port: Int, unlessUsedBy others: [Machine]) {
+        let entryKey = HostKeyTrust.entryKey(host: host, port: port)
+        guard !others.contains(where: { HostKeyTrust.entryKey(host: $0.host, port: $0.port) == entryKey }) else { return }
+        forget(host: host, port: port)
     }
 }
 

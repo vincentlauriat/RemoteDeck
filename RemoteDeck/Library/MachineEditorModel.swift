@@ -3,9 +3,12 @@ import Observation
 import SwiftData
 import RemoteDeckCore
 import RFBKit
+import SSHKit
 
 /// Machine Editor state (AppFlow › Machine Editor): fields, validation, Keychain password,
-/// Save and Test connection.
+/// Save and Test connection. SSH machines (AppFlow › Machine Editor › SSH machines) add the
+/// authentication method, imported keys, port forwards, the `~/.ssh/config` import and the host key
+/// check of their Test: `MachineEditorSSH.swift`.
 @Observable
 @MainActor
 final class MachineEditorModel {
@@ -26,6 +29,13 @@ final class MachineEditorModel {
     var kind: MachineKind {
         didSet {
             resetTest()
+            // AppFlow: switching kind sets its default port only if the user never touched the port.
+            if !portTouched, portText == String(oldValue.defaultPort) {
+                applyingPortDefault = true
+                portText = String(kind.defaultPort)
+                applyingPortDefault = false
+            }
+            if kind == .ssh { sshFieldsShown() }
             // A new machine's Shared Clipboard follows the kind until the user sets it (T5.3 M1).
             if isNew, !sharedClipboardTouched {
                 applyingKindDefault = true
@@ -37,7 +47,12 @@ final class MachineEditorModel {
     var name: String
     var host: String { didSet { resetTest() } }
     /// Text, so a non-numeric entry is reported as an out-of-range port rather than lost.
-    var portText: String { didSet { resetTest() } }
+    var portText: String {
+        didSet {
+            resetTest()
+            if !applyingPortDefault { portTouched = true }
+        }
+    }
     var username: String { didSet { resetTest() } }
     var password: String { didSet { resetTest() } }
     var groupChoice: GroupChoice
@@ -48,6 +63,20 @@ final class MachineEditorModel {
     var sharedClipboard: Bool {
         didSet { if !applyingKindDefault { sharedClipboardTouched = true } }
     }
+
+    // MARK: SSH fields (BackendSchema › Machine, post-1.0)
+
+    var sshAuth: SSHAuthMethod {
+        didSet {
+            resetTest()
+            keyProblem = nil
+            if sshAuth == .keyInSSHFolder { sshFieldsShown() }
+        }
+    }
+    /// The key file of `keyInSSHFolder`, relative to `~/.ssh` (picked from `sshKeyChoices`).
+    var sshKeyFileName: String { didSet { resetTest() } }
+    /// Rows of the Port forwards list (`addForward` / `removeForward`).
+    var portForwards: [PortForward]
 
     // MARK: State
 
@@ -65,14 +94,52 @@ final class MachineEditorModel {
     private(set) var saveError: String?
     private(set) var testState: TestConnectionState = .idle
 
+    // Set by the SSH part (`MachineEditorSSH.swift`), hence internal setters.
+
+    /// The key of an "Import Key…" not saved yet: what the editor shows (its text is kept apart, in
+    /// memory only, until Save).
+    var importedKey: ImportedKeySummary?
+    /// "Import Key…" refused the file, or the imported-key method has no key yet.
+    var keyProblem: KeyImportProblem?
+    /// The Keychain refused the imported key (or its passphrase) on Save: nothing was saved.
+    var keyFailure: KeychainError?
+    /// File names of the granted `~/.ssh` that may be keys, plus the current name if not among them.
+    var sshKeyChoices: [String] = []
+    var sshFolderGranted = false
+    /// Why the last "Grant access to ~/.ssh…" granted nothing.
+    var sshFolderProblem: SSHFolderRequestProblem?
+    /// RemoteDeck trusts a key for the saved machine's `host:port`: "Remove from RemoteDeck's
+    /// trusted keys…" is offered.
+    var hasTrustedHostKey = false
+    /// The SSH Config Import Sheet's content.
+    var configImport: ConfigImportState?
+    /// The sheet over the editor: the Host Key Sheet or a passphrase during a Test, the passphrase of
+    /// a newly imported key on Save, or the SSH Config Import Sheet.
+    var sheet: EditorSheet?
+
     let groups: [MachineGroup]
     let isNew: Bool
 
+    @ObservationIgnored let ssh: SSHServices
+    @ObservationIgnored let sshTester: any SSHTester
+    @ObservationIgnored let keyPicker: any KeyFilePicking
+    /// The imported key's text, from "Import Key…" until Save; never in the store nor logged.
+    @ObservationIgnored var pendingKeyText: String?
+    /// The passphrase given for `pendingKeyText` on Save, and whether to remember it.
+    @ObservationIgnored var pendingKeyPassphrase: (passphrase: String, remember: Bool)?
+    /// Resumes the Host Key Sheet's or the test passphrase sheet's waiter.
+    @ObservationIgnored var hostKeyWaiter: (id: Int, continuation: CheckedContinuation<Bool, Never>)?
+    @ObservationIgnored var passphraseWaiter: CheckedContinuation<String?, Never>?
+    @ObservationIgnored var nextPromptID = 0
+    /// Why the validator of test `generation` refused the key.
+    @ObservationIgnored var hostKeyRefusal: (generation: Int, failure: TestConnectionFailure)?
+    @ObservationIgnored private var portTouched = false
+    @ObservationIgnored private var applyingPortDefault = false
     @ObservationIgnored private let appDefaultSharedClipboard: Bool
     @ObservationIgnored private var sharedClipboardTouched = false
     @ObservationIgnored private var applyingKindDefault = false
-    @ObservationIgnored private let editing: Machine?
-    @ObservationIgnored private let context: ModelContext
+    @ObservationIgnored let editing: Machine?
+    @ObservationIgnored let context: ModelContext
     @ObservationIgnored private let passwords: any MachinePasswordStore
     @ObservationIgnored private let tester: any ConnectionTester
     /// "Connect anyway" confirmations: a Test reaches a public address only for this machine at the
@@ -84,7 +151,7 @@ final class MachineEditorModel {
     @ObservationIgnored private let storedScope: PasswordScope?
     @ObservationIgnored private var testTask: Task<Void, Never>?
     /// Bumped by every test start and cancel, so a late result never lands on a newer attempt.
-    @ObservationIgnored private var testGeneration = 0
+    @ObservationIgnored private(set) var testGeneration = 0
     /// SwiftData save, injectable so tests can make it fail.
     @ObservationIgnored var persist: (ModelContext) throws -> Void = { try $0.save() }
 
@@ -98,8 +165,13 @@ final class MachineEditorModel {
     /// user name empty). Ignored when editing an existing machine.
     init(machine: Machine?, context: ModelContext, passwords: any MachinePasswordStore,
          tester: any ConnectionTester, defaultSharedClipboard: Bool, discovered: DiscoveredMachine? = nil,
-         publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents()) {
+         publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents(),
+         ssh: SSHServices = .inMemory(), sshTester: any SSHTester = DisabledSSHTester(),
+         keyPicker: any KeyFilePicking = NoKeyFilePicker()) {
         self.publicConsents = publicConsents
+        self.ssh = ssh
+        self.sshTester = sshTester
+        self.keyPicker = keyPicker
         self.editing = machine
         self.context = context
         self.passwords = passwords
@@ -121,6 +193,9 @@ final class MachineEditorModel {
         scalingMode = machine?.scalingModeValue ?? .fit
         sharedClipboard = machine?.sharedClipboard
             ?? Self.defaultSharedClipboard(for: machine?.kindValue ?? .macARD, appDefault: defaultSharedClipboard)
+        sshAuth = machine?.sshAuth ?? .password
+        sshKeyFileName = machine?.sshKeyFileName ?? ""
+        portForwards = machine?.portForwards ?? []
         if machine == nil, let discovered {
             kind = discovered.kind
             name = String(discovered.name.prefix(MachineValidator.maxNameLength))
@@ -142,6 +217,8 @@ final class MachineEditorModel {
         storedScope = loaded?.scope
         passwordScope = loaded?.scope
         password = loaded?.password ?? ""
+        refreshTrustState()
+        if kind == .ssh { sshFieldsShown() }
     }
 
     /// Shared Clipboard of a new machine (T5.3 M1): off for an Anthropic VM (a sandbox Claude drives
@@ -152,20 +229,36 @@ final class MachineEditorModel {
 
     /// The host field holds an IP literal on the public Internet (T5.3 H1): an orange note under it.
     /// A host name is classified when a connection resolves it.
+    /// SSH is encrypted: no note (AppFlow › SSH machines).
     var hostIsPublicAddress: Bool {
-        AddressScope(literal: trimmedHost)?.isPublicInternet == true
+        kind != .ssh && AddressScope(literal: trimmedHost)?.isPublicInternet == true
     }
 
-    /// Anthropic VM has no user field (DesignBrief › Machine Editor); Mac ARD requires it.
+    /// Anthropic VM has no user field (DesignBrief › Machine Editor); Mac ARD and SSH require it.
     var showsUsername: Bool { kind != .anthropicVM }
-    var requiresUsername: Bool { kind == .macARD }
+    var requiresUsername: Bool { kind == .macARD || kind == .ssh }
     /// VNC and Anthropic VM servers may have no password: empty means none, so the server must offer
     /// security type 1 (TRD › Security). Mac ARD shows no "Optional" placeholder: its server asks
-    /// for the password at connect time, which then fails as credentials required.
-    var passwordIsOptional: Bool { kind != .macARD }
+    /// for the password at connect time, which then fails as credentials required. SSH's password
+    /// method needs one too.
+    var passwordIsOptional: Bool { kind != .macARD && kind != .ssh }
+    /// Scaling and Shared Clipboard only make sense for a screen (hidden for SSH).
+    var showsScreenSettings: Bool { kind != .ssh }
+    /// SSH shows the password only for its password method.
+    var showsPasswordField: Bool { kind != .ssh || sshAuth == .password }
 
     func issue(for field: MachineValidator.Field) -> MachineValidator.Reason? {
-        issues.first { $0.field == field }?.reason
+        issues.first { $0.field == field && $0.forwardID == nil }?.reason
+    }
+
+    /// The error under one row of the Port forwards list.
+    func forwardIssue(for id: PortForward.ID) -> MachineValidator.Reason? {
+        issues.first { $0.field == .portForwards && $0.forwardID == id }?.reason
+    }
+
+    /// Clears a forward row's error once the user edits it.
+    func clearForwardIssue(for id: PortForward.ID) {
+        issues.removeAll { $0.field == .portForwards && $0.forwardID == id }
     }
 
     /// Clears a field's error once the user edits it.
@@ -179,17 +272,20 @@ final class MachineEditorModel {
 
     // MARK: Validation
 
-    private var trimmedHost: String { host.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var port: Int { Int(portText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0 }
-    private var effectiveUsername: String? {
+    var trimmedHost: String { host.trimmingCharacters(in: .whitespacesAndNewlines) }
+    var port: Int { Int(portText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0 }
+    var effectiveUsername: String? {
         guard showsUsername else { return nil }
         let trimmed = username.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
     private var draft: MachineDraft {
-        MachineDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), kind: kind,
-                     host: trimmedHost, port: port, username: effectiveUsername)
+        let fileName = sshKeyFileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return MachineDraft(name: name.trimmingCharacters(in: .whitespacesAndNewlines), kind: kind,
+                            host: trimmedHost, port: port, username: effectiveUsername,
+                            sshAuth: sshAuth, sshKeyFileName: fileName.isEmpty ? nil : fileName,
+                            portForwards: cleanedForwards)
     }
 
     /// Runs MachineValidator (name, host, port, username, duplicate `host:port`) and the group
@@ -204,7 +300,8 @@ final class MachineEditorModel {
             found += validator.validateGroupName(newGroupName, existingNames: names)
         }
         issues = found
-        return found.isEmpty
+        let sshReady = validateSSHKey()
+        return found.isEmpty && sshReady
     }
 
     // MARK: Save
@@ -216,14 +313,34 @@ final class MachineEditorModel {
     func save() -> Machine? {
         saveError = nil
         passwordFailure = nil
+        keyFailure = nil
         guard validate() else { return nil }
+        // A newly imported encrypted key: its passphrase first (`submitSavePassphrase` saves again).
+        if needsSavePassphrase {
+            sheet = .savePassphrase(rejected: false)
+            return nil
+        }
 
         let machine = editing ?? Machine()
-        let passwordChanged = password != (storedPassword ?? "")
+        let previousAddress = editing.map { (host: $0.host, port: $0.port) }
+        let previousSSH = editing.map { (auth: $0.kindValue == .ssh ? $0.sshAuth : nil, keyFile: $0.sshKeyFileName) }
+        // The password is the password method's only: an SSH key method leaves it as it is.
+        let usesPassword = showsPasswordField
+        let passwordChanged = usesPassword && password != (storedPassword ?? "")
+        if usesPassword {
+            do {
+                try applyPasswordChange(for: machine.id)
+            } catch {
+                passwordFailure = PasswordFailure(error: error, deleting: password.isEmpty)
+                return nil
+            }
+        }
+        let keyRollback: SSHKeyRollback?
         do {
-            try applyPasswordChange(for: machine.id)
+            keyRollback = try writeImportedKey(for: machine.id)
         } catch {
-            passwordFailure = PasswordFailure(error: error, deleting: password.isEmpty)
+            keyFailure = error
+            if passwordChanged { restorePassword(for: machine.id) }
             return nil
         }
 
@@ -237,6 +354,9 @@ final class MachineEditorModel {
         machine.isWatched = isWatched
         machine.scalingModeValue = scalingMode
         machine.sharedClipboard = sharedClipboard
+        machine.sshAuth = draft.sshAuth
+        machine.sshKeyFileName = draft.sshKeyFileName
+        machine.portForwards = draft.portForwards
         // Orders duplicates when iCloud Sync merges them (T4.3): the last edit, on any Mac, wins.
         machine.modifiedAt = .now
         switch groupChoice {
@@ -257,9 +377,11 @@ final class MachineEditorModel {
         } catch {
             context.rollback()
             if passwordChanged { restorePassword(for: machine.id) }
+            keyRollback?.undo(ssh.secrets)
             saveError = error.localizedDescription
             return nil
         }
+        sshSaved(machine, previousAddress: previousAddress, previousSSH: previousSSH)
         cancelTest()
         return machine
     }
@@ -303,6 +425,13 @@ final class MachineEditorModel {
         testGeneration += 1
         let generation = testGeneration
         testState = .testing
+        if kind == .ssh {
+            testTask = Task { [weak self] in
+                guard let outcome = await self?.runSSHTest(port: port, generation: generation) else { return }
+                self?.finishTest(outcome, generation: generation)
+            }
+            return
+        }
         let tester = self.tester
         let host = trimmedHost
         let credentials = testCredentials
@@ -324,7 +453,7 @@ final class MachineEditorModel {
     }
 
     /// A field the test used changed: drop the result and any running attempt.
-    private func resetTest() {
+    func resetTest() {
         guard testState != .idle || testTask != nil else { return }
         cancelTest()
         testState = .idle
@@ -342,6 +471,7 @@ final class MachineEditorModel {
         testGeneration += 1
         testTask?.cancel()
         testTask = nil
+        dismissTestPrompts()
         if testState == .testing { testState = .idle }
     }
 }

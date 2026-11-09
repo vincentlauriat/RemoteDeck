@@ -21,6 +21,7 @@ struct LibraryView: View {
     @Query private var groups: [MachineGroup]
     @Bindable var model: MachineLibraryModel
     let tester: any ConnectionTester
+    let sshTester: any SSHTester
     /// Builds the Discovery Panel's service (live Bonjour, or the demo's fake one).
     let makeDiscovery: @MainActor () -> DiscoveryService
     /// Set when the on-disk store could not be opened (the library then runs in memory, and a
@@ -249,7 +250,8 @@ struct LibraryView: View {
         editorRequest = EditorRequest(model: MachineEditorModel(
             machine: machine, context: model.context, passwords: model.passwords,
             tester: tester, defaultSharedClipboard: settings.defaultSharedClipboard, discovered: discovered,
-            publicConsents: model.publicConsents
+            publicConsents: model.publicConsents, ssh: model.ssh, sshTester: sshTester,
+            keyPicker: OpenPanelKeyFilePicker()
         ))
     }
 

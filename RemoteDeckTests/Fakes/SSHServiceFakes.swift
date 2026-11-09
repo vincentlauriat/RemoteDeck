@@ -41,6 +41,12 @@ final class FakeSSHFolderAccess: SSHFolderAccessing {
         guard let text = files[relativePath] else { throw SSHFolderError.fileMissing(relativePath) }
         return text
     }
+
+    func listFiles() throws -> [String] {
+        calls.append("listFiles")
+        guard granted else { throw SSHFolderError.notGranted }
+        return files.keys.filter { !$0.contains("/") }.sorted()
+    }
 }
 
 /// SSH secrets in memory, recording each read with its `allowsInteraction`, with injectable failures.

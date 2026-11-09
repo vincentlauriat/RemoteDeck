@@ -50,6 +50,19 @@ enum LibraryDemo {
         }
     }
 
+    /// The Machine Editor's SSH Test: "Reachable, auth OK" after half a second, never a host key
+    /// prompt nor the network.
+    struct SSHTester: RemoteDeck.SSHTester {
+        func test(host: String, port: UInt16, credentials: SSHCredentials, timeout: Duration,
+                  trusted: @escaping @Sendable (SSHHostKey) async -> Bool) async throws(SSHError) {
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                throw .connectionClosed
+            }
+        }
+    }
+
     static var mode: String? { UserDefaults.standard.string(forKey: "LibraryDemo") }
     static var isEnabled: Bool { mode != nil }
     static var opensEditor: Bool { mode == "editor" }

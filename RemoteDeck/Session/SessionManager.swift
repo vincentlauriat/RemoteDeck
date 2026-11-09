@@ -25,6 +25,8 @@ final class SessionManager {
     @ObservationIgnored let context: ModelContext
     @ObservationIgnored let passwords: any MachinePasswordStore
     @ObservationIgnored let tester: any ConnectionTester
+    /// The Machine Editor's SSH Test (its "Edit credentials" opens the editor).
+    @ObservationIgnored let sshTester: any SSHTester
     @ObservationIgnored private let clock: SessionClock
     @ObservationIgnored private let makeConnection: @MainActor (SessionTarget) -> any SessionConnection
     @ObservationIgnored private let makeSSHConnection: @MainActor (SessionTarget) -> any SSHSessionConnection
@@ -61,7 +63,9 @@ final class SessionManager {
          workspaceCenter: NotificationCenter? = nil,
          publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents(),
          ssh: SSHServices = .inMemory(),
-         makeSSHConnection: @escaping @MainActor (SessionTarget) -> any SSHSessionConnection = SessionManager.sshConnection) {
+         makeSSHConnection: @escaping @MainActor (SessionTarget) -> any SSHSessionConnection = SessionManager.sshConnection,
+         sshTester: any SSHTester = DisabledSSHTester()) {
+        self.sshTester = sshTester
         self.publicConsents = publicConsents
         self.ssh = ssh
         self.makeSSHConnection = makeSSHConnection

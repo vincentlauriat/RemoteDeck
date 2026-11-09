@@ -8,6 +8,12 @@ struct PassphraseSheet: View {
     @Environment(AppSettings.self) private var settings
     let machineName: String
     let rejected: Bool
+    /// The text under the title; nil: the session's ("The key of “name” is encrypted…").
+    var message: String? = nil
+    /// "Remember in Keychain": off for the Machine Editor's Test, which never remembers.
+    var showsRemember = true
+    /// The prominent button's string key.
+    var actionKey = "connect"
     let onConnect: (_ passphrase: String, _ remember: Bool) -> Void
     let onCancel: () -> Void
 
@@ -19,7 +25,7 @@ struct PassphraseSheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Label(settings.t("passphrase_title"), systemImage: "lock")
                 .font(.headline)
-            Text(settings.t("passphrase_body", machineName))
+            Text(message ?? settings.t("passphrase_body", machineName))
                 .fixedSize(horizontal: false, vertical: true)
             SecureField(settings.t("passphrase_placeholder"), text: $passphrase)
                 .textContentType(.password)
@@ -30,12 +36,14 @@ struct PassphraseSheet: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.red)
             }
-            Toggle(settings.t("passphrase_remember"), isOn: $remember)
+            if showsRemember {
+                Toggle(settings.t("passphrase_remember"), isOn: $remember)
+            }
             HStack {
                 Spacer()
                 Button(settings.t("cancel"), role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button(settings.t("connect"), action: connect)
+                Button(settings.t(actionKey), action: connect)
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                     .disabled(passphrase.isEmpty)
@@ -51,6 +59,6 @@ struct PassphraseSheet: View {
         guard !passphrase.isEmpty else { return }
         let typed = passphrase
         passphrase = ""   // not kept in the view once handed over
-        onConnect(typed, remember)
+        onConnect(typed, showsRemember && remember)
     }
 }

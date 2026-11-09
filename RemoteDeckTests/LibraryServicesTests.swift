@@ -55,7 +55,7 @@ struct ValidationMessageTests {
             (.empty, .host, "Enter a host name or IP address."),
             (.invalidHost, .host, english("err_host_invalid")),
             (.outOfRange, .port, "The port must be between 1 and 65535."),
-            (.empty, .username, "A user name is required for a Mac."),
+            (.empty, .username, "Enter a user name."),
             (.duplicate, .host, "Another machine already uses this host and port."),
             (.empty, .groupName, "Enter a group name."),
             (.tooLong(max: 40), .groupName, "Use at most 40 characters."),
@@ -80,9 +80,9 @@ struct ValidationMessageTests {
         #expect(MachineKind.ssh.symbolName == "terminal")
     }
 
-    /// Until the editor edits SSH machines (Task 10), it never offers SSH.
-    @Test func editorDoesNotOfferSSHYet() {
-        #expect(MachineKind.editorKinds == [.macARD, .vnc, .anthropicVM])
+    /// Task 10: the editor edits SSH machines too.
+    @Test func editorOffersEveryKind() {
+        #expect(MachineKind.editorKinds == [.macARD, .vnc, .anthropicVM, .ssh])
     }
 }
 

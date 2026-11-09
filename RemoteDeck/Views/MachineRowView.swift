@@ -14,9 +14,8 @@ extension MachineKind {
 
     var titleKey: String { "kind_\(rawValue)" }
 
-    /// The kinds the Machine Editor offers. `.ssh` is left out until the editor edits SSH machines
-    /// (plan Task 10); their sessions already go to `TerminalSessionModel`.
-    static var editorKinds: [MachineKind] { allCases.filter { $0 != .ssh } }
+    /// The kinds the Machine Editor offers, in picker order.
+    static var editorKinds: [MachineKind] { allCases }
 }
 
 extension Machine {

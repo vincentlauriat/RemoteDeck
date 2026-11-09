@@ -278,7 +278,8 @@ struct SessionWindowView: View {
         editorRequest = EditorRequest(model: MachineEditorModel(
             machine: machine, context: manager.context, passwords: manager.passwords,
             tester: manager.tester, defaultSharedClipboard: settings.defaultSharedClipboard,
-            publicConsents: manager.publicConsents))
+            publicConsents: manager.publicConsents, ssh: manager.ssh, sshTester: manager.sshTester,
+            keyPicker: OpenPanelKeyFilePicker()))
     }
 
     // MARK: Toolbar

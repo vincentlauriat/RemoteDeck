@@ -25,6 +25,7 @@ struct RemoteDeckApp: App {
     private let onboardingLaunch: OnboardingLaunch
     private let notificationAuthorizer: any NotificationAuthorizing
     private let tester: any ConnectionTester
+    private let sshTester: any SSHTester
     private let makeDiscovery: @MainActor () -> DiscoveryService
     private let apiKeyChecker: any APIKeyChecking
     /// Sparkle (T6.3): started only in a Release build outside XCTest and the debug modes.
@@ -82,6 +83,7 @@ struct RemoteDeckApp: App {
         _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords,
                                                            publicConsents: publicConsents, ssh: ssh))
         var tester: any ConnectionTester = RFBConnectionTester()
+        var sshTester: any SSHTester = SSHConnectionTester()
         var makeConnection: @MainActor (SessionTarget) -> any SessionConnection = SessionManager.rfbConnection
         var makeSSHConnection: @MainActor (SessionTarget) -> any SSHSessionConnection = SessionManager.sshConnection
         // The hosted tests never touch the real pasteboard.
@@ -98,6 +100,7 @@ struct RemoteDeckApp: App {
             if LibraryDemo.simulatesStoreError { storeError = LibraryDemo.storeError }
             notificationAuthorizer = LibraryDemo.NotificationAuthorizer()   // never the system prompt
             tester = LibraryDemo.Tester()
+            sshTester = LibraryDemo.SSHTester()
             makeConnection = LibraryDemo.connection   // never the network: the sample hosts are not real
             makeSSHConnection = LibraryDemo.sshConnection
             pasteboard = InMemoryPasteboard()         // nor the user's clipboard
@@ -122,6 +125,7 @@ struct RemoteDeckApp: App {
         }
         apiKeyChecker = claudeClient
         self.tester = tester
+        self.sshTester = sshTester
         self.makeDiscovery = makeDiscovery
         self.storeError = storeError
         self.notificationAuthorizer = notificationAuthorizer
@@ -142,7 +146,7 @@ struct RemoteDeckApp: App {
                                       makeAssistant: { [claudeClient] session in
             AssistantModel(port: session, client: claudeClient, apiKey: { settings.anthropicAPIKey })
         }, path: sessionPath, workspaceCenter: powerCenter, publicConsents: publicConsents,
-                                      ssh: ssh, makeSSHConnection: makeSSHConnection)
+                                      ssh: ssh, makeSSHConnection: makeSSHConnection, sshTester: sshTester)
         _sessions = State(initialValue: sessions)
 
         // Status Notifications (T4.5). The hosted tests never probe, post or read the notification
@@ -228,7 +232,7 @@ struct RemoteDeckApp: App {
 
     var body: some Scene {
         Window(settings.t("app_name"), id: LibraryWindow.id) {
-            LibraryView(model: library, tester: tester, makeDiscovery: makeDiscovery, storeError: storeError,
+            LibraryView(model: library, tester: tester, sshTester: sshTester, makeDiscovery: makeDiscovery, storeError: storeError,
                         onboardingLaunch: onboardingLaunch, notificationAuthorizer: notificationAuthorizer)
                 .environment(settings)
                 .environment(sessions)

@@ -37,6 +37,9 @@ protocol SSHFolderAccessing: AnyObject {
     var lastRequestProblem: SSHFolderRequestProblem? { get }
     /// The UTF-8 contents of a file of the folder (`id_ed25519`, `known_hosts`). Throws `SSHFolderError`.
     func readFile(_ relativePath: String) throws -> String
+    /// The names of the regular files at the top of the folder (no contents read, no subfolder,
+    /// sockets and links left out), for the Machine Editor's key picker. Throws `SSHFolderError`.
+    func listFiles() throws -> [String]
 }
 
 /// Paths relative to `~/.ssh` (BackendSchema › Machine.sshKeyFileName): never absolute, never `~`,
@@ -45,6 +48,15 @@ enum SSHFolderPath {
     nonisolated static func isValid(_ relativePath: String) -> Bool {
         guard !relativePath.isEmpty, !relativePath.hasPrefix("/"), !relativePath.hasPrefix("~") else { return false }
         return !relativePath.split(separator: "/", omittingEmptySubsequences: false).contains("..")
+    }
+
+    /// A file of `~/.ssh` that may be a private key, by name only (the editor never reads a key
+    /// to list it): not hidden, not a public key (`*.pub`), not `known_hosts*`, `config`,
+    /// `authorized_keys*` or `environment`.
+    nonisolated static func isKeyCandidate(_ name: String) -> Bool {
+        guard !name.isEmpty, !name.hasPrefix("."), !name.hasSuffix(".pub") else { return false }
+        if name.hasPrefix("known_hosts") || name.hasPrefix("authorized_keys") { return false }
+        return !["config", "environment", "rc"].contains(name)
     }
 
     /// The folder the user picked must be a `.ssh` folder: key file names are relative to it.
@@ -120,6 +132,23 @@ final class SSHFolderAccess: SSHFolderAccessing {
         }
     }
 
+    func listFiles() throws -> [String] {
+        guard let folder = grantedFolder() else { throw SSHFolderError.notGranted }
+        guard folder.startAccessingSecurityScopedResource() else { throw SSHFolderError.notGranted }
+        defer { folder.stopAccessingSecurityScopedResource() }
+        let urls: [URL]
+        do {
+            urls = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
+                                                               options: [])
+        } catch {
+            throw SSHFolderError.unreadable(".")
+        }
+        // `isRegularFile` is false for a symbolic link, a socket (ControlMaster) or a folder.
+        return urls.filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+            .map(\.lastPathComponent)
+            .sorted()
+    }
+
     /// The bookmarked folder, or nil without a bookmark, or when it no longer resolves or is stale
     /// (the folder moved or was replaced: the user grants it again).
     private func grantedFolder() -> URL? {
@@ -155,4 +184,41 @@ final class InMemorySSHFolderAccess: SSHFolderAccessing {
         guard let text = files[relativePath] else { throw SSHFolderError.fileMissing(relativePath) }
         return text
     }
+
+    func listFiles() throws -> [String] {
+        guard let files else { throw SSHFolderError.notGranted }
+        return files.keys.filter { !$0.contains("/") }.sorted()
+    }
+}
+
+// MARK: - Key import
+
+/// The open panel of the Machine Editor's "Import Key…": one file the user picks. Injectable, so the
+/// hosted tests never show a panel.
+@MainActor
+protocol KeyFilePicking {
+    /// The chosen file, nil on Cancel.
+    func chooseKeyFile() async -> URL?
+}
+
+/// `NSOpenPanel` on `~/.ssh` (hidden files shown, one file). The sandbox grants read access to the
+/// chosen file only.
+struct OpenPanelKeyFilePicker: KeyFilePicking {
+    func chooseKeyFile() async -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        panel.directoryURL = SSHFolderAccess.userSSHFolder
+        let response = await withCheckedContinuation { continuation in
+            panel.begin { continuation.resume(returning: $0) }
+        }
+        return response == .OK ? panel.url : nil
+    }
+}
+
+/// The default of models built without the app's picker: never a panel.
+struct NoKeyFilePicker: KeyFilePicking {
+    func chooseKeyFile() async -> URL? { nil }
 }
