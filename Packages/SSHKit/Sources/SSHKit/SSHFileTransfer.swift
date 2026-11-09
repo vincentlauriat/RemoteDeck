@@ -146,8 +146,16 @@ public actor SSHFileTransfer {
         try await attributes(remotePath) != nil
     }
 
-    /// Uploads the local file `local` into the remote directory `toDirectory`, under the local
-    /// file's name, byte for byte as the local file system spells it (no Unicode normalization).
+    /// The name an upload gives the remote file: the local file's name in Unicode NFC. The Mac's
+    /// file system APIs hand names out decomposed (NFD: "é" as e + U+0301), while what a user
+    /// types on the server, and Linux tools, use precomposed NFC; an NFD name would create a
+    /// second file next to the NFC one instead of replacing it.
+    public static func remoteName(of local: URL) -> String {
+        local.lastPathComponent.precomposedStringWithCanonicalMapping
+    }
+
+    /// Uploads the local file `local` into the remote directory `toDirectory`, under
+    /// `remoteName(of: local)` (the local name in NFC).
     ///
     /// - Throws `.noSuchDirectory(toDirectory)` if it does not exist or is not a directory, and
     ///   `.fileExists(target)` if the target exists and `overwrite` is false; nothing is written.
@@ -571,17 +579,14 @@ private final class SFTPSubsystemRequest: ChannelInboundHandler {
 private final class LocalSource: Sendable {
     let fd: Int32
     let size: Int64
-    /// The file's name as its path's file system representation spells it.
+    /// The remote name (`SSHFileTransfer.remoteName(of:)`).
     let name: String
     let path: String
 
     init(_ url: URL) throws(SSHError) {
         path = url.path
-        let representation = url.withUnsafeFileSystemRepresentation { $0.map { Array(UnsafeBufferPointer(start: $0, count: strlen($0))) } }
-        guard let bytes = representation?.map(UInt8.init(bitPattern:)),
-              let last = bytes.split(separator: UInt8(ascii: "/")).last, !last.isEmpty
-        else { throw .remote("cannot read \(url.path)") }
-        name = String(decoding: last, as: UTF8.self)
+        name = SSHFileTransfer.remoteName(of: url)
+        guard !name.isEmpty, name != "/" else { throw .remote("cannot read \(url.path)") }
         let fd = url.withUnsafeFileSystemRepresentation { $0.map { open($0, O_RDONLY | O_CLOEXEC) } ?? -1 }
         guard fd >= 0 else { throw .remote("cannot read \(url.path): \(String(cString: strerror(errno)))") }
         var info = Darwin.stat()

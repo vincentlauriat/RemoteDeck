@@ -14,18 +14,26 @@ protocol FileTransferPanels {
     /// Download File…: where to save the remote file; nil when cancelled. The panel asks itself
     /// before replacing an existing file.
     func chooseDownloadDestination(suggestedName: String) async -> URL?
+    /// Closes a save panel still showing (the sheet was cancelled or the tab closed): its
+    /// `chooseDownloadDestination` answers nil.
+    func cancelPanels()
 }
 
 /// The default of models built without the app's panels: never a panel.
 struct NoFileTransferPanels: FileTransferPanels {
     func chooseFilesToUpload() async -> [URL] { [] }
     func chooseDownloadDestination(suggestedName: String) async -> URL? { nil }
+    func cancelPanels() {}
 }
 
 /// `NSOpenPanel` / `NSSavePanel` as their own windows (`begin`), never a sheet on the session
 /// window, which may already carry the File Transfer Sheet. The sandbox grants the app the files
 /// chosen (the saved one only: not its folder).
-struct SystemFileTransferPanels: FileTransferPanels {
+@MainActor
+final class SystemFileTransferPanels: FileTransferPanels {
+    /// The save panel showing, if any (non-modal: the tab can close under it).
+    private var savePanel: NSSavePanel?
+
     func chooseFilesToUpload() async -> [URL] {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -41,10 +49,17 @@ struct SystemFileTransferPanels: FileTransferPanels {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = suggestedName
         panel.canCreateDirectories = true
+        savePanel = panel
         let response = await withCheckedContinuation { continuation in
             panel.begin { continuation.resume(returning: $0) }
         }
+        if savePanel === panel { savePanel = nil }
         return response == .OK ? panel.url : nil
+    }
+
+    func cancelPanels() {
+        savePanel?.cancel(nil)
+        savePanel = nil
     }
 }
 
@@ -186,7 +201,9 @@ final class FileTransferModel {
         default: return
         }
         for url in urls {
-            let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            // A symlink to a folder is a folder (`isDirectory` of the link itself says no).
+            let isDirectory = (try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.isDirectoryKey]))?
+                .isDirectory == true
             if isDirectory {
                 refusedFolders.append(url.lastPathComponent)
             } else if !files.contains(url) {
@@ -322,7 +339,7 @@ final class FileTransferModel {
 
     /// Download…: checks the remote path, then asks where to save it, then downloads.
     func chooseDownloadLocation() {
-        guard !isEnded, work == nil, case .chooseRemoteFile(let typed) = step, let transfer, let home else { return }
+        guard !isEnded, work == nil, let typed = typedRemotePath, let transfer, let home else { return }
         let remote = Self.resolve(typed, home: home)
         // A folder path (the pre-filled home and "/") names no file: never a save panel for it.
         guard let name = Self.fileName(of: remote) else {
@@ -353,7 +370,7 @@ final class FileTransferModel {
             work = nil   // save panel cancelled: the sheet stays
             return
         }
-        await runDownload(remote, to: destination, on: transfer)
+        await runDownload(remote, to: destination, on: transfer, checked: true)
     }
 
     /// Downloads `remotePath` into the app's temporary folder, then into `destination` (a URL the
@@ -364,17 +381,21 @@ final class FileTransferModel {
         work = Task { await self.runDownload(remote, to: destination, on: transfer) }
     }
 
-    private func runDownload(_ remote: String, to destination: URL, on transfer: any FileTransferring) async {
-        do {
-            guard try await transfer.exists(remote) else {
-                guard !isEnded else { return }
-                step = .noSuchFile(remote)
-                work = nil
+    /// `checked`: the path was just found by `askDestination` (no second round trip).
+    private func runDownload(_ remote: String, to destination: URL, on transfer: any FileTransferring,
+                             checked: Bool = false) async {
+        if !checked {
+            do {
+                guard try await transfer.exists(remote) else {
+                    guard !isEnded else { return }
+                    step = .noSuchFile(remote)
+                    work = nil
+                    return
+                }
+            } catch {
+                if !isEnded { fail(error) }
                 return
             }
-        } catch {
-            if !isEnded { fail(error) }
-            return
         }
         guard !isEnded else { return }
         let folder = temporaryRoot.appendingPathComponent("RemoteDeck-download-\(UUID().uuidString)", isDirectory: true)
@@ -406,9 +427,12 @@ final class FileTransferModel {
             fail(failure)
             return
         }
-        do {
-            try Self.commitDownload(temporary, to: destination)
-        } catch {
+        // Off the main actor: a replace across volumes, or the copy, can take long on a big file.
+        let committed = await Task.detached(priority: .userInitiated) {
+            FileTransferModel.commitResult(temporary, to: destination)
+        }.value
+        guard !isEnded else { return }
+        if case .failure(let error) = committed {
             fail(error)
             return
         }
@@ -419,7 +443,17 @@ final class FileTransferModel {
     /// Puts the downloaded `temporary` file at `destination`: replaced atomically when the sandbox
     /// allows it (`replace`), else its bytes are written into the granted file itself (created if
     /// need be, truncated, copied by 1 MiB chunks).
-    static func commitDownload(_ temporary: URL, to destination: URL,
+    /// `commitDownload` as a value (a typed-throws `Task` closure crashes the compiler).
+    nonisolated private static func commitResult(_ temporary: URL, to destination: URL) -> Result<Void, SSHError> {
+        do {
+            try commitDownload(temporary, to: destination)
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    nonisolated static func commitDownload(_ temporary: URL, to destination: URL,
                                replace: (URL, URL) throws -> Void = { destination, temporary in
                                    _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
                                }) throws(SSHError) {
@@ -455,6 +489,7 @@ final class FileTransferModel {
         let running = [work, preparing]
         work?.cancel()
         preparing?.cancel()
+        panels.cancelPanels()   // a save panel still up answers nil, so the work can end
         release(after: running)
     }
 
@@ -491,27 +526,30 @@ final class FileTransferModel {
 
     /// Download…: a path that can name a file (not empty, not ending in "/").
     var canChooseDownloadLocation: Bool {
-        guard !isChecking, case .chooseRemoteFile(let typed) = step else { return false }
+        guard !isChecking, let typed = typedRemotePath else { return false }
         let path = typed.trimmingCharacters(in: .newlines)
         return !path.isEmpty && path != "~" && Self.fileName(of: path) != nil
+    }
+
+    /// The path field's text, in `.chooseRemoteFile` and after "No such file" (Download… may try
+    /// the same path again: it may exist by now).
+    private var typedRemotePath: String? {
+        switch step {
+        case .chooseRemoteFile(let path), .noSuchFile(let path): path
+        default: nil
+        }
     }
 
     static func join(_ directory: String, _ name: String) -> String {
         directory.hasSuffix("/") ? directory + name : directory + "/" + name
     }
 
-    /// The name SSHKit gives the remote file: the local file system representation's last
-    /// component, byte for byte (`config été.toml` as the disk spells it).
-    static func remoteName(of url: URL) -> String {
-        let bytes = url.withUnsafeFileSystemRepresentation { pointer in
-            pointer.map { Array(UnsafeBufferPointer(start: $0, count: strlen($0))).map(UInt8.init(bitPattern:)) }
-        } ?? []
-        guard let last = bytes.split(separator: UInt8(ascii: "/")).last else { return url.lastPathComponent }
-        return String(decoding: last, as: UTF8.self)
-    }
+    /// The name SSHKit gives the remote file (the local name in NFC), so the overwrite check asks
+    /// about the very file the upload would replace.
+    static func remoteName(of url: URL) -> String { SSHFileTransfer.remoteName(of: url) }
 
     private static func size(of url: URL) -> Int64 {
-        Int64((try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        Int64((try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
     }
 
     /// The sheet's words for a failure (AppFlow › Terminal tab).

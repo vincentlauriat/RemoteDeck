@@ -17,6 +17,8 @@ actor FakeFileTransfer: FileTransferring {
     /// Paths that exist: directories and files.
     private var directories: Set<String>
     private var files: [String: Data]
+    /// Files `exists` does not see yet, created on the server between the check and the upload.
+    private var lateFiles: [String: Data]
     /// Names (local file names) whose upload waits at half its bytes.
     private var gatedNames: Set<String>
     private var gates: [String: CheckedContinuation<Void, Never>] = [:]
@@ -33,7 +35,9 @@ actor FakeFileTransfer: FileTransferring {
     private var closedWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(home: String = "/home/pi", directories: Set<String> = ["/home/pi"], files: [String: Data] = [:],
-         gatedNames: Set<String> = [], downloadFailure: SSHError? = nil, downloadGated: Bool = false) {
+         gatedNames: Set<String> = [], downloadFailure: SSHError? = nil, downloadGated: Bool = false,
+         lateFiles: [String: Data] = [:]) {
+        self.lateFiles = lateFiles
         self.home = home
         self.directories = directories
         self.files = files
@@ -52,11 +56,12 @@ actor FakeFileTransfer: FileTransferring {
     func upload(_ local: URL, toDirectory: String, overwrite: Bool,
                 progress: @Sendable (Int64, Int64) -> Void) async throws(SSHError) {
         guard directories.contains(toDirectory) else { throw .noSuchDirectory(toDirectory) }
-        let name = local.lastPathComponent
+        let name = SSHFileTransfer.remoteName(of: local)
         let target = toDirectory.hasSuffix("/") ? toDirectory + name : toDirectory + "/" + name
+        uploads.append(Upload(name: name, directory: toDirectory, overwrite: overwrite))   // every attempt
+        if let late = lateFiles.removeValue(forKey: target) { files[target] = late }
         if files[target] != nil, !overwrite { throw .fileExists(target) }
         guard let data = try? Data(contentsOf: local) else { throw .remote("cannot read \(local.path)") }
-        uploads.append(Upload(name: name, directory: toDirectory, overwrite: overwrite))
         let size = Int64(data.count)
         if gatedNames.contains(name) {
             progress(size / 2, size)

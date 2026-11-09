@@ -28,26 +28,26 @@ struct FileTransferLoopbackTests {
     }
 
     @Test func uploadNameWithSpacesAndAccents() async throws {
-        // Precomposed é (NFC), as typed on a Mac keyboard.
-        try await uploadKeepsTheLocalNameBytes("config \u{E9}t\u{E9}.toml")
+        // Precomposed é (NFC), as typed on a Mac keyboard: arrives NFC.
+        try await uploadArrivesNFC("config \u{E9}t\u{E9}.toml")
     }
 
-    @Test func uploadDecomposedNameKeepsTheLocalBytes() async throws {
-        // e + combining acute (NFD): whatever bytes the local file system stores for it are the
-        // bytes the remote file gets.
-        try await uploadKeepsTheLocalNameBytes("config e\u{301}te\u{301}.toml")
+    @Test func uploadDecomposedNameArrivesPrecomposed() async throws {
+        // e + combining acute (NFD), as the Mac's file APIs hand names out: arrives NFC, so it
+        // matches (and replaces) the name a user typed on the server.
+        try await uploadArrivesNFC("config e\u{301}te\u{301}.toml")
     }
 
-    private func uploadKeepsTheLocalNameBytes(_ name: String) async throws {
+    private func uploadArrivesNFC(_ name: String) async throws {
         let rig = try await SFTPRig.start()
         let local = try rig.makeLocalFile(name, bytes: 1000)
-        let localNames = try directoryNames(rig.local)
-        #expect(localNames.count == 1)
         let transfer = try await rig.transfer()
         try await bounded {
             try await transfer.upload(local, toDirectory: rig.homePath, overwrite: false) { _, _ in }
         }
-        #expect(rig.remoteNames() == localNames)
+        let nfc = Array("config \u{E9}t\u{E9}.toml".utf8)
+        #expect(Array(SSHFileTransfer.remoteName(of: local).utf8) == nfc)
+        #expect(rig.remoteNames() == [nfc])
         await rig.stop()
     }
 

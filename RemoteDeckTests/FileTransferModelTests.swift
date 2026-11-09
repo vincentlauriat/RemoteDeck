@@ -45,13 +45,26 @@ private final class LocalFiles {
 private final class FakePanels: FileTransferPanels {
     var uploadChoice: [URL] = []
     var downloadChoice: URL?
+    /// The save panel stays up until `cancelPanels` (the user does nothing).
+    var savePanelWaits = false
     private(set) var savePanelNames: [String] = []
+    private(set) var cancelCount = 0
+    private var waiting: CheckedContinuation<URL?, Never>?
 
     func chooseFilesToUpload() async -> [URL] { uploadChoice }
 
     func chooseDownloadDestination(suggestedName: String) async -> URL? {
         savePanelNames.append(suggestedName)
+        if savePanelWaits { return await withCheckedContinuation { waiting = $0 } }
         return downloadChoice
+    }
+
+    var isSavePanelShowing: Bool { waiting != nil }
+
+    func cancelPanels() {
+        cancelCount += 1
+        waiting?.resume(returning: nil)
+        waiting = nil
     }
 }
 
@@ -102,11 +115,18 @@ struct FileTransferModelTests {
         defer { files.remove() }
         let folder = try files.folder("dotfiles")
         let config = try files.file("config.toml", bytes: 4)
-        // A mixed drop: the files go on, the folder is named in the sheet.
+        // Symlinks: one to a folder is a folder, one to a file is a file (sized as its target).
+        let folderLink = files.root.appendingPathComponent("dotfiles-link")
+        try FileManager.default.createSymbolicLink(at: folderLink, withDestinationURL: folder)
+        let fileLink = files.root.appendingPathComponent("config-link.toml")
+        try FileManager.default.createSymbolicLink(at: fileLink, withDestinationURL: config)
+        // A mixed drop: the files go on, the folders are named in the sheet.
         let mixed = model(.upload, Opener(FakeFileTransfer()), files: files)
-        mixed.drop([folder, config])
-        #expect(await waitUntil { mixed.step == .chooseDestination(files: [config], directory: "/home/pi") })
-        #expect(mixed.refusedFolders == ["dotfiles"])
+        mixed.drop([folder, config, folderLink, fileLink])
+        #expect(await waitUntil { mixed.step == .chooseDestination(files: [config, fileLink], directory: "/home/pi") })
+        #expect(mixed.refusedFolders == ["dotfiles", "dotfiles-link"])
+        mixed.start()
+        #expect(await waitUntil { mixed.step == .finished })
 
         // Folders only: nothing to upload, no SFTP channel opened for nothing.
         let opener = Opener(FakeFileTransfer())
@@ -140,6 +160,46 @@ struct FileTransferModelTests {
         #expect(uploads == [.init(name: "config.toml", directory: "/home/pi", overwrite: true),
                             .init(name: "notes.txt", directory: "/home/pi", overwrite: false)])
         #expect(await fake.contents("/home/pi/config.toml") == Data("aaaa".utf8))
+    }
+
+    /// The Mac hands names out decomposed (NFD); the remote file of that name is NFC, and the check
+    /// asks about it (rather than creating a second, NFD file beside it).
+    @Test func testDecomposedLocalNameAsksAboutThePrecomposedRemoteFile() async throws {
+        let files = try LocalFiles()
+        defer { files.remove() }
+        let config = try files.file("config e\u{301}te\u{301}.toml", bytes: 4)
+        let nfc = "config \u{E9}t\u{E9}.toml"
+        let fake = FakeFileTransfer(files: ["/home/pi/" + nfc: Data("old".utf8)])
+        let model = model(.upload, Opener(fake), files: files)
+        model.drop([config])
+        #expect(await waitUntil { isChoosing(model) })
+        model.start()
+        #expect(await waitUntil { model.step == .confirmOverwrite([nfc]) })
+        if case .confirmOverwrite(let names) = model.step { #expect(names.map { Array($0.utf8) } == [Array(nfc.utf8)]) }
+        let queried = await fake.existsQueries.last ?? ""
+        #expect(Array(queried.utf8) == Array(("/home/pi/" + nfc).utf8))
+    }
+
+    /// A target created on the server between the check and its upload: asked about then, and the
+    /// progress goes on from the bytes already sent.
+    @Test func testTargetCreatedAfterTheCheckAsksThenResumes() async throws {
+        let files = try LocalFiles()
+        defer { files.remove() }
+        let first = try files.file("a.txt", bytes: 10)
+        let second = try files.file("b.txt", bytes: 30)
+        let fake = FakeFileTransfer(gatedNames: ["b.txt"], lateFiles: ["/home/pi/b.txt": Data("new".utf8)])
+        let model = model(.upload, Opener(fake), files: files)
+        model.drop([first, second])
+        #expect(await waitUntil { isChoosing(model) })
+        model.start()
+        #expect(await waitUntil { model.step == .confirmOverwrite(["b.txt"]) })
+        model.confirmOverwrite()
+        #expect(await waitUntil { model.step == .transferring(done: 25, total: 40) })   // 10 + half of 30
+        await fake.release("b.txt")
+        #expect(await waitUntil { model.step == .finished })
+        #expect(await fake.uploads == [.init(name: "a.txt", directory: "/home/pi", overwrite: false),
+                                       .init(name: "b.txt", directory: "/home/pi", overwrite: false),
+                                       .init(name: "b.txt", directory: "/home/pi", overwrite: true)])
     }
 
     @Test func testOverwriteCancelTransfersNothing() async throws {
@@ -313,6 +373,36 @@ struct FileTransferModelTests {
         #expect(panels.savePanelNames.isEmpty)   // asked before the save panel
         #expect(await fake.downloadDestinations.isEmpty)
         #expect(english("transfer_no_such_file") == "No such file")
+
+        // The file was created meanwhile: Download… on the same path tries again.
+        #expect(model.canChooseDownloadLocation)
+        await fake.addFile("/home/pi/missing.conf", Data("now".utf8))
+        model.chooseDownloadLocation()
+        #expect(await waitUntil { model.step == .finished })
+        #expect(panels.savePanelNames == ["missing.conf"])
+        // One check per Download… (none repeated before the download itself).
+        #expect(await fake.existsQueries == ["/home/pi/missing.conf", "/home/pi/missing.conf"])
+    }
+
+    /// Cancel (or the tab closing) while the save panel shows: the panel goes, and so does the session.
+    @Test func testCancelClosesTheSavePanel() async throws {
+        let files = try LocalFiles()
+        defer { files.remove() }
+        let fake = FakeFileTransfer(files: ["/home/pi/app.conf": Data("x".utf8)])
+        let panels = FakePanels()
+        panels.savePanelWaits = true
+        let model = model(.download, Opener(fake), files: files, panels: panels)
+        model.prepare()
+        #expect(await waitUntil { model.step == .chooseRemoteFile(path: "/home/pi/") })
+        model.setRemotePath("~/app.conf")
+        model.chooseDownloadLocation()
+        #expect(await waitUntil { panels.isSavePanelShowing })
+        model.cancel()
+        await model.closing?.value
+        #expect(panels.cancelCount == 1)
+        #expect(!panels.isSavePanelShowing)
+        #expect(await fake.downloadDestinations.isEmpty)
+        #expect(await fake.closeCount == 1)
     }
 
     /// The pre-filled "/home/pi/" (Return right away) names a folder: no save panel, no download.

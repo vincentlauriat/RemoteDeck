@@ -190,7 +190,7 @@ struct FileTransferSheet: View {
         switch model.step {
         case .chooseDestination(let files, _): return !files.isEmpty
         case .confirmOverwrite: return true
-        case .chooseRemoteFile: return model.canChooseDownloadLocation
+        case .chooseRemoteFile, .noSuchFile: return model.canChooseDownloadLocation
         default: return false
         }
     }
@@ -200,7 +200,7 @@ struct FileTransferSheet: View {
         switch model.step {
         case .chooseDestination: model.start()
         case .confirmOverwrite: model.confirmOverwrite()
-        case .chooseRemoteFile: model.chooseDownloadLocation()
+        case .chooseRemoteFile, .noSuchFile: model.chooseDownloadLocation()
         default: break
         }
     }
