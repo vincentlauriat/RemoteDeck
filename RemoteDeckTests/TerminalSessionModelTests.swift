@@ -200,6 +200,52 @@ struct TerminalSessionModelTests {
         #expect(message.contains(ecdsa.fingerprintSHA256))
     }
 
+    /// Final review, Important 1: a lost `~/.ssh` grant is said on the Host Key Sheet, and granting the
+    /// folder from the sheet decides again with `known_hosts` (a match there connects, never a Trust
+    /// that skipped it).
+    @Test func lostSSHFolderAccessIsShownAndGrantingFromTheSheetChecksKnownHosts() async throws {
+        let harness = try TerminalHarness(folderFiles: ["known_hosts": "pi.local \(serverKey.openSSHPublicKey)\n"])
+        harness.folder.granted = false
+        harness.folder.accessLost = true
+        harness.folder.grantsOnRequest = true
+        let model = harness.model()
+        model.connect()
+        #expect(await waitUntil { model.hostKeyPrompt != nil })
+        #expect(model.hostKeyPrompt?.knownHostsProblem == .accessLost)
+
+        _ = await harness.folder.requestAccess()   // what the sheet's button does first
+        model.recheckHostKey()
+        #expect(model.hostKeyPrompt == nil)
+        try await harness.connected(model)
+        // Pinned from known_hosts.
+        #expect(harness.trust.hasTrustedKeys(host: "pi.local", port: 22))
+        await model.close()
+    }
+
+    /// An unreadable known_hosts is said too; a grant that still finds no entry keeps the sheet, and
+    /// a known_hosts mismatch found after the grant blocks as a changed key.
+    @Test func unreadableKnownHostsIsShownAndAMismatchAfterTheGrantBlocks() async throws {
+        let harness = try TerminalHarness(folderFiles: ["known_hosts": "pi.local \(serverKey.openSSHPublicKey)\n"])
+        harness.folder.unreadable = ["known_hosts"]
+        let model = harness.model()
+        harness.makeFake = { _, log in FakeSSHSessionConnection(log: log, hostKey: otherServerKey) }
+        model.connect()
+        #expect(await waitUntil { model.hostKeyPrompt != nil })
+        #expect(model.hostKeyPrompt?.knownHostsProblem == .unreadable)
+
+        // Still unreadable: the sheet stays, with the same line.
+        model.recheckHostKey()
+        #expect(model.hostKeyPrompt?.knownHostsProblem == .unreadable)
+        // Now readable, and it holds another key: blocked, no Trust path.
+        harness.folder.unreadable = []
+        model.recheckHostKey()
+        #expect(model.hostKeyPrompt == nil)
+        #expect(await waitUntil { model.failure != nil })
+        #expect(model.failure == .hostKeyChanged(previousFingerprint: HostKeyDecision.knownHostsConflict,
+                                                 newFingerprint: otherServerKey.fingerprintSHA256))
+        await model.close()
+    }
+
     /// Closing the tab while the Host Key Sheet is up: the sheet goes, the validator is answered
     /// (nothing left waiting), nothing authenticates, the record ends `cancelled`.
     @Test func closeWhileTheHostKeySheetIsUpResumesTheValidator() async throws {

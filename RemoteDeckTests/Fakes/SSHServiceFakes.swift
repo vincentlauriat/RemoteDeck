@@ -30,7 +30,10 @@ final class FakeSSHFolderAccess: SSHFolderAccessing {
 
     func requestAccess() async -> Bool {
         calls.append("requestAccess")
-        if grantsOnRequest { granted = true }
+        if grantsOnRequest {
+            granted = true
+            accessLost = false
+        }
         return granted
     }
 
@@ -46,6 +49,48 @@ final class FakeSSHFolderAccess: SSHFolderAccessing {
         calls.append("listFiles")
         guard granted else { throw SSHFolderError.notGranted }
         return files.keys.filter { !$0.contains("/") }.sorted()
+    }
+}
+
+/// The bookmark calls of `SSHFolderAccess` over a temporary folder: never a real grant, never `~/.ssh`.
+@MainActor
+final class FakeSecurityScopedBookmarks: SecurityScopedBookmarks {
+    /// What every bookmark resolves to; nil: nothing resolves.
+    let folder: URL?
+    /// Bookmarks that resolve as stale.
+    var stale: Set<Data> = []
+    /// What `makeBookmark` returns; nil: it fails.
+    var made: Data?
+    private(set) var log: [String] = []
+    private var open = 0
+
+    init(folder: URL?) {
+        self.folder = folder
+    }
+
+    /// Every `start` was followed by its `stop`.
+    var balanced: Bool { open == 0 }
+
+    func resolve(_ bookmark: Data) -> (url: URL, isStale: Bool)? {
+        log.append("resolve(\(String(decoding: bookmark, as: UTF8.self)))")
+        guard let folder else { return nil }
+        return (folder, stale.contains(bookmark))
+    }
+
+    func makeBookmark(for url: URL) -> Data? {
+        log.append("make")
+        return made
+    }
+
+    func startAccessing(_ url: URL) -> Bool {
+        log.append("start")
+        open += 1
+        return true
+    }
+
+    func stopAccessing(_ url: URL) {
+        log.append("stop")
+        open -= 1
     }
 }
 
@@ -82,6 +127,17 @@ final class FakeSSHSecrets: SSHSecretStore {
         deleted.append(account)
         items[account] = nil
     }
+
+    /// Listing the local passphrases fails with it.
+    var listError: KeychainError?
+
+    func localPassphraseMachineIDs() throws(KeychainError) -> [UUID] {
+        if let listError { throw listError }
+        return items.keys.compactMap { account in
+            if case .sshLocalKeyPassphrase(let id) = account { return id }
+            return nil
+        }
+    }
 }
 
 /// The Keychain's per-scope primitives in memory (`ScopedSecretKeychain`), to drive the -34018
@@ -113,5 +169,9 @@ final class FakeScopedKeychain: ScopedSecretKeychain, @unchecked Sendable {
     func delete(_ account: KeychainAccount) throws(KeychainError) {
         items[Item(account: account, synchronizable: true)] = nil
         items[Item(account: account, synchronizable: false)] = nil
+    }
+
+    func localAccountNames() throws(KeychainError) -> [String] {
+        items.keys.filter { !$0.synchronizable }.map(\.account.name).sorted()
     }
 }

@@ -15,6 +15,9 @@ protocol SSHSecretStore {
     func setSecret(_ value: String, for account: KeychainAccount) throws(KeychainError)
     /// Both scopes; deleting a missing item succeeds.
     func deleteSecret(_ account: KeychainAccount) throws(KeychainError)
+    /// The machine ids that have a `sshLocalPassphrase.<id>` item on this Mac, by account name only
+    /// (no secret is read, nothing asks): the post-import orphan sweep (`LibraryMerger`).
+    func localPassphraseMachineIDs() throws(KeychainError) -> [UUID]
 }
 
 /// The per-scope Keychain primitives (`KeychainStore`'s), so the fallback and migration rules can be
@@ -25,6 +28,8 @@ protocol ScopedSecretKeychain: Sendable {
     func delete(_ account: KeychainAccount, synchronizable: Bool) throws(KeychainError)
     /// Every copy, whatever its sync flag.
     func delete(_ account: KeychainAccount) throws(KeychainError)
+    /// The account names of the local items (attributes only).
+    func localAccountNames() throws(KeychainError) -> [String]
 }
 
 extension KeychainStore: ScopedSecretKeychain {}
@@ -67,6 +72,10 @@ struct KeychainSSHSecretStore: SSHSecretStore {
     func deleteSecret(_ account: KeychainAccount) throws(KeychainError) {
         try keychain.delete(account)
     }
+
+    func localPassphraseMachineIDs() throws(KeychainError) -> [UUID] {
+        try keychain.localAccountNames().compactMap(KeychainAccount.sshLocalKeyPassphraseID(fromName:))
+    }
 }
 
 /// SSH secrets kept in memory only: whenever the library itself is in memory (store fallback,
@@ -85,6 +94,13 @@ final class InMemorySSHSecretStore: SSHSecretStore {
 
     func deleteSecret(_ account: KeychainAccount) throws(KeychainError) {
         items[account] = nil
+    }
+
+    func localPassphraseMachineIDs() throws(KeychainError) -> [UUID] {
+        items.keys.compactMap { account in
+            if case .sshLocalKeyPassphrase(let id) = account { return id }
+            return nil
+        }
     }
 }
 

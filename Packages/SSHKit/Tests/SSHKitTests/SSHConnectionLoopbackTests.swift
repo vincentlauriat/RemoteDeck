@@ -301,7 +301,10 @@ struct SSHConnectionLoopbackTests {
         let start = ContinuousClock.now
         opening.cancel()
         #expect(try await bounded(.seconds(2)) { await opening.value } == .connectionClosed)
-        #expect(ContinuousClock.now - start < .milliseconds(200))
+        // Promptly = far below the 30 s open timeout the silent server would otherwise run into. 1 s
+        // still proves that (a cancel that waited on the timeout would take 30 s) without failing on
+        // a loaded CI runner, where scheduling alone has exceeded the former 200 ms bound.
+        #expect(ContinuousClock.now - start < .seconds(1))
         await server.stop()
     }
 

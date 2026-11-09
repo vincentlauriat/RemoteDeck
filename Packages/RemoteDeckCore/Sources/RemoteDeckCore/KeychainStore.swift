@@ -28,6 +28,13 @@ public enum KeychainAccount: Hashable, Sendable {
         }
     }
 
+    /// The machine id of a `sshLocalPassphrase.<uuid>` account name; nil for any other name.
+    public static func sshLocalKeyPassphraseID(fromName name: String) -> UUID? {
+        let prefix = "sshLocalPassphrase."
+        guard name.hasPrefix(prefix) else { return nil }
+        return UUID(uuidString: String(name.dropFirst(prefix.count)))
+    }
+
     public var isSynchronizable: Bool {
         switch self {
         case .machine, .sshPrivateKey, .sshKeyPassphrase: true
@@ -216,6 +223,35 @@ public struct KeychainStore: Sendable {
             adopted = true
         }
         return adopted
+    }
+
+    /// The account names of this service's local (non-synchronizable) items, the file-keychain copies
+    /// of a data-protection store included. Attributes only: no secret is read, so nothing asks.
+    public func localAccountNames() throws(KeychainError) -> [String] {
+        var names = try accountNames(listQuery(dataProtection: usesDataProtectionKeychain))
+        if usesDataProtectionKeychain { names += try accountNames(listQuery(dataProtection: false)) }
+        return Array(Set(names)).sorted()
+    }
+
+    func listQuery(dataProtection: Bool) -> [String: Any] {
+        var lookup: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrSynchronizable as String: kCFBooleanFalse!,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        if dataProtection { lookup[kSecUseDataProtectionKeychain as String] = true }
+        return lookup
+    }
+
+    private func accountNames(_ lookup: [String: Any]) throws(KeychainError) -> [String] {
+        var result: AnyObject?
+        let status = SecItemCopyMatching(lookup as CFDictionary, &result)
+        if status == errSecItemNotFound { return [] }
+        try check(status)
+        let items = result as? [[String: Any]] ?? []
+        return items.compactMap { $0[kSecAttrAccount as String] as? String }
     }
 
     private func delete(query: [String: Any]) throws(KeychainError) {

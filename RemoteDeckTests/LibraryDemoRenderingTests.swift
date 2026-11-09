@@ -65,6 +65,11 @@ struct LibraryDemoRenderingTests {
             let prompt = try #require(terminal.hostKeyPrompt)
             try renderSheet(HostKeySheet(prompt: prompt, onTrust: {}, onCancel: {}), settings: settings, dark: dark,
                             name: "hostkey-\(theme)")
+            // The known_hosts line (final review, Important 1): access lost, with the grant button.
+            var lost = prompt
+            lost.knownHostsProblem = .accessLost
+            try renderSheet(HostKeySheet(prompt: lost, onTrust: {}, onCancel: {}, onGrantAccess: {}),
+                            settings: settings, dark: dark, name: "hostkey-access-lost-\(theme)")
             terminal.trustHostKey()
             #expect(await waitUntil { terminal.phase == .connected })
 

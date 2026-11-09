@@ -25,17 +25,19 @@ enum SSHFolderRequestProblem: Equatable, Sendable {
 /// ever written: the API has no write, and the bookmark itself is read-only.
 @MainActor
 protocol SSHFolderAccessing: AnyObject {
-    /// A grant exists and its bookmark resolves (a stale bookmark reads as not granted).
+    /// A grant exists and its bookmark resolves (a stale one is re-created from the URL it resolved
+    /// to, and stays granted).
     var isGranted: Bool { get }
-    /// A grant was made on this Mac but no longer works (bookmark stale or unresolvable): "~/.ssh
-    /// access lost", as opposed to never granted. Never true while `isGranted`.
+    /// A grant was made on this Mac but its bookmark no longer resolves: "~/.ssh access lost", as
+    /// opposed to never granted. Never true while `isGranted`.
     var accessLost: Bool { get }
     /// Shows the open panel on `~/.ssh` (directories only); true once the folder is granted. Only a
     /// folder named `.ssh` is accepted.
     func requestAccess() async -> Bool
     /// Why the last `requestAccess` granted nothing; nil after a grant or a Cancel.
     var lastRequestProblem: SSHFolderRequestProblem? { get }
-    /// The UTF-8 contents of a file of the folder (`id_ed25519`, `known_hosts`). Throws `SSHFolderError`.
+    /// The UTF-8 contents of a file of the folder (`id_ed25519`, `known_hosts`), at most
+    /// `SSHFolderAccess.maxFileSize` bytes (larger: unreadable). Throws `SSHFolderError`.
     func readFile(_ relativePath: String) throws -> String
     /// The names of the regular files at the top of the folder (no contents read, no subfolder,
     /// sockets and links left out), for the Machine Editor's key picker. Throws `SSHFolderError`.
@@ -65,18 +67,53 @@ enum SSHFolderPath {
     }
 }
 
+/// The security-scoped bookmark calls of `SSHFolderAccess`, injectable so the stale-bookmark refresh
+/// and the capped read are tested without a real grant (the hosted tests never touch `~/.ssh`).
+@MainActor
+protocol SecurityScopedBookmarks {
+    /// The URL the bookmark resolves to and whether it is stale; nil when it does not resolve.
+    func resolve(_ bookmark: Data) -> (url: URL, isStale: Bool)?
+    /// A read-only security-scoped bookmark of `url`; nil when it cannot be made.
+    func makeBookmark(for url: URL) -> Data?
+    func startAccessing(_ url: URL) -> Bool
+    func stopAccessing(_ url: URL)
+}
+
+/// The system's calls (`URL(resolvingBookmarkData:…)`, `bookmarkData`, the security scope).
+struct SystemSecurityScopedBookmarks: SecurityScopedBookmarks {
+    func resolve(_ bookmark: Data) -> (url: URL, isStale: Bool)? {
+        var isStale = false
+        guard let url = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI],
+                                 relativeTo: nil, bookmarkDataIsStale: &isStale) else { return nil }
+        return (url, isStale)
+    }
+
+    func makeBookmark(for url: URL) -> Data? {
+        try? url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
+                              includingResourceValuesForKeys: nil, relativeTo: nil)
+    }
+
+    func startAccessing(_ url: URL) -> Bool { url.startAccessingSecurityScopedResource() }
+    func stopAccessing(_ url: URL) { url.stopAccessingSecurityScopedResource() }
+}
+
 /// The real folder access. The bookmark (UserDefaults `sshFolderBookmark`, per Mac, never synced) is
 /// made with `securityScopeAllowOnlyReadAccess`, and the security scope is held only for the
-/// duration of each read.
+/// duration of each read (or of the re-creation of a stale bookmark).
 @MainActor
 final class SSHFolderAccess: SSHFolderAccessing {
     static let bookmarkKey = "sshFolderBookmark"
+    /// A read stops here (a private key is a few KiB, a big `known_hosts` a few hundred): anything
+    /// larger is reported unreadable rather than read whole on the main actor at every attempt.
+    nonisolated static let maxFileSize = 4 * 1024 * 1024
 
     private let defaults: UserDefaults
+    private let bookmarks: any SecurityScopedBookmarks
     private(set) var lastRequestProblem: SSHFolderRequestProblem?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, bookmarks: any SecurityScopedBookmarks = SystemSecurityScopedBookmarks()) {
         self.defaults = defaults
+        self.bookmarks = bookmarks
     }
 
     var isGranted: Bool { grantedFolder() != nil }
@@ -107,9 +144,7 @@ final class SSHFolderAccess: SSHFolderAccessing {
             lastRequestProblem = .notSSHFolder(url.lastPathComponent)
             return isGranted
         }
-        guard let bookmark = try? url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
-                                                   includingResourceValuesForKeys: nil, relativeTo: nil)
-        else {
+        guard let bookmark = bookmarks.makeBookmark(for: url) else {
             lastRequestProblem = .bookmarkFailed
             return isGranted
         }
@@ -121,21 +156,35 @@ final class SSHFolderAccess: SSHFolderAccessing {
         guard SSHFolderPath.isValid(relativePath) else { throw SSHFolderError.invalidPath(relativePath) }
         guard let folder = grantedFolder() else { throw SSHFolderError.notGranted }
         let file = folder.appending(path: relativePath, directoryHint: .notDirectory)
-        guard folder.startAccessingSecurityScopedResource() else { throw SSHFolderError.notGranted }
-        defer { folder.stopAccessingSecurityScopedResource() }
+        guard bookmarks.startAccessing(folder) else { throw SSHFolderError.notGranted }
+        defer { bookmarks.stopAccessing(folder) }
+        return try Self.readText(file, relativePath: relativePath)
+    }
+
+    /// The UTF-8 text of `file`, reading at most `limit` + 1 bytes (one bounded read, no size check
+    /// then read): more than `limit` bytes, or not UTF-8, is unreadable.
+    nonisolated static func readText(_ file: URL, relativePath: String,
+                                     limit: Int = maxFileSize) throws(SSHFolderError) -> String {
+        let data: Data
         do {
-            return try String(contentsOf: file, encoding: .utf8)
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            data = try handle.read(upToCount: limit + 1) ?? Data()
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
-            throw SSHFolderError.fileMissing(relativePath)
+            throw .fileMissing(relativePath)
         } catch {
-            throw SSHFolderError.unreadable(relativePath)
+            throw .unreadable(relativePath)
         }
+        guard data.count <= limit, let text = String(data: data, encoding: .utf8) else {
+            throw .unreadable(relativePath)
+        }
+        return text
     }
 
     func listFiles() throws -> [String] {
         guard let folder = grantedFolder() else { throw SSHFolderError.notGranted }
-        guard folder.startAccessingSecurityScopedResource() else { throw SSHFolderError.notGranted }
-        defer { folder.stopAccessingSecurityScopedResource() }
+        guard bookmarks.startAccessing(folder) else { throw SSHFolderError.notGranted }
+        defer { bookmarks.stopAccessing(folder) }
         let urls: [URL]
         do {
             urls = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.isRegularFileKey],
@@ -149,14 +198,19 @@ final class SSHFolderAccess: SSHFolderAccessing {
             .sorted()
     }
 
-    /// The bookmarked folder, or nil without a bookmark, or when it no longer resolves or is stale
-    /// (the folder moved or was replaced: the user grants it again).
+    /// The bookmarked folder, or nil without a bookmark or when it no longer resolves (the user
+    /// grants it again). A stale bookmark still resolves: per Apple's documentation of
+    /// `URLByResolvingBookmarkData:options:relativeToURL:bookmarkDataIsStale:error:`, "your app
+    /// should create a new bookmark using the returned URL and use it in place of any stored copies
+    /// of the existing bookmark". It is re-created inside the security scope and stored; if that
+    /// fails, the old one is kept (it resolved) and the next resolution tries again.
     private func grantedFolder() -> URL? {
-        guard let bookmark = defaults.data(forKey: Self.bookmarkKey) else { return nil }
-        var isStale = false
-        guard let url = try? URL(resolvingBookmarkData: bookmark, options: [.withSecurityScope, .withoutUI],
-                                 relativeTo: nil, bookmarkDataIsStale: &isStale),
-              !isStale else { return nil }
+        guard let bookmark = defaults.data(forKey: Self.bookmarkKey),
+              let (url, isStale) = bookmarks.resolve(bookmark) else { return nil }
+        if isStale, bookmarks.startAccessing(url) {
+            defer { bookmarks.stopAccessing(url) }
+            if let fresh = bookmarks.makeBookmark(for: url) { defaults.set(fresh, forKey: Self.bookmarkKey) }
+        }
         return url
     }
 }

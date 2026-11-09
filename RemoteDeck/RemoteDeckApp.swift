@@ -198,6 +198,7 @@ struct RemoteDeckApp: App {
         #endif
         let merger = opened.syncsWithICloud
             ? LibraryMerger(context: container.mainContext, passwords: passwords, sshSecrets: ssh.secrets,
+                            trustedHostKeys: ssh.trustedHostKeys,
                             hasSession: { [sessions] id in sessions.hasSession(id) })
             : nil
         let sync = LibrarySync(isActive: syncActive, isEntitled: syncEntitled,

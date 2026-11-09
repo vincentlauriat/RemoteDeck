@@ -217,6 +217,9 @@ final class TerminalSessionModel {
         let host: String
         let port: Int
         let key: SSHHostKey
+        /// Why `~/.ssh/known_hosts` was not checked for this decision (the sheet says so, and offers
+        /// the grant when access was lost); nil when it was, or when there is no grant to consult.
+        var knownHostsProblem: KnownHostsProblem? = nil
     }
 
     /// `open` timeout per phase (TCP, key exchange, authentication), as a screen session.
@@ -771,7 +774,9 @@ final class TerminalSessionModel {
     /// refuses without asking.
     private func checkHostKey(_ key: SSHHostKey, generation: Int) async -> Bool {
         guard generation == self.generation, phase == .connecting else { return false }
-        switch trust.decision(for: key, host: target.host, port: target.port) {
+        let decision = trust.decision(for: key, host: target.host, port: target.port)
+        let knownHostsProblem = trust.lastKnownHostsProblem
+        switch decision {
         case .trusted:
             return true
         case .changed(let previous):
@@ -782,14 +787,14 @@ final class TerminalSessionModel {
                 hostKeyRejection = (generation, .unknownWithoutPrompt)
                 return false
             }
-            let accepted = await askHostKey(key)
+            let accepted = await askHostKey(key, knownHostsProblem: knownHostsProblem)
             return accepted && generation == self.generation
         }
     }
 
     /// Parks the validator until Trust, Cancel, or anything that ends the attempt (cancellation of
     /// the validator's task included: the connection died).
-    private func askHostKey(_ key: SSHHostKey) async -> Bool {
+    private func askHostKey(_ key: SSHHostKey, knownHostsProblem: KnownHostsProblem?) async -> Bool {
         nextPromptID += 1
         let id = nextPromptID
         return await withTaskCancellationHandler {
@@ -799,7 +804,8 @@ final class TerminalSessionModel {
                     return
                 }
                 hostKeyWaiter = (id, continuation)
-                hostKeyPrompt = HostKeyPrompt(host: target.host, port: target.port, key: key)
+                hostKeyPrompt = HostKeyPrompt(host: target.host, port: target.port, key: key,
+                                              knownHostsProblem: knownHostsProblem)
             }
         } onCancel: {
             Task { @MainActor [weak self] in self?.dismissHostKeyPrompt(id: id) }
@@ -814,6 +820,31 @@ final class TerminalSessionModel {
         hostKeyWaiter = nil
         hostKeyPrompt = nil
         waiter.continuation.resume(returning: true)
+    }
+
+    /// Host Key Sheet › "Grant access to ~/.ssh…" (the sheet says access was lost): the view shows the
+    /// open panel (`requestAccess`), then this decides again with `known_hosts`, the sheet still up.
+    /// A match connects (and is pinned), a mismatch blocks as a changed key, still unknown keeps the
+    /// sheet with what is now true of `known_hosts`.
+    func recheckHostKey() {
+        guard let prompt = hostKeyPrompt, let waiter = hostKeyWaiter else { return }
+        let decision = trust.decision(for: prompt.key, host: prompt.host, port: prompt.port)
+        switch decision {
+        case .unknown:
+            var updated = prompt
+            updated.knownHostsProblem = trust.lastKnownHostsProblem
+            hostKeyPrompt = updated
+            return
+        case .trusted:
+            hostKeyWaiter = nil
+            hostKeyPrompt = nil
+            waiter.continuation.resume(returning: true)
+        case .changed(let previous):
+            hostKeyRejection = (generation, .changed(previous: previous, new: prompt.key.fingerprintSHA256))
+            hostKeyWaiter = nil
+            hostKeyPrompt = nil
+            waiter.continuation.resume(returning: false)
+        }
     }
 
     /// Host Key Sheet › Cancel: nothing remembered, nothing sent; "Host key not trusted" with Retry.

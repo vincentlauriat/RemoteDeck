@@ -1,3 +1,6 @@
+// Added for RemoteDeck (see Packages/Vendor/PATCHES.md). Part of the vendored Citadel, under its
+// MIT licence (`LICENSE`).
+//
 import Foundation
 import NIO
 

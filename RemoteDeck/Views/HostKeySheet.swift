@@ -9,6 +9,9 @@ struct HostKeySheet: View {
     let prompt: TerminalSessionModel.HostKeyPrompt
     let onTrust: () -> Void
     let onCancel: () -> Void
+    /// "Grant access to ~/.ssh…", shown when `~/.ssh` access was lost: the open panel, then the key
+    /// is decided again with `known_hosts`.
+    var onGrantAccess: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -34,10 +37,21 @@ struct HostKeySheet: View {
                 }
             }
             .font(.callout)
+            if let problem = prompt.knownHostsProblem {
+                Label(settings.t(problem == .accessLost ? "host_key_known_hosts_access_lost"
+                                                        : "host_key_known_hosts_unreadable"),
+                      systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(settings.t("host_key_remembered"))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             HStack {
+                if prompt.knownHostsProblem == .accessLost, let onGrantAccess {
+                    Button(settings.t("editor_ssh_grant"), action: onGrantAccess)
+                }
                 Spacer()
                 Button(settings.t("cancel"), role: .cancel, action: onCancel)
                     .keyboardShortcut(.cancelAction)

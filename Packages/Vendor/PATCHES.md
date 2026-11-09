@@ -205,8 +205,8 @@ more things favour that:
 
 6. **Modification notices:** `SFTPClient.swift`, `SFTPServerInboundHandler.swift`,
    `SFTPSerializer.swift` and `SFTPMessageParser.swift` start with
-   `// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).`; `RemoteDeckSFTP.swift` starts
-   with `// Added for RemoteDeck (see Packages/Vendor/PATCHES.md).`.
+   `// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).`; `RemoteDeckSFTP.swift` and
+   `RemoteDeckKeyDecryption.swift` start with `// Added for RemoteDeck (see Packages/Vendor/PATCHES.md).`.
 
 ## Updating
 

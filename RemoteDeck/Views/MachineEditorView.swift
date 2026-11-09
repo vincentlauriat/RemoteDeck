@@ -306,7 +306,8 @@ struct MachineEditorView: View {
     private func sheetView(_ sheet: EditorSheet) -> some View {
         switch sheet {
         case .hostKey(let prompt):
-            HostKeySheet(prompt: prompt, onTrust: model.trustHostKey, onCancel: model.rejectHostKey)
+            HostKeySheet(prompt: prompt, onTrust: model.trustHostKey, onCancel: model.rejectHostKey,
+                         onGrantAccess: { Task { await model.grantSSHFolderFromHostKeySheet() } })
         case .testPassphrase(let rejected):
             PassphraseSheet(machineName: model.name, rejected: rejected, message: settings.t("passphrase_test_body"),
                             showsRemember: false, actionKey: "test",

@@ -167,6 +167,10 @@ final class LibrarySync {
     @ObservationIgnored private var isSetUp = false
     /// An import ended while another event still ran: merge once they are all done.
     @ObservationIgnored private var mergePending = false
+    /// An import ended successfully since the last setup started: only then does the store hold
+    /// the whole library, so only then may the orphan sweep run (a store just reset, or still
+    /// empty before its first import, would make every local passphrase look orphaned).
+    @ObservationIgnored private var hasImported = false
     @ObservationIgnored private var statusGeneration = 0
 
     /// `statusProvider` nil: the status is never asked (hosted tests, demo modes, unentitled
@@ -257,6 +261,8 @@ final class LibrarySync {
     func handle(_ event: SyncEvent) {
         if event.endDate == nil {
             running.insert(event.id)
+            // A setup (first launch, zone reset, account change) may start from an empty store.
+            if event.kind == .setup { hasImported = false }
         } else {
             running.remove(event.id)
             if event.succeeded {
@@ -268,6 +274,7 @@ final class LibrarySync {
             // A finished import also proves the setup ran (its own event may predate `start`).
             if event.succeeded, event.kind != .export { isSetUp = true }
             if event.kind == .import { mergePending = true }
+            if event.kind == .import, event.succeeded { hasImported = true }
         }
         isSyncing = !running.isEmpty
         if mergePending { mergeIfIdle() }
@@ -275,10 +282,12 @@ final class LibrarySync {
 
     /// Merges (and refreshes the watch feed) only after setup and while no mirroring event runs:
     /// a half-imported batch could show one copy of a pair whose other half has not landed yet.
+    /// Then, once an import has completed, sweeps the SSH state of machines gone from the library.
     private func mergeIfIdle() {
         guard isSetUp, running.isEmpty else { return }
         mergePending = false
         merger?.mergeDuplicates()
+        if hasImported { merger?.sweepOrphanedSSHState() }
         onRemoteChange()
     }
 }
@@ -300,20 +309,43 @@ final class LibrarySync {
 /// otherwise the dropped copy's pair is copied and read back. The dropped machines' three SSH items
 /// are deleted after the save. `sshLocalPassphrase.<id>` (a key in this Mac's `~/.ssh`) is never
 /// copied: it is local by design, and the survivor asks again at its next Connect.
+///
+/// A deletion or merge made on another Mac arrives through CloudKit, so this Mac's local SSH state
+/// (`sshLocalPassphrase.<id>`, never synced, and the `trustedHostKeys` entries) is cleaned up by
+/// `sweepOrphanedSSHState`, run after the merge once an import has completed (never at launch).
+/// A merger exists only for the on-disk store that syncs: never in memory, a demo mode or XCTest.
 @MainActor
 final class LibraryMerger {
     private let context: ModelContext
     private let passwords: any MachinePasswordStore
     private let sshSecrets: any SSHSecretStore
+    private let trustedHostKeys: (any TrustedHostKeys)?
     private let hasSession: @MainActor (UUID) -> Bool
 
     init(context: ModelContext, passwords: any MachinePasswordStore,
          sshSecrets: any SSHSecretStore = InMemorySSHSecretStore(),
+         trustedHostKeys: (any TrustedHostKeys)? = nil,
          hasSession: @escaping @MainActor (UUID) -> Bool = { _ in false }) {
         self.context = context
         self.passwords = passwords
         self.sshSecrets = sshSecrets
+        self.trustedHostKeys = trustedHostKeys
         self.hasSession = hasSession
+    }
+
+    /// Deletes the `sshLocalPassphrase.<id>` items of machines no longer in the store (a machine with
+    /// an open session on this Mac keeps its item for now), and forgets the trusted `host:port`
+    /// entries no machine uses. A store that cannot be read sweeps nothing: a failed fetch is never
+    /// an empty library.
+    func sweepOrphanedSSHState() {
+        guard let machines = try? context.fetch(FetchDescriptor<Machine>()) else { return }
+        let ids = Set(machines.map(\.id))
+        if let withPassphrase = try? sshSecrets.localPassphraseMachineIDs() {
+            for id in withPassphrase where !ids.contains(id) && !hasSession(id) {
+                try? sshSecrets.deleteSecret(.sshLocalKeyPassphrase(id))
+            }
+        }
+        trustedHostKeys?.forgetEntries(unusedBy: machines)
     }
 
     /// Returns the ids of the machines removed. Saves once, only when something changed.

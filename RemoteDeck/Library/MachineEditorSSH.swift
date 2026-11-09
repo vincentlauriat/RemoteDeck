@@ -485,7 +485,9 @@ extension MachineEditorModel {
     /// → the Host Key Sheet (Trust remembers the key at once, as a session does).
     private func checkTestHostKey(_ key: SSHHostKey, host: String, port: Int, generation: Int) async -> Bool {
         guard generation == testGeneration else { return false }
-        switch ssh.trustedHostKeys.decision(for: key, host: host, port: port) {
+        let decision = ssh.trustedHostKeys.decision(for: key, host: host, port: port)
+        let knownHostsProblem = ssh.trustedHostKeys.lastKnownHostsProblem
+        switch decision {
         case .trusted:
             return true
         case .changed(let previous):
@@ -493,9 +495,13 @@ extension MachineEditorModel {
                 ? .hostKeyChangedInKnownHosts : .hostKeyChanged)
             return false
         case .unknown:
-            let accepted = await askHostKey(TerminalSessionModel.HostKeyPrompt(host: host, port: port, key: key))
+            let accepted = await askHostKey(TerminalSessionModel.HostKeyPrompt(
+                host: host, port: port, key: key, knownHostsProblem: knownHostsProblem))
             guard generation == testGeneration else { return false }
-            if !accepted { hostKeyRefusal = (generation, .hostKeyUnknown(key.fingerprintSHA256)) }
+            // A recheck after the grant may have found a mismatch in known_hosts: that refusal stays.
+            if !accepted, hostKeyRefusal?.generation != generation {
+                hostKeyRefusal = (generation, .hostKeyUnknown(key.fingerprintSHA256))
+            }
             return accepted
         }
     }
@@ -527,6 +533,34 @@ extension MachineEditorModel {
         sheet = nil
         refreshTrustState()
         waiter.continuation.resume(returning: true)
+    }
+
+    /// Host Key Sheet › "Grant access to ~/.ssh…" (the sheet says access was lost): the open panel,
+    /// then the key is decided again with `known_hosts`, as a session does (`recheckHostKey`).
+    func grantSSHFolderFromHostKeySheet() async {
+        guard case .hostKey = sheet, let id = hostKeyWaiter?.id else { return }
+        _ = await ssh.folder.requestAccess()
+        sshFolderProblem = ssh.folder.lastRequestProblem
+        sshFieldsShown()
+        // The test may have ended, or another prompt come up, while the panel was open.
+        guard case .hostKey(let prompt) = sheet, let waiter = hostKeyWaiter, waiter.id == id else { return }
+        switch ssh.trustedHostKeys.decision(for: prompt.key, host: prompt.host, port: prompt.port) {
+        case .unknown:
+            var updated = prompt
+            updated.knownHostsProblem = ssh.trustedHostKeys.lastKnownHostsProblem
+            sheet = .hostKey(updated)
+        case .trusted:
+            hostKeyWaiter = nil
+            sheet = nil
+            refreshTrustState()
+            waiter.continuation.resume(returning: true)
+        case .changed(let previous):
+            hostKeyRefusal = (testGeneration, previous == HostKeyDecision.knownHostsConflict
+                ? .hostKeyChangedInKnownHosts : .hostKeyChanged)
+            hostKeyWaiter = nil
+            sheet = nil
+            waiter.continuation.resume(returning: false)
+        }
     }
 
     /// Host Key Sheet › Cancel: nothing remembered; the test fails "Host key not trusted".

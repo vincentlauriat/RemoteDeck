@@ -245,6 +245,79 @@ struct SSHServicesTests {
         #expect(!access.isGranted)
     }
 
+    /// Final review: a stale bookmark still resolves; it is re-created from the URL it resolved to
+    /// (inside the security scope) and stored, never reported as "access lost". If it cannot be
+    /// re-created, the folder stays granted on the old one.
+    @Test func staleBookmarkIsRecreatedNotReportedLost() throws {
+        let suite = "SSHServicesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let dir = FileManager.default.temporaryDirectory.appending(path: "ssh-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data("pi.local ssh-ed25519 AAAA\n".utf8).write(to: dir.appending(path: "known_hosts"))
+
+        let bookmarks = FakeSecurityScopedBookmarks(folder: dir)
+        bookmarks.stale = [Data("old".utf8)]
+        bookmarks.made = Data("fresh".utf8)
+        defaults.set(Data("old".utf8), forKey: SSHFolderAccess.bookmarkKey)
+        let access = SSHFolderAccess(defaults: defaults, bookmarks: bookmarks)
+        #expect(access.isGranted)
+        #expect(!access.accessLost)
+        #expect(defaults.data(forKey: SSHFolderAccess.bookmarkKey) == Data("fresh".utf8))
+        // Re-created while the scope was held, and the scope released.
+        #expect(bookmarks.log.prefix(3) == ["resolve(old)", "start", "make"])
+        #expect(bookmarks.balanced)
+        #expect(try access.readFile("known_hosts") == "pi.local ssh-ed25519 AAAA\n")
+        #expect(bookmarks.balanced)
+
+        // Re-creation fails: still granted, the old bookmark kept.
+        let failing = FakeSecurityScopedBookmarks(folder: dir)
+        failing.stale = [Data("old".utf8)]
+        defaults.set(Data("old".utf8), forKey: SSHFolderAccess.bookmarkKey)
+        let kept = SSHFolderAccess(defaults: defaults, bookmarks: failing)
+        #expect(kept.isGranted && !kept.accessLost)
+        #expect(defaults.data(forKey: SSHFolderAccess.bookmarkKey) == Data("old".utf8))
+
+        // A bookmark that does not resolve at all is access lost.
+        let unresolved = FakeSecurityScopedBookmarks(folder: nil)
+        let lost = SSHFolderAccess(defaults: defaults, bookmarks: unresolved)
+        #expect(!lost.isGranted && lost.accessLost)
+    }
+
+    /// Final review, M3: a read stops at the cap; above it the file is unreadable (reported as such
+    /// for known_hosts), never read whole.
+    @Test func readsAreCappedAndOversizedFilesAreUnreadable() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "ssh-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appending(path: "known_hosts")
+        try Data(repeating: UInt8(ascii: "a"), count: 16).write(to: file)
+        #expect(try SSHFolderAccess.readText(file, relativePath: "known_hosts", limit: 16) == String(repeating: "a", count: 16))
+        #expect(throws: SSHFolderError.unreadable("known_hosts")) {
+            try SSHFolderAccess.readText(file, relativePath: "known_hosts", limit: 15)
+        }
+        try Data([0xFF, 0xFE]).write(to: file)
+        #expect(throws: SSHFolderError.unreadable("known_hosts")) {
+            try SSHFolderAccess.readText(file, relativePath: "known_hosts")
+        }
+        #expect(throws: SSHFolderError.fileMissing("id_none")) {
+            try SSHFolderAccess.readText(dir.appending(path: "id_none"), relativePath: "id_none")
+        }
+        #expect(SSHFolderAccess.maxFileSize == 4 * 1024 * 1024)
+
+        // Through the folder: one byte over the cap reads as an unreadable known_hosts.
+        try Data(repeating: UInt8(ascii: "#"), count: SSHFolderAccess.maxFileSize + 1).write(to: file)
+        let suite = "SSHServicesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Data("bookmark".utf8), forKey: SSHFolderAccess.bookmarkKey)
+        let access = SSHFolderAccess(defaults: defaults, bookmarks: FakeSecurityScopedBookmarks(folder: dir))
+        let trust = InMemoryTrustedHostKeys(folder: access)
+        #expect(trust.decision(for: serverKey, host: host, port: 22) == .unknown)
+        #expect(trust.lastKnownHostsProblem == .unreadable)
+    }
+
     @Test(arguments: ["id_ed25519", "keys/id_work", "id..old"])
     func relativeKeyPathsInsideTheFolderAreAccepted(_ path: String) {
         #expect(SSHFolderPath.isValid(path))

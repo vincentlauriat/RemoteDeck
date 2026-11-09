@@ -92,7 +92,8 @@ struct TerminalSessionView: View {
             Color.clear.sheet(isPresented: Binding(get: { terminal.hostKeyPrompt != nil }, set: { _ in })) {
                 if let prompt = terminal.hostKeyPrompt {
                     HostKeySheet(prompt: prompt, onTrust: { terminal.trustHostKey() },
-                                 onCancel: { terminal.rejectHostKey() })
+                                 onCancel: { terminal.rejectHostKey() },
+                                 onGrantAccess: grantSSHFolderFromHostKeySheet)
                 }
             }
         }
@@ -290,6 +291,15 @@ struct TerminalSessionView: View {
             tester: manager.tester, defaultSharedClipboard: settings.defaultSharedClipboard,
             publicConsents: manager.publicConsents, ssh: manager.ssh, sshTester: manager.sshTester,
             keyPicker: AppPanels.keyFilePicker()))
+    }
+
+    /// Host Key Sheet › "Grant access to ~/.ssh…": the open panel, then the key is decided again with
+    /// `known_hosts` while the attempt waits on the sheet (never a new attempt).
+    private func grantSSHFolderFromHostKeySheet() {
+        Task { @MainActor in
+            _ = await manager.ssh.folder.requestAccess()
+            terminal.recheckHostKey()
+        }
     }
 
     /// The open panel on `~/.ssh`; granted, the attempt starts again; refused, the banner stays.

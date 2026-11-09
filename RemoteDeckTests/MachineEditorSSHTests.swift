@@ -462,6 +462,51 @@ final class MachineEditorSSHTests {
         #expect(model.sheet == nil)
     }
 
+    /// Final review, Important 1: the editor's Test says a lost `~/.ssh` grant on the Host Key Sheet;
+    /// "Grant access to ~/.ssh…" there decides again with `known_hosts` (a match: the test goes on).
+    @Test func lostSSHFolderAccessIsShownAndGrantingFromTheSheetChecksKnownHosts() async {
+        folder.granted = false
+        folder.accessLost = true
+        folder.grantsOnRequest = true
+        folder.files = ["known_hosts": "pi.local " + SSHTestKeys.ed25519Public]
+        let model = sshEditor(tester: FakeSSHTester(hostKey: Self.hostKey))
+        model.testConnection()
+        #expect(await waitUntil { model.sheet != nil })
+        guard case .hostKey(let prompt) = model.sheet else {
+            Issue.record("expected the Host Key Sheet, got \(String(describing: model.sheet))")
+            return
+        }
+        #expect(prompt.knownHostsProblem == .accessLost)
+
+        await model.grantSSHFolderFromHostKeySheet()
+        #expect(folder.calls.contains("requestAccess"))
+        #expect(model.sheet == nil)
+        #expect(await waitUntil { model.testState == .succeeded })
+        #expect(trust.hasTrustedKeys(host: "pi.local", port: 22))
+    }
+
+    /// A known_hosts mismatch found after the grant fails as the known_hosts conflict, not "not
+    /// trusted"; a grant refused keeps the sheet with its line.
+    @Test func mismatchFoundAfterTheGrantFromTheSheetPointsAtKnownHosts() async {
+        folder.granted = false
+        folder.accessLost = true
+        folder.files = ["known_hosts": "pi.local " + SSHTestKeys.ed25519EncryptedPublic]
+        let model = sshEditor(tester: FakeSSHTester(hostKey: Self.hostKey))
+        model.testConnection()
+        #expect(await waitUntil { model.sheet != nil })
+        await model.grantSSHFolderFromHostKeySheet()   // the panel cancelled: nothing granted
+        guard case .hostKey(let prompt) = model.sheet else {
+            Issue.record("the sheet should stay, got \(String(describing: model.sheet))")
+            return
+        }
+        #expect(prompt.knownHostsProblem == .accessLost)
+
+        folder.grantsOnRequest = true
+        await model.grantSSHFolderFromHostKeySheet()
+        #expect(model.sheet == nil)
+        #expect(await waitUntil { model.testState == .failed(.hostKeyChangedInKnownHosts) })
+    }
+
     @Test func cancellingTheTestDismissesTheHostKeySheet() async {
         let model = sshEditor(tester: FakeSSHTester(hostKey: Self.hostKey))
         model.testConnection()

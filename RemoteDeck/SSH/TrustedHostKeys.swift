@@ -21,10 +21,11 @@ enum HostKeyDecision: Equatable, Sendable {
 /// Why `~/.ssh/known_hosts` could not be consulted for the last decision (not set when there is no
 /// grant at all, or the folder has no `known_hosts` file: both are normal).
 enum KnownHostsProblem: Equatable, Sendable {
-    /// A grant was made on this Mac but its bookmark no longer resolves or is stale: "~/.ssh access
-    /// lost" (grant the folder again).
+    /// A grant was made on this Mac but its bookmark no longer resolves: "~/.ssh access lost"
+    /// (grant the folder again). A stale bookmark is re-created, never reported.
     case accessLost
-    /// The folder is granted but `known_hosts` exists and cannot be read (permissions, not UTF-8).
+    /// The folder is granted but `known_hosts` exists and cannot be read (permissions, not UTF-8,
+    /// larger than `SSHFolderAccess.maxFileSize`).
     case unreadable
 }
 
@@ -44,6 +45,10 @@ protocol TrustedHostKeys: AnyObject {
     /// RemoteDeck's own list has a key for this `host:port` (what "Remove from RemoteDeck's trusted
     /// keys…" removes; `~/.ssh/known_hosts` is never consulted nor changed).
     func hasTrustedKeys(host: String, port: Int) -> Bool
+    /// Forgets every `host:port` none of `machines` (the whole library) uses: the post-import sweep
+    /// of a machine deleted, merged or moved on another Mac, and of the unowned entry a Test of an
+    /// unsaved address left (`LibraryMerger.sweepOrphanedSSHState`).
+    func forgetEntries(unusedBy machines: [Machine])
     /// Set by each `decision`: why `known_hosts` was not consulted, nil when it was or when there
     /// is no grant to consult.
     var lastKnownHostsProblem: KnownHostsProblem? { get }
@@ -151,6 +156,12 @@ extension TrustedHostKeyStore {
 
     func hasTrustedKeys(host: String, port: Int) -> Bool {
         entries[HostKeyTrust.entryKey(host: host, port: port)]?.isEmpty == false
+    }
+
+    func forgetEntries(unusedBy machines: [Machine]) {
+        let used = Set(machines.map { HostKeyTrust.entryKey(host: $0.host, port: $0.port) })
+        let kept = entries.filter { used.contains($0.key) }
+        if kept.count != entries.count { entries = kept }
     }
 }
 
