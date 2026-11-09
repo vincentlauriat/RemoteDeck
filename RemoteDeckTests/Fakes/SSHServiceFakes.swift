@@ -61,12 +61,15 @@ final class FakeSSHSecrets: SSHSecretStore {
     /// Reads of these accounts fail when they may not show a dialog (errSecInteractionNotAllowed).
     var needsInteraction: Set<KeychainAccount> = []
     var saveError: KeychainError?
+    /// Every read fails with it (an interactive read refused, a damaged item).
+    var readError: KeychainError?
     private(set) var reads: [Read] = []
     private(set) var deleted: [KeychainAccount] = []
 
     func secret(_ account: KeychainAccount, allowsInteraction: Bool) throws(KeychainError) -> String? {
         reads.append(Read(account: account, allowsInteraction: allowsInteraction))
         if !allowsInteraction, needsInteraction.contains(account) { throw .interactionNotAllowed }
+        if let readError { throw readError }
         return items[account]
     }
 

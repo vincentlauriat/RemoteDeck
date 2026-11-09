@@ -84,6 +84,20 @@ struct SessionTarget: Equatable, Sendable {
     var sshKeyFileName: String?
     var portForwards: [PortForward] = []
 
+    /// A target from fields not saved yet (the Machine Editor's Test).
+    init(machineID: UUID, name: String, kind: MachineKind, host: String, port: Int, username: String?,
+         sshAuth: SSHAuthMethod, sshKeyFileName: String?) {
+        self.machineID = machineID
+        self.name = name
+        self.kind = kind
+        self.host = host
+        self.port = port
+        self.username = username
+        scalingMode = .fit
+        self.sshAuth = sshAuth
+        self.sshKeyFileName = sshKeyFileName
+    }
+
     init(_ machine: Machine) {
         machineID = machine.id
         name = machine.name

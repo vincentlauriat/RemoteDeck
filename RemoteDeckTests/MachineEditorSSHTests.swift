@@ -476,11 +476,107 @@ final class MachineEditorSSHTests {
     @Test func testTestConnectionTimeout5s() async throws {
         let tester = FakeSSHTester(result: .failure(.timedOut))
         let model = sshEditor(tester: tester)
+        #expect(model.testBudget == .seconds(5))
         model.testConnection()
         #expect(await waitUntil { model.testState == .failed(.timedOut) })
-        // The deadline goes to `SSHConnection.open`, which leaves the host key validator (the sheet)
-        // out of it: the 5 s pause while the sheet is up.
         #expect(try #require(await tester.calls.first).timeout == .seconds(5))
+    }
+
+    /// The 5 s budget covers the whole Test (SSHKit's own timeout is per phase): a server that never
+    /// answers gets "no answer" when the budget runs out.
+    @Test func aServerThatNeverAnswersTimesOutOnTheWholeTestBudget() async {
+        let model = sshEditor(tester: FakeSSHTester(hangs: true))
+        model.testBudget = .milliseconds(200)
+        let start = ContinuousClock.now
+        model.testConnection()
+        #expect(await waitUntil { model.testState == .failed(.timedOut) })
+        #expect(ContinuousClock.now - start < .seconds(2))
+    }
+
+    /// The Host Key Sheet's time does not count.
+    @Test func theBudgetPausesWhileTheHostKeySheetIsUp() async throws {
+        let model = sshEditor(tester: FakeSSHTester(hostKey: Self.hostKey))
+        model.testBudget = .milliseconds(200)
+        model.testConnection()
+        #expect(await waitUntil { model.sheet != nil })
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(model.testState == .testing)
+        model.trustHostKey()
+        #expect(await waitUntil { model.testState == .succeeded })
+    }
+
+    /// One source of truth: an empty password fails the Test as it fails a session's connect.
+    @Test func emptyPasswordFailsTheTestAsTheSessionDoes() async throws {
+        let tester = FakeSSHTester()
+        let model = sshEditor(tester: tester)
+        model.password = ""
+        model.testConnection()
+        #expect(await waitUntil { model.testState == .failed(.sshCredential(.passwordMissing)) })
+        #expect(await tester.calls.isEmpty)
+        // The session's resolver, on the saved machine without a password, says the same.
+        let machine = try savedSSHMachine()
+        let resolution = ssh.resolver(passwords: passwords).resolve(machine: SessionTarget(machine), passphrase: nil,
+                                                                    allowsInteraction: true)
+        guard case .failed(.passwordMissing) = resolution else {
+            Issue.record("expected passwordMissing, got \(resolution)")
+            return
+        }
+    }
+
+    @Test func saveDuringATestTakesTheSheetSlot() async throws {
+        let model = sshEditor(auth: .importedKey)
+        try await model.importKey(from: keyFile(SSHTestKeys.ed25519Encrypted))
+        model.testConnection()
+        #expect(await waitUntil { model.sheet == .testPassphrase(rejected: false) })
+        #expect(model.save() == nil)
+        #expect(model.sheet == .savePassphrase(rejected: false))
+        #expect(model.testState == .idle)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(model.sheet == .savePassphrase(rejected: false))
+        // The Test cannot start over the save's sheet.
+        model.testConnection()
+        #expect(model.sheet == .savePassphrase(rejected: false) && model.testState == .idle)
+    }
+
+    @Test func configImportDuringATestCancelsIt() async throws {
+        folder.granted = true
+        folder.files = ["config": Self.raspcorseConfig]
+        let tester = FakeSSHTester(hangs: true)
+        let model = sshEditor(tester: tester)
+        model.testConnection()
+        #expect(await waitUntil { model.testState == .testing })
+        await model.openConfigImport()
+        #expect(model.sheet == .configImport && model.testState == .idle)
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(model.sheet == .configImport && model.testState == .idle)
+    }
+
+    @Test func cancellingTheSavePassphraseDuringItsCheckSavesNothing() async throws {
+        let model = sshEditor(auth: .importedKey)
+        try await model.importKey(from: keyFile(SSHTestKeys.ed25519Encrypted))
+        #expect(model.save() == nil)
+        let submit = Task { @MainActor in
+            await model.submitSavePassphrase(SSHTestKeys.passphrase, remember: true) == nil
+        }
+        await Task.yield()
+        model.cancelSavePassphrase()
+        #expect(await submit.value)
+        #expect(model.sheet == nil)
+        #expect(try machines().isEmpty && secrets.items.isEmpty)
+    }
+
+    @Test func cancellingTheTestWhileItsPassphraseSheetIsUp() async throws {
+        folder.granted = true
+        folder.files = ["id_ed25519": SSHTestKeys.ed25519Encrypted]
+        let tester = FakeSSHTester()
+        let model = sshEditor(tester: tester, auth: .keyInSSHFolder)
+        model.testConnection()
+        #expect(await waitUntil { model.sheet == .testPassphrase(rejected: false) })
+        model.cancelTest()
+        #expect(model.sheet == nil && model.testState == .idle)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(model.testState == .idle)
+        #expect(await tester.calls.isEmpty)
     }
 
     @Test(arguments: [(SSHError.unreachable, TestConnectionFailure.unreachable),
@@ -552,6 +648,18 @@ final class MachineEditorSSHTests {
         #expect(!trust.hasTrustedKeys(host: "pi.tailnet.ts.net", port: 22))
     }
 
+    @Test func editKeepsTrustStillUsedByAnotherMachine() throws {
+        let machine = try savedSSHMachine()
+        // A synced duplicate not merged yet has the same address.
+        context.insert(Machine(name: "Pi copy", kind: .ssh, host: "pi.local", port: 22, username: "vincent"))
+        try context.save()
+        trust.trust(Self.hostKey, host: "pi.local", port: 22)
+        let model = editor(machine)
+        model.host = "pi.tailnet.ts.net"
+        _ = try #require(model.save())
+        #expect(trust.hasTrustedKeys(host: "pi.local", port: 22))
+    }
+
     @Test func failedSaveKeepsTheOldTrust() throws {
         let machine = try savedSSHMachine()
         trust.trust(Self.hostKey, host: "pi.local", port: 22)
@@ -576,6 +684,41 @@ final class MachineEditorSSHTests {
         #expect(!trust.hasTrustedKeys(host: "pi.local", port: 22))
         // A changed key no longer blocks: the next decision asks.
         #expect(trust.decision(for: Self.otherHostKey, host: "pi.local", port: 22) == .unknown)
+    }
+
+    @Test func switchingFromPasswordToAKeyRemovesThePassword() async throws {
+        let machine = try savedSSHMachine()
+        passwords.items[machine.id] = "s3cret"
+        let model = editor(machine)
+        model.sshAuth = .importedKey
+        try await model.importKey(from: keyFile(SSHTestKeys.ed25519))
+        _ = try #require(model.save())
+        #expect(passwords.items[machine.id] == nil)
+    }
+
+    @Test func switchingFromSSHToAMacRemovesTheSSHSecrets() throws {
+        let machine = try savedSSHMachine(auth: .importedKey)
+        secrets.items[.sshPrivateKey(machine.id)] = "key"
+        secrets.items[.sshKeyPassphrase(machine.id)] = "pass"
+        let model = editor(machine)
+        model.kind = .macARD
+        model.password = "s3cret"
+        _ = try #require(model.save())
+        #expect(secrets.items.isEmpty)
+        #expect(passwords.items[machine.id] == "s3cret")
+    }
+
+    /// A failed read of the previous key (not "none") aborts before the new key is written, so a
+    /// rollback can never delete a key it could not read back.
+    @Test func unreadablePreviousKeyAbortsTheSave() async throws {
+        let machine = try savedSSHMachine(auth: .importedKey)
+        secrets.items[.sshPrivateKey(machine.id)] = "old key"
+        secrets.readError = KeychainError(status: -25308)
+        let model = editor(machine)
+        try await model.importKey(from: keyFile(SSHTestKeys.ed25519))
+        #expect(model.save() == nil)
+        #expect(model.keyFailure == KeychainError(status: -25308))
+        #expect(secrets.items[.sshPrivateKey(machine.id)] == "old key")
     }
 
     @Test func switchingAwayFromAnImportedKeyRemovesItsSecrets() throws {

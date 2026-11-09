@@ -162,11 +162,12 @@ extension MachineEditorModel {
     func writeImportedKey(for id: UUID) throws(KeychainError) -> SSHKeyRollback? {
         guard kind == .ssh, sshAuth == .importedKey, let text = pendingKeyText else { return nil }
         let secrets = ssh.secrets
+        // A read that fails (not "none") aborts before any write: the rollback must never delete a
+        // key it could not read back.
         let rollback = SSHKeyRollback(
             machineID: id,
-            previousKey: editing == nil ? nil : (try? secrets.secret(.sshPrivateKey(id), allowsInteraction: true)) ?? nil,
-            previousPassphrase: editing == nil ? nil
-                : (try? secrets.secret(.sshKeyPassphrase(id), allowsInteraction: true)) ?? nil)
+            previousKey: editing == nil ? nil : try secrets.secret(.sshPrivateKey(id), allowsInteraction: true),
+            previousPassphrase: editing == nil ? nil : try secrets.secret(.sshKeyPassphrase(id), allowsInteraction: true))
         try secrets.setSecret(text, for: .sshPrivateKey(id))
         if let given = pendingKeyPassphrase, given.remember {
             do throws(KeychainError) {
@@ -192,6 +193,10 @@ extension MachineEditorModel {
         let secrets = ssh.secrets
         let auth: SSHAuthMethod? = machine.kindValue == .ssh ? machine.sshAuth : nil
         if let previousSSH {
+            if previousSSH.auth == .password, auth == .keyInSSHFolder || auth == .importedKey {
+                try? passwords.deletePassword(for: machine.id)
+                passwordScope = nil
+            }
             if previousSSH.auth == .importedKey, auth != .importedKey {
                 try? secrets.deleteSecret(.sshPrivateKey(machine.id))
                 try? secrets.deleteSecret(.sshKeyPassphrase(machine.id))
@@ -212,10 +217,14 @@ extension MachineEditorModel {
     /// Save's passphrase sheet › Save: checked against the key (bcrypt, off the main actor), then the
     /// save goes on. A wrong one brings the sheet back.
     func submitSavePassphrase(_ passphrase: String, remember: Bool) async -> Machine? {
-        guard let text = pendingKeyText, !passphrase.isEmpty else { return nil }
-        switch await Self.parseOffMain(text, passphrase: passphrase) {
+        guard case .savePassphrase = sheet, let text = pendingKeyText, !passphrase.isEmpty else { return nil }
+        savePassphraseAttempt += 1
+        let attempt = savePassphraseAttempt
+        let result = await Self.parseOffMain(text, passphrase: passphrase)
+        // Cancelled during bcrypt, another attempt started, or another sheet took the slot: drop it.
+        guard attempt == savePassphraseAttempt, case .savePassphrase = sheet, pendingKeyText == text else { return nil }
+        switch result {
         case .success:
-            guard pendingKeyText == text else { return nil }   // another key was imported meanwhile
             pendingKeyPassphrase = (passphrase, remember)
             sheet = nil
             return save()
@@ -230,6 +239,7 @@ extension MachineEditorModel {
     }
 
     func cancelSavePassphrase() {
+        savePassphraseAttempt += 1
         if case .savePassphrase = sheet { sheet = nil }
     }
 
@@ -266,9 +276,16 @@ extension MachineEditorModel {
     nonisolated static func readKey(at url: URL) -> Result<(String, SSHPrivateKey.FileInfo), KeyImportProblem> {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        guard size <= maxKeyFileSize else { return .failure(.notAKey) }
-        guard let data = try? Data(contentsOf: url) else { return .failure(.unreadable) }
+        // Never more than one byte past the limit, whatever the file (a device, a growing file).
+        let data: Data
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            data = try handle.read(upToCount: maxKeyFileSize + 1) ?? Data()
+        } catch {
+            return .failure(.unreadable)
+        }
+        guard data.count <= maxKeyFileSize else { return .failure(.notAKey) }
         guard let text = String(data: data, encoding: .utf8) else { return .failure(.notAKey) }
         let info: SSHPrivateKey.FileInfo
         do throws(SSHKeyError) {
@@ -301,6 +318,7 @@ extension MachineEditorModel {
     /// "Import from ~/.ssh/config…": grants the folder first if needed, then lists the importable
     /// hosts in the SSH Config Import Sheet.
     func openConfigImport() async {
+        cancelTest()   // a running test must not take the sheet slot
         if !ssh.folder.isGranted {
             await grantSSHFolder()
             guard sshFolderGranted else { return }
@@ -370,13 +388,13 @@ extension MachineEditorModel {
         case cancelled
     }
 
-    /// One SSH open/close with the editor's current (unsaved) fields. The 5 s timeout goes to
-    /// `SSHConnection.open`, which leaves the host key validator out of it: the Host Key Sheet
-    /// pauses it.
+    /// One SSH open/close with the editor's current (unsaved) fields, within `testBudget` (5 s) for
+    /// the whole connection; the time the Host Key Sheet is up does not count (AppFlow: the timeout
+    /// is paused while the sheet is up).
     func runSSHTest(port: UInt16, generation: Int) async -> TestConnectionState {
         let host = trimmedHost
         let credentials: SSHCredentials
-        switch await testCredentials(user: effectiveUsername ?? "", generation: generation) {
+        switch await testCredentials(generation: generation) {
         case .ready(let ready): credentials = ready
         case .failed(let failure): return .failed(failure)
         case .cancelled: return .idle
@@ -384,85 +402,82 @@ extension MachineEditorModel {
         guard generation == testGeneration else { return .idle }
         let tester = sshTester
         let portNumber = Int(port)
-        do throws(SSHError) {
-            try await tester.test(host: host, port: port, credentials: credentials, timeout: Self.testTimeout) {
-                [weak self] key in
-                await self?.checkTestHostKey(key, host: host, port: portNumber, generation: generation) ?? false
-            }
-            return .succeeded
-        } catch {
-            if case .hostKeyRejected = error, let refusal = hostKeyRefusal, refusal.generation == generation {
-                return .failed(refusal.failure)
-            }
-            return .failed(TestConnectionFailure(error))
-        }
-    }
-
-    /// The test's credentials from the fields as typed, by the session's rules (TRD › Secrets):
-    /// the password field, the key file read now from `~/.ssh`, or the imported key (not saved yet,
-    /// else the saved one). An encrypted key tries the remembered passphrase of the saved machine,
-    /// then asks; a passphrase typed for a test is never remembered.
-    private func testCredentials(user: String, generation: Int) async -> TestCredentials {
-        let text: String
-        let remembered: KeychainAccount?
-        switch sshAuth {
-        case .password:
-            return .ready(.password(user: user, password: password))
-        case .keyInSSHFolder:
-            guard ssh.folder.isGranted else { return .failed(.sshFolderAccessNeeded) }
-            let name = sshKeyFileName.trimmingCharacters(in: .whitespacesAndNewlines)
-            do {
-                text = try ssh.folder.readFile(name)
-            } catch SSHFolderError.notGranted {
-                return .failed(.sshFolderAccessNeeded)
-            } catch SSHFolderError.fileMissing, SSHFolderError.invalidPath {
-                return .failed(.sshCredential(.keyFileMissing(name)))
-            } catch {
-                return .failed(.sshCredential(.keyUnreadable))
-            }
-            let sameFile = editing.map { $0.sshAuth == .keyInSSHFolder && $0.sshKeyFileName == name } ?? false
-            remembered = sameFile ? editing.map { KeychainAccount.sshLocalKeyPassphrase($0.id) } : nil
-        case .importedKey:
-            if let pendingKeyText {
-                text = pendingKeyText
-                remembered = nil
-            } else if let editing, editing.sshAuth == .importedKey,
-                      let stored = (try? ssh.secrets.secret(.sshPrivateKey(editing.id), allowsInteraction: true)) ?? nil {
-                text = stored
-                remembered = .sshKeyPassphrase(editing.id)
-            } else {
-                return .failed(.sshCredential(.keyUnreadable))
-            }
-        }
-        return await keyCredentials(text, user: user, remembered: remembered, generation: generation)
-    }
-
-    private func keyCredentials(_ text: String, user: String, remembered: KeychainAccount?,
-                                generation: Int) async -> TestCredentials {
-        // Without a passphrase first: an encrypted key refuses before bcrypt.
-        var result = await Self.parseOffMain(text, passphrase: nil)
-        var rejected = false
-        if case .failure(.passphraseRequired) = result, let remembered,
-           let stored = (try? ssh.secrets.secret(remembered, allowsInteraction: true)) ?? nil, !stored.isEmpty {
-            result = await Self.parseOffMain(text, passphrase: stored)
-            if case .failure(.wrongPassphrase) = result { rejected = true }
-        }
-        while true {
-            guard generation == testGeneration else { return .cancelled }
-            switch result {
-            case .success(let key):
-                return .ready(.key(user: user, key: key))
-            case .failure(.passphraseRequired), .failure(.wrongPassphrase):
-                guard let typed = await askTestPassphrase(rejected: rejected), !typed.isEmpty else {
-                    return generation == testGeneration ? .failed(.passphraseRequired) : .cancelled
+        let budget = testBudget
+        return await withTaskGroup(of: TestConnectionState.self) { group in
+            group.addTask { [weak self] in
+                do throws(SSHError) {
+                    try await tester.test(host: host, port: port, credentials: credentials,
+                                          timeout: MachineEditorModel.testTimeout) { [weak self] key in
+                        await self?.checkTestHostKey(key, host: host, port: portNumber, generation: generation) ?? false
+                    }
+                    return .succeeded
+                } catch {
+                    return await self?.testFailure(error, generation: generation) ?? .idle
                 }
-                result = await Self.parseOffMain(text, passphrase: typed)
-                rejected = true   // shown only if this one fails too
-            case .failure(.unsupportedKeyType(let type)):
-                return .failed(.sshCredential(.unsupportedKey(type)))
-            case .failure(.malformed):
-                return .failed(.sshCredential(.keyUnreadable))
             }
+            group.addTask { [weak self] in
+                await self?.waitForTestDeadline(budget)
+                return Task.isCancelled ? .idle : .failed(.timedOut)
+            }
+            let first = await group.next() ?? .idle
+            group.cancelAll()   // the loser: the connection closes, or the deadline stops
+            return first
+        }
+    }
+
+    private func testFailure(_ error: SSHError, generation: Int) -> TestConnectionState {
+        if case .hostKeyRejected = error, let refusal = hostKeyRefusal, refusal.generation == generation {
+            return .failed(refusal.failure)
+        }
+        return .failed(TestConnectionFailure(error))
+    }
+
+    /// Returns once `budget` has elapsed outside the Host Key Sheet, or when cancelled.
+    private func waitForTestDeadline(_ budget: Duration) async {
+        let clock = ContinuousClock()
+        var remaining = budget
+        let step = Duration.milliseconds(25)
+        while remaining > .zero {
+            let start = clock.now
+            do {
+                try await Task.sleep(for: min(step, remaining))
+            } catch {
+                return
+            }
+            if case .hostKey = sheet { continue }   // paused while the user reads the fingerprint
+            remaining -= clock.now - start
+        }
+    }
+
+    /// The test's credentials: `SSHCredentialResolver` (the session's rules) on a target built from
+    /// the fields as typed, with the typed password and a key imported but not saved yet in place of
+    /// the stored secrets. An encrypted key without a working passphrase asks in a sheet; a
+    /// passphrase typed for a test is never remembered.
+    private func testCredentials(generation: Int) async -> TestCredentials {
+        let fileName = sshKeyFileName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = SessionTarget(machineID: editing?.id ?? UUID(), name: name, kind: .ssh, host: trimmedHost,
+                                   port: port, username: effectiveUsername, sshAuth: sshAuth,
+                                   sshKeyFileName: fileName.isEmpty ? nil : fileName)
+        let overrides = SSHCredentialOverrides(password: sshAuth == .password ? password : nil,
+                                               importedKey: sshAuth == .importedKey ? pendingKeyText : nil)
+        let resolver = ssh.resolver(passwords: passwords)
+        var given: String?
+        while true {
+            let resolution = await resolver.resolveOffMain(machine: target, passphrase: given, allowsInteraction: true,
+                                                           overrides: overrides)
+            guard generation == testGeneration else { return .cancelled }
+            let rejected: Bool
+            switch resolution {
+            case .ready(let credentials): return .ready(credentials)
+            case .needsPassphrase: rejected = given != nil
+            case .rememberedPassphraseRejected: rejected = true
+            case .needsFolderAccess: return .failed(.sshFolderAccessNeeded)
+            case .failed(let failure): return .failed(.sshCredential(failure))
+            }
+            guard let typed = await askTestPassphrase(rejected: rejected), !typed.isEmpty else {
+                return generation == testGeneration ? .failed(.passphraseRequired) : .cancelled
+            }
+            given = typed
         }
     }
 
@@ -527,17 +542,19 @@ extension MachineEditorModel {
     }
 
     private func askTestPassphrase(rejected: Bool) async -> String? {
-        await withTaskCancellationHandler {
+        nextPromptID += 1
+        let id = nextPromptID
+        return await withTaskCancellationHandler {
             await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
                 if Task.isCancelled {
                     continuation.resume(returning: nil)
                     return
                 }
-                passphraseWaiter = continuation
+                passphraseWaiter = (id, continuation)
                 sheet = .testPassphrase(rejected: rejected)
             }
         } onCancel: {
-            Task { @MainActor [weak self] in self?.cancelTestPassphrase() }
+            Task { @MainActor [weak self] in self?.dismissTestPassphrase(id: id) }
         }
     }
 
@@ -546,14 +563,20 @@ extension MachineEditorModel {
         guard let waiter = passphraseWaiter else { return }
         passphraseWaiter = nil
         if case .testPassphrase = sheet { sheet = nil }
-        waiter.resume(returning: passphrase)
+        waiter.continuation.resume(returning: passphrase)
     }
 
     func cancelTestPassphrase() {
-        guard let waiter = passphraseWaiter else { return }
+        dismissTestPassphrase()
+    }
+
+    /// `id` nil: whichever prompt is up; otherwise only that one (a late cancellation handler never
+    /// dismisses a newer prompt).
+    private func dismissTestPassphrase(id: Int? = nil) {
+        guard let waiter = passphraseWaiter, id == nil || waiter.id == id else { return }
         passphraseWaiter = nil
         if case .testPassphrase = sheet { sheet = nil }
-        waiter.resume(returning: nil)
+        waiter.continuation.resume(returning: nil)
     }
 
     /// A test ends or is cancelled: its sheets go, their waiters answer "no".

@@ -36,6 +36,20 @@ enum SSHCredentialFailure: Equatable, Sendable {
     case passphraseUnavailable
 }
 
+/// What the Machine Editor's Test has that is not saved yet, used in place of the stored secrets
+/// (the rules stay the resolver's: one source of truth for the session and the Test).
+struct SSHCredentialOverrides: Sendable, Equatable {
+    /// The password field as typed (an empty one is no password, as for a session).
+    var password: String?
+    /// The text of a key imported but not saved yet: no remembered passphrase applies to it.
+    var importedKey: String?
+
+    init(password: String? = nil, importedKey: String? = nil) {
+        self.password = password
+        self.importedKey = importedKey
+    }
+}
+
 /// Turns a machine's SSH authentication method into `SSHCredentials`, reading the Keychain and the
 /// `~/.ssh` folder. Never logs key material or passphrases, and keeps neither: the parsed key goes
 /// out in the result only.
@@ -53,8 +67,10 @@ struct SSHCredentialResolver {
     /// `passphrase`: typed in the Passphrase Sheet for this attempt (nil or empty: none; then the
     /// remembered one, if any, is tried). `allowsInteraction` false for automatic attempts: no
     /// Keychain dialog, and a wrong passphrase is `passphraseUnavailable` instead of asking.
-    func resolve(machine: SessionTarget, passphrase: String?, allowsInteraction: Bool) -> CredentialResolution {
-        switch prepare(machine: machine, passphrase: passphrase, allowsInteraction: allowsInteraction) {
+    func resolve(machine: SessionTarget, passphrase: String?, allowsInteraction: Bool,
+                 overrides: SSHCredentialOverrides = SSHCredentialOverrides()) -> CredentialResolution {
+        switch prepare(machine: machine, passphrase: passphrase, allowsInteraction: allowsInteraction,
+                       overrides: overrides) {
         case .done(let resolution): resolution
         case .decrypt(let step): step.run()
         }
@@ -63,9 +79,11 @@ struct SSHCredentialResolver {
     /// `resolve`, with the one expensive step (bcrypt_pbkdf of an encrypted key, ~165 ms in Debug)
     /// run off the main actor. The Keychain and `~/.ssh` reads, and the cheap check that a key is
     /// encrypted, stay on the main actor: an unencrypted key still never touches the Keychain.
-    func resolveOffMain(machine: SessionTarget, passphrase: String?, allowsInteraction: Bool) async
+    func resolveOffMain(machine: SessionTarget, passphrase: String?, allowsInteraction: Bool,
+                        overrides: SSHCredentialOverrides = SSHCredentialOverrides()) async
         -> CredentialResolution {
-        switch prepare(machine: machine, passphrase: passphrase, allowsInteraction: allowsInteraction) {
+        switch prepare(machine: machine, passphrase: passphrase, allowsInteraction: allowsInteraction,
+                       overrides: overrides) {
         case .done(let resolution): resolution
         case .decrypt(let step): await Task.detached(priority: .userInitiated) { step.run() }.value
         }
@@ -94,14 +112,14 @@ struct SSHCredentialResolver {
         case decrypt(DecryptStep)
     }
 
-    private func prepare(machine: SessionTarget, passphrase: String?, allowsInteraction: Bool) -> Preparation {
+    private func prepare(machine: SessionTarget, passphrase: String?, allowsInteraction: Bool,
+                         overrides: SSHCredentialOverrides) -> Preparation {
         let user = machine.username?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         switch machine.sshAuth {
         case .password:
-            guard let password = try? passwords.storedPassword(for: machine.machineID,
-                                                               allowsInteraction: allowsInteraction)?.password,
-                  !password.isEmpty
-            else { return .done(.failed(.passwordMissing)) }
+            let stored = overrides.password
+                ?? (try? passwords.storedPassword(for: machine.machineID, allowsInteraction: allowsInteraction))?.password
+            guard let password = stored, !password.isEmpty else { return .done(.failed(.passwordMissing)) }
             return .done(.ready(.password(user: user, password: password)))
 
         case .keyInSSHFolder:
@@ -121,6 +139,10 @@ struct SSHCredentialResolver {
                        remembered: .sshLocalKeyPassphrase(machine.machineID), allowsInteraction: allowsInteraction)
 
         case .importedKey:
+            if let pending = overrides.importedKey {
+                return key(pending, user: user, passphrase: passphrase, remembered: nil,
+                           allowsInteraction: allowsInteraction)
+            }
             guard let text = try? secrets.secret(.sshPrivateKey(machine.machineID), allowsInteraction: allowsInteraction)
             else { return .done(.failed(.keyUnreadable)) }
             return key(text, user: user, passphrase: passphrase,
@@ -130,7 +152,7 @@ struct SSHCredentialResolver {
 
     /// The key without passphrase first (cheap: an encrypted key refuses before bcrypt), then with the
     /// given passphrase, else the remembered one (`remembered`, read only when needed).
-    private func key(_ text: String, user: String, passphrase given: String?, remembered: KeychainAccount,
+    private func key(_ text: String, user: String, passphrase given: String?, remembered: KeychainAccount?,
                      allowsInteraction: Bool) -> Preparation {
         var passphrase = given?.isEmpty == false ? given : nil
         let isRemembered = passphrase == nil
@@ -141,7 +163,7 @@ struct SSHCredentialResolver {
             case .failure(let error): return .done(Self.failure(error, allowsInteraction: allowsInteraction))
             }
             // A read that fails (no item, needs a dialog) is no remembered passphrase.
-            passphrase = try? secrets.secret(remembered, allowsInteraction: allowsInteraction)
+            passphrase = remembered.flatMap { try? secrets.secret($0, allowsInteraction: allowsInteraction) }
         }
         guard let passphrase, !passphrase.isEmpty else {
             return .done(allowsInteraction ? .needsPassphrase : .failed(.passphraseUnavailable))

@@ -89,7 +89,7 @@ final class MachineEditorModel {
     /// the sheet stays open.
     private(set) var passwordFailure: PasswordFailure?
     /// Where the stored password lives; `.local` → "stored on this Mac only" note.
-    private(set) var passwordScope: PasswordScope?
+    var passwordScope: PasswordScope?
     /// SwiftData failed on Save.
     private(set) var saveError: String?
     private(set) var testState: TestConnectionState = .idle
@@ -129,7 +129,11 @@ final class MachineEditorModel {
     @ObservationIgnored var pendingKeyPassphrase: (passphrase: String, remember: Bool)?
     /// Resumes the Host Key Sheet's or the test passphrase sheet's waiter.
     @ObservationIgnored var hostKeyWaiter: (id: Int, continuation: CheckedContinuation<Bool, Never>)?
-    @ObservationIgnored var passphraseWaiter: CheckedContinuation<String?, Never>?
+    @ObservationIgnored var passphraseWaiter: (id: Int, continuation: CheckedContinuation<String?, Never>)?
+    /// Bumped by each save-passphrase submission and Cancel: a check that ends after either is dropped.
+    @ObservationIgnored var savePassphraseAttempt = 0
+    /// The whole SSH Test's budget, the Host Key Sheet's time excluded (AppFlow: 5 s); tests shorten it.
+    @ObservationIgnored var testBudget: Duration = MachineEditorModel.testTimeout
     @ObservationIgnored var nextPromptID = 0
     /// Why the validator of test `generation` refused the key.
     @ObservationIgnored var hostKeyRefusal: (generation: Int, failure: TestConnectionFailure)?
@@ -140,7 +144,7 @@ final class MachineEditorModel {
     @ObservationIgnored private var applyingKindDefault = false
     @ObservationIgnored let editing: Machine?
     @ObservationIgnored let context: ModelContext
-    @ObservationIgnored private let passwords: any MachinePasswordStore
+    @ObservationIgnored let passwords: any MachinePasswordStore
     @ObservationIgnored private let tester: any ConnectionTester
     /// "Connect anyway" confirmations: a Test reaches a public address only for this machine at the
     /// host it was confirmed for (T5.3).
@@ -311,6 +315,7 @@ final class MachineEditorModel {
     /// machine is never saved without the password the user typed: if the Keychain refuses it,
     /// nothing is written. (-34018 is not a refusal: the password then goes to a local item.)
     func save() -> Machine? {
+        cancelTest()   // a running test must not take the sheet slot (its passphrase sheet included)
         saveError = nil
         passwordFailure = nil
         keyFailure = nil
@@ -424,6 +429,8 @@ final class MachineEditorModel {
 
     /// Same validation as Save, then one RFB open/close with a 5 s timeout.
     func testConnection() {
+        if sheet == .configImport { return }
+        if case .savePassphrase = sheet { return }
         cancelTest()
         guard validate(), let port = UInt16(exactly: port) else { return }
         testGeneration += 1
