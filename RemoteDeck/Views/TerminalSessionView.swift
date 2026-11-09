@@ -65,6 +65,7 @@ struct TerminalSessionView: View {
         }
         .toolbar {
             ToolbarItemGroup {
+                if !terminal.target.portForwards.isEmpty { forwardsMenu }
                 Button { dismissWindow() } label: {
                     Label(settings.t("session_disconnect"), systemImage: "xmark.circle")
                 }
@@ -98,6 +99,39 @@ struct TerminalSessionView: View {
                                     dismissWindow()
                                 })
             }
+        }
+    }
+
+    /// DesignBrief › Terminal tab: the `network` menu, one section per saved forward (label or
+    /// `localhost:8080 → localhost:80`), its state (a symbol per state, as menu images render as
+    /// templates, and its word or error), Open in Browser (only while active) and Retry for a failed
+    /// one. Hidden when the machine has no forwards.
+    private var forwardsMenu: some View {
+        Menu {
+            ForEach(terminal.target.portForwards) { forward in
+                let state = terminal.forwardStates[forward.id] ?? .stopped
+                Section(forward.displayTitle) {
+                    Label(state.message(settings.t), systemImage: forwardSymbol(state))
+                        .disabled(true)
+                    Button(settings.t("forward_open_in_browser")) { terminal.openInBrowser(forward.id) }
+                        .disabled(!state.isActive)
+                    if state.isFailed {
+                        Button(settings.t("session_retry")) { terminal.retryForward(forward.id) }
+                    }
+                }
+            }
+        } label: {
+            Label(settings.t("editor_section_forwards"), systemImage: "network")
+        }
+        .help(settings.t("editor_section_forwards"))
+    }
+
+    private func forwardSymbol(_ state: ForwardState) -> String {
+        switch state {
+        case .active: "checkmark.circle"
+        case .starting: "circle.dotted"
+        case .failed: "exclamationmark.triangle"
+        case .stopped: "stop.circle"
         }
     }
 

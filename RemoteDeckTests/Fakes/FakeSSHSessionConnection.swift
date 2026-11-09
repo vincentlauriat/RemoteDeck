@@ -6,7 +6,8 @@ import SSHKit
 /// A scripted `SSHSessionConnection`, honouring `SSHConnection.open`'s contract: the validator runs
 /// in its own task during "key exchange", nothing authenticates before it answered true, and the
 /// connection dying (or `close()`) cancels it. `log` gets "open", "auth", "hostKeyRejected", "shell",
-/// "shellClosed" (the read of the output was cancelled) and "close".
+/// "shellClosed" (the read of the output was cancelled), "forward:<port>" (a start asked),
+/// "forwardStopped:<port>" (`stop()` of a started forward) and "close".
 actor FakeSSHSessionConnection: SSHSessionConnection {
     let log: SessionLog
     let hostKey: SSHHostKey
@@ -28,11 +29,21 @@ actor FakeSSHSessionConnection: SSHSessionConnection {
     private var validation: Task<Bool, Never>?
     private var hang: CheckedContinuation<Void, Never>?
     private var isClosed = false
+    /// Local ports whose start fails, with the error (`portInUse`, `channelFailed`…).
+    private var forwardFailures: [UInt16: SSHError]
+    /// Local ports whose start waits for `finishForwardStart` (a bind that ends after the close).
+    private let forwardHangs: Set<UInt16>
+    private var forwardWaiters: [UInt16: CheckedContinuation<Void, Never>] = [:]
+    /// Every start asked, in order, and the forwards handed out.
+    private(set) var forwardStarts: [(localPort: UInt16, remoteHost: String, remotePort: UInt16)] = []
+    private(set) var forwards: [FakeForward] = []
 
     init(log: SessionLog, hostKey: SSHHostKey, openResult: Result<Void, SSHError> = .success(()),
          shellResult: Result<Void, SSHError> = .success(()), hangsAfterValidation: Bool = false,
-         shellHangs: Bool = false) {
+         shellHangs: Bool = false, forwardFailures: [UInt16: SSHError] = [:], forwardHangs: Set<UInt16> = []) {
         self.shellHangs = shellHangs
+        self.forwardFailures = forwardFailures
+        self.forwardHangs = forwardHangs
         self.log = log
         self.hostKey = hostKey
         self.openResult = openResult
@@ -89,7 +100,37 @@ actor FakeSSHSessionConnection: SSHSessionConnection {
 
     func startLocalForward(localPort: UInt16, remoteHost: String, remotePort: UInt16) async throws(SSHError)
         -> any LocalForwarding {
-        throw .channelFailed("not in this fake")
+        log.append("forward:\(localPort)")
+        forwardStarts.append((localPort, remoteHost, remotePort))
+        if forwardHangs.contains(localPort) {
+            await withCheckedContinuation { forwardWaiters[localPort] = $0 }
+        } else if isClosed {
+            throw .connectionClosed
+        }
+        if let error = forwardFailures[localPort] { throw error }
+        let forward = FakeForward(localPort: localPort, log: log)
+        forwards.append(forward)
+        return forward
+    }
+
+    /// A start of `forwardHangs` succeeds now, whether the connection was closed meanwhile or not.
+    func finishForwardStart(_ localPort: UInt16) {
+        forwardWaiters.removeValue(forKey: localPort)?.resume()
+    }
+
+    func isWaitingForForward(_ localPort: UInt16) -> Bool { forwardWaiters[localPort] != nil }
+
+    /// The next start of `localPort` succeeds (the other app freed the port).
+    func clearForwardFailure(_ localPort: UInt16) { forwardFailures[localPort] = nil }
+
+    var forwardStartCount: Int { forwardStarts.count }
+
+    /// Forwards handed out and not stopped.
+    var runningForwardCount: Int { forwards.filter { !$0.isStopped }.count }
+
+    /// The forwards started on `localPort` and still running.
+    func runningForwards(_ localPort: UInt16) -> Int {
+        forwards.filter { $0.localPort == localPort && !$0.isStopped }.count
     }
 
     func fileTransfer() async throws(SSHError) -> any FileTransferring {
@@ -171,4 +212,23 @@ final class FakeShell: SSHShellChannel {
     /// The remote shell exits (`exit`): the output ends normally.
     func finish() { continuation.finish() }
     func fail(_ error: SSHError) { continuation.finish(throwing: error) }
+}
+
+/// A forward handed out by `FakeSSHSessionConnection`; `stop()` is recorded.
+final class FakeForward: LocalForwarding {
+    let localPort: UInt16
+    private let log: SessionLog
+    private let stopped = OSAllocatedUnfairLock(initialState: false)
+
+    init(localPort: UInt16, log: SessionLog) {
+        self.localPort = localPort
+        self.log = log
+    }
+
+    var isStopped: Bool { stopped.withLock { $0 } }
+
+    func stop() async {
+        stopped.withLock { $0 = true }
+        log.append("forwardStopped:\(localPort)")
+    }
 }

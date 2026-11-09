@@ -26,6 +26,7 @@ final class TerminalHarness {
     let clock = FakeClock()
     let reconnectClock = FakeReachabilityClock()
     let surface = FakeTerminalSurface()
+    let urlOpener = FakeURLOpener()
     private(set) var fakes: [FakeSSHSessionConnection] = []
     /// The fake of attempt n (0-based); by default one that presents `serverKey` and connects.
     var makeFake: (Int, SessionLog) -> FakeSSHSessionConnection = { _, log in
@@ -33,10 +34,11 @@ final class TerminalHarness {
     }
 
     init(auth: SSHAuthMethod = .password, keyFile: String? = nil, host: String = "pi.local",
-         folderFiles: [String: String] = [:]) throws {
+         folderFiles: [String: String] = [:], forwards: [PortForward] = []) throws {
         context = try makeTestContext()
         machine = Machine(name: "Pi", kind: .ssh, host: host, port: 22, username: "vincent",
                           sshAuthMethod: auth, sshKeyFileName: keyFile)
+        machine.portForwards = forwards
         context.insert(machine)
         try context.save()
         passwords.items[machine.id] = "pw"
@@ -51,7 +53,8 @@ final class TerminalHarness {
         let model = TerminalSessionModel(
             machine: machine, context: context,
             resolver: SSHCredentialResolver(passwords: passwords, secrets: secrets, folder: folder),
-            trust: trust, secrets: secrets, clock: clock.clock, reconnectClock: reconnectClock
+            trust: trust, secrets: secrets, clock: clock.clock, reconnectClock: reconnectClock,
+            urlOpener: urlOpener
         ) { [unowned self] _ in
             let fake = makeFake(fakes.count, log)
             fakes.append(fake)

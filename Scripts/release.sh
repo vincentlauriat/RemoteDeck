@@ -368,7 +368,8 @@ bid = os.environ["BUNDLE_ID"]
 checks = {
     "sandbox": d.get("com.apple.security.app-sandbox") is True,
     "network.client": d.get("com.apple.security.network.client") is True,
-    # SSH machines: the app-scoped bookmark of ~/.ssh (network.server joins with the port forwards).
+    # SSH machines: local port forwards (loopback listeners) and the app-scoped bookmark of ~/.ssh.
+    "network.server": d.get("com.apple.security.network.server") is True,
     "files.bookmarks.app-scope": d.get("com.apple.security.files.bookmarks.app-scope") is True,
     "iCloud container": "iCloud.fr.vincentlauriat.remotedeck" in d.get("com.apple.developer.icloud-container-identifiers", []),
     "CloudKit": "CloudKit" in d.get("com.apple.developer.icloud-services", []),

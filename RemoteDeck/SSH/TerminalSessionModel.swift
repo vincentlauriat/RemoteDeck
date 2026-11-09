@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SwiftData
@@ -118,6 +119,59 @@ enum TerminalFailure: Equatable, Sendable {
     }
 }
 
+// MARK: - Port forwards
+
+/// One saved local forward at run time (AppFlow › Terminal tab › Port forwards): `starting` while
+/// the session connects and until the listeners are up, `active`, `failed` (that forward only; the
+/// shell and the other forwards go on), `stopped` once the session no longer runs.
+enum ForwardState: Equatable, Sendable {
+    case starting, active, failed(SSHError), stopped
+
+    var isActive: Bool { self == .active }
+
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+
+    /// The state's words in the forwards menu; a failure says why.
+    func message(_ t: (String) -> String) -> String {
+        switch self {
+        case .starting: return t("forward_state_starting")
+        case .active: return t("forward_state_active")
+        case .stopped: return t("forward_state_stopped")
+        case .failed(let error):
+            switch error {
+            case .portInUse(let port):
+                return t("forward_error_port_in_use").replacingOccurrences(of: "%@", with: String(port))
+            case .channelFailed: return t("forward_error_refused")
+            default: return t("forward_error_failed")
+            }
+        }
+    }
+}
+
+extension PortForward {
+    /// The label, or `localhost:8080 → localhost:80`.
+    var displayTitle: String {
+        if let label, !label.isEmpty { return label }
+        return "localhost:\(localPort) → \(remoteHost):\(remotePort)"
+    }
+
+    /// What Open in Browser opens.
+    var browserURL: URL? { URL(string: "http://localhost:\(localPort)") }
+}
+
+/// Hands a URL to the default browser (`NSWorkspace` in the app, a fake in tests).
+@MainActor
+protocol URLOpening {
+    func open(_ url: URL)
+}
+
+struct WorkspaceURLOpener: URLOpening {
+    func open(_ url: URL) { NSWorkspace.shared.open(url) }
+}
+
 // MARK: - Session
 
 /// One terminal tab's SSH session (AppFlow › Terminal tab): credentials, host key check, shell,
@@ -184,6 +238,7 @@ final class TerminalSessionModel {
     private(set) var isAutomaticAttempt = false
     /// Connected, but this Mac lost its path less than `pathLossGrace` ago.
     private(set) var isPathLost = false
+    private(set) var forwardStates: [PortForward.ID: ForwardState] = [:]
 
     /// The record of the current attempt.
     @ObservationIgnored private(set) var record: SessionRecord?
@@ -211,6 +266,7 @@ final class TerminalSessionModel {
     @ObservationIgnored private let resilience: SessionResilience
     @ObservationIgnored private let reconnectClock: any ReachabilityClock
     @ObservationIgnored private let makeConnection: @MainActor (SessionTarget) -> any SSHSessionConnection
+    @ObservationIgnored private let urlOpener: any URLOpening
 
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var startUptime: TimeInterval = 0
@@ -225,6 +281,9 @@ final class TerminalSessionModel {
     /// Input and resizes to the shell, written one after the other by one task.
     @ObservationIgnored private var input: AsyncStream<ShellInput>.Continuation?
     @ObservationIgnored private var writer: Task<Void, Never>?
+    /// The running forwards of the current attempt, and the starts still in flight.
+    @ObservationIgnored private var forwardHandles: [PortForward.ID: any LocalForwarding] = [:]
+    @ObservationIgnored private var forwardTasks: [PortForward.ID: Task<Void, Never>] = [:]
     @ObservationIgnored private var size = TerminalSessionModel.defaultSize
     /// Output that arrived before a surface was attached (the attempt starts before the window's
     /// `onAppear`): fed first by `attach`. Bounded to the last `pendingOutputLimit` bytes, which is far
@@ -268,6 +327,7 @@ final class TerminalSessionModel {
     init(machine: Machine, context: ModelContext, resolver: SSHCredentialResolver, trust: any TrustedHostKeys,
          secrets: any SSHSecretStore, clock: SessionClock = .live, resilience: SessionResilience = SessionResilience(),
          reconnectClock: any ReachabilityClock = ContinuousReachabilityClock(),
+         urlOpener: any URLOpening = WorkspaceURLOpener(),
          makeConnection: @escaping @MainActor (SessionTarget) -> any SSHSessionConnection) {
         target = SessionTarget(machine)
         self.context = context
@@ -278,7 +338,9 @@ final class TerminalSessionModel {
         self.resilience = resilience
         self.reconnectClock = reconnectClock
         self.makeConnection = makeConnection
+        self.urlOpener = urlOpener
     }
+
 
     var isConnecting: Bool { phase == .connecting }
 
@@ -354,6 +416,7 @@ final class TerminalSessionModel {
         generation += 1
         let generation = self.generation
         if let machine = fetchMachine() { target = SessionTarget(machine) }   // edited credentials
+        forwardStates = Dictionary(target.portForwards.map { ($0.id, .starting) }, uniquingKeysWith: { first, _ in first })
         startUptime = clock.uptime()
         phase = .connecting
         let record = SessionRecord(machineID: target.machineID, machineName: target.name,
@@ -368,6 +431,7 @@ final class TerminalSessionModel {
         guard let (connection, shell, openedSize) = await establish(generation: generation),
               generation == self.generation else { return }
         shellOpened(shell, size: openedSize)
+        startForwards(on: connection, generation: generation)
         guard let coalescer else { return }
         let deliver: @MainActor @Sendable (Data) -> Void = { [weak self] data in
             guard let self, self.generation == generation else { return }
@@ -584,6 +648,67 @@ final class TerminalSessionModel {
         if size != opened { input?.yield(.resize(columns: size.columns, rows: size.rows)) }
     }
 
+    // MARK: Port forwards (Task 11)
+
+    /// Every saved forward, each on its own: one failing never stops the shell nor the others.
+    private func startForwards(on connection: any SSHSessionConnection, generation: Int) {
+        for forward in target.portForwards { startForward(forward, on: connection, generation: generation) }
+    }
+
+    private func startForward(_ forward: PortForward, on connection: any SSHSessionConnection, generation: Int) {
+        let id = forward.id
+        guard let local = UInt16(exactly: forward.localPort), let remote = UInt16(exactly: forward.remotePort) else {
+            forwardStates[id] = .failed(.remote("invalid port"))   // the validator never saves one
+            return
+        }
+        forwardStates[id] = .starting
+        let remoteHost = forward.remoteHost
+        // Untyped closure: a typed-throws `Task` closure crashes the Swift 6.4 compiler (RFBKit note).
+        forwardTasks[id] = Task { [weak self] in
+            let result: Result<any LocalForwarding, SSHError>
+            do {
+                result = .success(try await connection.startLocalForward(localPort: local, remoteHost: remoteHost,
+                                                                         remotePort: remote))
+            } catch {
+                result = .failure((error as? SSHError) ?? .remote("\(error)"))
+            }
+            guard let self, self.isCurrent(connection, generation: generation) else {
+                // The session stopped (or another attempt took over) while the listeners came up:
+                // nothing may keep listening for a connection that is gone.
+                if case .success(let handle) = result { await handle.stop() }
+                return
+            }
+            self.forwardTasks[id] = nil
+            switch result {
+            case .success(let handle):
+                self.forwardHandles[id] = handle
+                self.forwardStates[id] = .active
+            case .failure(let error):
+                self.forwardStates[id] = .failed(error)
+            }
+        }
+    }
+
+    /// Attempt `generation` still owns `connection` and its shell is up.
+    private func isCurrent(_ connection: any SSHSessionConnection, generation: Int) -> Bool {
+        generation == self.generation && phase == .connected && self.connection === connection
+    }
+
+    /// Forwards menu › Retry: starts that failed forward again on the running connection (a failure
+    /// is never retried on its own).
+    func retryForward(_ id: PortForward.ID) {
+        guard phase == .connected, let connection, forwardStates[id]?.isFailed == true,
+              let forward = target.portForwards.first(where: { $0.id == id }) else { return }
+        startForward(forward, on: connection, generation: generation)
+    }
+
+    /// Forwards menu › Open in Browser: `http://localhost:<port>`, only while the forward listens.
+    func openInBrowser(_ id: PortForward.ID) {
+        guard forwardStates[id]?.isActive == true,
+              let url = target.portForwards.first(where: { $0.id == id })?.browserURL else { return }
+        urlOpener.open(url)
+    }
+
     // MARK: Host key
 
     /// The validator of attempt `generation`, on the main actor. Trusted: go on. Changed: refuse,
@@ -702,6 +827,7 @@ final class TerminalSessionModel {
         finishRecord(outcome: .cancelled)
         phase = .idle
         task = nil
+        for id in forwardStates.keys { forwardStates[id] = .stopped }   // none started: no shell
     }
 
     // MARK: Stop
@@ -793,7 +919,7 @@ final class TerminalSessionModel {
         return clock.uptime() - shellUptime >= resilience.rearmAfter
     }
 
-    /// Forwards (none yet: Task 11) → shell → connection. Returns the shell bytes received.
+    /// Forwards → shell → connection. Returns the shell bytes received.
     private func tearDown() async -> Int64 {
         let (work, coalescer) = beginTearDown()
         await work()
@@ -801,14 +927,22 @@ final class TerminalSessionModel {
     }
 
     /// The synchronous part: the session lets go of the attempt's tasks and connection now, so an
-    /// attempt started meanwhile can never be torn down by this one. The returned work closes the
-    /// shell (cancels the read of its output, which closes its channel) and then the connection.
+    /// attempt started meanwhile can never be torn down by this one, and every forward reads
+    /// `stopped` at once. The returned work stops the forwards (each `stop()` is bounded and never
+    /// waits for the peer), closes the shell (cancels the read of its output, which closes its
+    /// channel) and then the connection. A forward still starting is stopped by its own task, which
+    /// finds the attempt gone.
     private func beginTearDown() -> (@MainActor () async -> Void, TerminalOutputCoalescer?) {
         let task = self.task
         let opening = self.opening
         let writer = self.writer
         let connection = self.connection
         let coalescer = self.coalescer
+        let forwards = Array(forwardHandles.values)
+        let starting = Array(forwardTasks.values)
+        forwardHandles = [:]
+        forwardTasks = [:]
+        for id in forwardStates.keys { forwardStates[id] = .stopped }
         input?.finish()
         input = nil
         self.task = nil
@@ -817,6 +951,10 @@ final class TerminalSessionModel {
         self.connection = nil
         self.coalescer = nil
         let work: @MainActor () async -> Void = {
+            for task in starting { task.cancel() }
+            await withTaskGroup(of: Void.self) { group in
+                for forward in forwards { group.addTask { await forward.stop() } }
+            }
             writer?.cancel()      // a write stuck on a frozen peer must not hold the close
             task?.cancel()        // ends the read of the output: the shell's channel closes
             opening?.cancel()     // an `open` still in flight stops at once
