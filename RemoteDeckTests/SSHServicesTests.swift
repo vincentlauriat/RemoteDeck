@@ -41,9 +41,10 @@ struct SSHServicesTests {
             #expect(trust.decision(for: serverKey, host: host, port: 22) == .trusted)
             #expect(trust.decision(for: serverKey, host: "RaspCorse", port: 22) == .trusted)
             #expect(trust.decision(for: serverKey, host: host, port: 2222) == .trusted)
-            // Nothing was added to RemoteDeck's own list: without the grant, the host is unknown.
+            #expect(trust.lastKnownHostsProblem == nil)
+            // The match was pinned in RemoteDeck's own list: still trusted once the grant is lost.
             folder.granted = false
-            #expect(trust.decision(for: serverKey, host: host, port: 22) == .unknown)
+            #expect(trust.decision(for: serverKey, host: host, port: 22) == .trusted)
             folder.granted = true
         }
     }
@@ -88,6 +89,73 @@ struct SSHServicesTests {
         withTrustStores(folder) { trust in
             #expect(trust.decision(for: signedWithSHA256, host: host, port: 22) == .trusted)
         }
+    }
+
+    /// A known_hosts match is pinned: after the grant is lost, another key of the same type is
+    /// changed (against the pinned fingerprint), never unknown.
+    @Test func knownHostsMatchIsPinnedAndALaterKeyChangeIsCaughtWithoutTheGrant() {
+        let folder = FakeSSHFolderAccess(granted: true, files: knownHosts("\(host) \(serverKey.openSSHPublicKey)"))
+        let trust = InMemoryTrustedHostKeys(folder: folder)
+        #expect(trust.decision(for: serverKey, host: host, port: 22) == .trusted)
+        #expect(trust.entries == ["raspcorse:22": ["ssh-ed25519": serverKey.fingerprintSHA256]])
+
+        folder.granted = false
+        folder.accessLost = true
+        #expect(trust.decision(for: otherKey, host: host, port: 22)
+                == .changed(previousFingerprint: serverKey.fingerprintSHA256))
+        #expect(trust.lastKnownHostsProblem == .accessLost)
+    }
+
+    /// "~/.ssh access lost" and an unreadable known_hosts are reported; no grant or no file is not a
+    /// problem. The decision then comes from the own list.
+    @Test func knownHostsProblemsAreReported() {
+        let folder = FakeSSHFolderAccess(granted: true, files: knownHosts("\(host) \(serverKey.openSSHPublicKey)"))
+        folder.unreadable = ["known_hosts"]
+        withTrustStores(folder) { trust in
+            trust.trust(otherKey, host: host, port: 22)
+            #expect(trust.decision(for: otherKey, host: host, port: 22) == .trusted)
+            #expect(trust.lastKnownHostsProblem == .unreadable)
+        }
+        folder.granted = false
+        folder.accessLost = true
+        withTrustStores(folder) { trust in
+            #expect(trust.decision(for: serverKey, host: host, port: 22) == .unknown)
+            #expect(trust.lastKnownHostsProblem == .accessLost)
+        }
+        folder.accessLost = false
+        withTrustStores(folder) { trust in
+            _ = trust.decision(for: serverKey, host: host, port: 22)
+            #expect(trust.lastKnownHostsProblem == nil)
+        }
+        let noFile = FakeSSHFolderAccess(granted: true)
+        withTrustStores(noFile) { trust in
+            _ = trust.decision(for: serverKey, host: host, port: 22)
+            #expect(trust.lastKnownHostsProblem == nil)
+        }
+    }
+
+    /// One malformed value in the stored list is dropped alone.
+    @Test func malformedTrustedEntriesAreSkippedOneByOne() {
+        let suite = "SSHServicesTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set([
+            "raspcorse:22": ["ssh-ed25519": serverKey.fingerprintSHA256],
+            "bad:22": 42,
+            "half:22": ["ssh-ed25519": 7, "ecdsa-sha2-nistp256": ecdsaKey.fingerprintSHA256],
+        ] as [String: Any], forKey: "trustedHostKeys")
+        let trust = UserDefaultsTrustedHostKeys(defaults: defaults, folder: FakeSSHFolderAccess())
+        #expect(trust.decision(for: serverKey, host: host, port: 22) == .trusted)
+        #expect(trust.decision(for: ecdsaKey, host: "half", port: 22) == .trusted)
+        #expect(trust.decision(for: serverKey, host: "half", port: 22) == .unknown)
+        #expect(trust.decision(for: serverKey, host: "bad", port: 22) == .unknown)
+    }
+
+    @Test func onlyAFolderNamedSSHIsAccepted() {
+        #expect(SSHFolderPath.isSSHFolder(URL(filePath: "/home/someone/.ssh", directoryHint: .isDirectory)))
+        #expect(SSHFolderPath.isSSHFolder(URL(filePath: "/tmp/x/.ssh/", directoryHint: .isDirectory)))
+        #expect(!SSHFolderPath.isSSHFolder(URL(filePath: "/tmp/x/Documents", directoryHint: .isDirectory)))
+        #expect(!SSHFolderPath.isSSHFolder(URL(filePath: "/tmp/x/ssh", directoryHint: .isDirectory)))
     }
 
     @Test func testOwnListChangedKeyIsChanged() {
@@ -241,7 +309,9 @@ struct SSHServicesTests {
 
         #expect(summary(resolver.resolve(machine: machine, passphrase: nil, allowsInteraction: true)) == "needsPassphrase")
         #expect(summary(resolver.resolve(machine: machine, passphrase: "", allowsInteraction: true)) == "needsPassphrase")
-        #expect(summary(resolver.resolve(machine: machine, passphrase: nil, allowsInteraction: false)) == "needsPassphrase")
+        // An automatic attempt never gets a prompt: nobody can answer it.
+        #expect(summary(resolver.resolve(machine: machine, passphrase: nil, allowsInteraction: false))
+                == "failed(passphraseUnavailable)")
         // A wrong passphrase asks again when someone can answer, else the key cannot be read.
         #expect(summary(resolver.resolve(machine: machine, passphrase: "nope", allowsInteraction: true)) == "needsPassphrase")
         #expect(summary(resolver.resolve(machine: machine, passphrase: "nope", allowsInteraction: false))
@@ -269,6 +339,23 @@ struct SSHServicesTests {
                                          passphrase: nil, allowsInteraction: false)) == "failed(keyUnreadable)")
         #expect(summary(resolver.resolve(machine: target(id: id, auth: .keyInSSHFolder, keyFile: "id_ed25519"),
                                          passphrase: nil, allowsInteraction: true)) == "needsPassphrase")
+    }
+
+    /// A remembered passphrase whose read would need a Keychain dialog, during an automatic attempt:
+    /// unavailable, never a prompt; a manual Connect reads it.
+    @Test func rememberedPassphraseNeedingADialogIsUnavailableToAutomaticAttempts() {
+        let id = UUID()
+        let folder = FakeSSHFolderAccess(granted: true, files: ["id_ed25519": SSHTestKeys.ed25519Encrypted])
+        let secrets = FakeSSHSecrets()
+        secrets.items[.sshLocalKeyPassphrase(id)] = SSHTestKeys.passphrase
+        secrets.needsInteraction = [.sshLocalKeyPassphrase(id)]
+        let resolver = SSHCredentialResolver(passwords: FakePasswordStore(), secrets: secrets, folder: folder)
+        let machine = target(id: id, auth: .keyInSSHFolder, keyFile: "id_ed25519")
+
+        #expect(summary(resolver.resolve(machine: machine, passphrase: nil, allowsInteraction: false))
+                == "failed(passphraseUnavailable)")
+        #expect(summary(resolver.resolve(machine: machine, passphrase: nil, allowsInteraction: true))
+                == "key(vincent, ssh-ed25519)")
     }
 
     @Test func testImportedKeyReadsSyncedItems() {
@@ -391,6 +478,26 @@ struct SSHServicesTests {
         #expect(trust.decision(for: serverKey, host: host, port: 22) == .unknown)
         #expect(trust.decision(for: serverKey, host: "nas", port: 22) == .trusted)
         #expect(library.deleteWarning == nil)
+    }
+
+    /// A synced duplicate not merged yet shares the normalized host:port: its trust stays until the
+    /// last such machine is deleted.
+    @Test func deleteKeepsTrustStillUsedByAnotherMachine() throws {
+        let context = try makeTestContext()
+        let first = Machine(name: "Pi", kind: .ssh, host: host, port: 22, username: "vincent")
+        let duplicate = Machine(name: "Pi (other Mac)", kind: .ssh, host: " RASPCORSE", port: 22, username: "vincent")
+        context.insert(first)
+        context.insert(duplicate)
+        try context.save()
+        let trust = InMemoryTrustedHostKeys(folder: FakeSSHFolderAccess())
+        trust.trust(serverKey, host: host, port: 22)
+        let library = MachineLibraryModel(context: context, passwords: FakePasswordStore(),
+                                          ssh: SSHServices(folder: FakeSSHFolderAccess(), trustedHostKeys: trust,
+                                                           secrets: FakeSSHSecrets()))
+        library.delete(first)
+        #expect(trust.decision(for: serverKey, host: host, port: 22) == .trusted)
+        library.delete(duplicate)
+        #expect(trust.decision(for: serverKey, host: host, port: 22) == .unknown)
     }
 
     @Test func testMergeCopiesImportedKeyToSurvivor() throws {

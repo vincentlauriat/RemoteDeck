@@ -17,9 +17,22 @@ enum HostKeyDecision: Equatable, Sendable {
     static let knownHostsConflict = "~/.ssh/known_hosts"
 }
 
+/// Why `~/.ssh/known_hosts` could not be consulted for the last decision (not set when there is no
+/// grant at all, or the folder has no `known_hosts` file: both are normal).
+enum KnownHostsProblem: Equatable, Sendable {
+    /// A grant was made on this Mac but its bookmark no longer resolves or is stale: "~/.ssh access
+    /// lost" (grant the folder again).
+    case accessLost
+    /// The folder is granted but `known_hosts` exists and cannot be read (permissions, not UTF-8).
+    case unreadable
+}
+
 /// RemoteDeck's own trusted host keys, local to this Mac (never synced: trust is a per-Mac
 /// judgement, as `PublicAddressConsents`), plus a read-only look at `~/.ssh/known_hosts` when the
 /// folder is granted.
+///
+/// A key `known_hosts` matches is also pinned in the own list, so the host stays trusted (and a
+/// different key of the same type is `.changed`) if the `~/.ssh` grant is later lost.
 @MainActor
 protocol TrustedHostKeys: AnyObject {
     func decision(for key: SSHHostKey, host: String, port: Int) -> HostKeyDecision
@@ -27,6 +40,9 @@ protocol TrustedHostKeys: AnyObject {
     func trust(_ key: SSHHostKey, host: String, port: Int)
     /// The machine was deleted, or "Remove from RemoteDeck's trusted keys…".
     func forget(host: String, port: Int)
+    /// Set by each `decision`: why `known_hosts` was not consulted, nil when it was or when there
+    /// is no grant to consult.
+    var lastKnownHostsProblem: KnownHostsProblem? { get }
 }
 
 /// The decision rules, shared by both stores (pure).
@@ -48,27 +64,36 @@ enum HostKeyTrust {
         algorithm == "rsa-sha2-256" || algorithm == "rsa-sha2-512" ? "ssh-rsa" : algorithm
     }
 
-    /// `known_hosts` first (when given): a match is trusted, a mismatch (or a revoked key) is changed;
-    /// not found there, the own list: same type and fingerprint → trusted, same type and another
-    /// fingerprint → changed, otherwise unknown (a host known only under another key type asks).
+    /// `known_hosts` first (when given): a match is trusted (`fromKnownHosts`: pin it), a mismatch
+    /// (or a revoked key) is changed; not found there, the own list: same type and fingerprint →
+    /// trusted, same type and another fingerprint → changed, otherwise unknown (a host known only
+    /// under another key type asks).
     nonisolated static func decide(key: SSHHostKey, host: String, port: Int, knownHosts: KnownHosts?,
-                                   trusted: [String: String]?) -> HostKeyDecision {
+                                   trusted: [String: String]?) -> (decision: HostKeyDecision, fromKnownHosts: Bool) {
         if let knownHosts {
             switch knownHosts.lookup(host: normalized(host), port: port, key: key) {
-            case .match: return .trusted
-            case .mismatch: return .changed(previousFingerprint: HostKeyDecision.knownHostsConflict)
+            case .match: return (.trusted, true)
+            case .mismatch: return (.changed(previousFingerprint: HostKeyDecision.knownHostsConflict), false)
             case .notFound: break
             }
         }
-        guard let fingerprint = trusted?[keyType(key.algorithm)] else { return .unknown }
-        return fingerprint == key.fingerprintSHA256 ? .trusted : .changed(previousFingerprint: fingerprint)
+        guard let fingerprint = trusted?[keyType(key.algorithm)] else { return (.unknown, false) }
+        return (fingerprint == key.fingerprintSHA256 ? .trusted : .changed(previousFingerprint: fingerprint), false)
     }
 
-    /// `~/.ssh/known_hosts` when the folder is granted; a missing or unreadable file is no file.
+    /// `~/.ssh/known_hosts` and why it could not be read. No grant, or no such file: (nil, nil).
     @MainActor
-    static func knownHosts(in folder: any SSHFolderAccessing) -> KnownHosts? {
-        guard folder.isGranted, let text = try? folder.readFile("known_hosts") else { return nil }
-        return KnownHosts(parsing: text)
+    static func knownHosts(in folder: any SSHFolderAccessing) -> (KnownHosts?, KnownHostsProblem?) {
+        guard folder.isGranted else { return (nil, folder.accessLost ? .accessLost : nil) }
+        do {
+            return (KnownHosts(parsing: try folder.readFile("known_hosts")), nil)
+        } catch SSHFolderError.fileMissing {
+            return (nil, nil)
+        } catch SSHFolderError.notGranted {
+            return (nil, .accessLost)
+        } catch {
+            return (nil, .unreadable)
+        }
     }
 
     nonisolated static func adding(_ key: SSHHostKey, host: String, port: Int, to entries: Entries) -> Entries {
@@ -76,61 +101,80 @@ enum HostKeyTrust {
         entries[entryKey(host: host, port: port), default: [:]][keyType(key.algorithm)] = key.fingerprintSHA256
         return entries
     }
+
+    /// Reads the stored list value by value: a malformed entry (another app version, a hand edit) is
+    /// dropped alone, never the whole list.
+    nonisolated static func entries(from stored: [String: Any]?) -> Entries {
+        var entries: Entries = [:]
+        for (hostPort, value) in stored ?? [:] {
+            guard let byType = value as? [String: Any] else { continue }
+            let valid = byType.compactMapValues { $0 as? String }
+            if !valid.isEmpty { entries[hostPort] = valid }
+        }
+        return entries
+    }
+}
+
+/// The shared behaviour of both stores, over their `entries`.
+@MainActor
+protocol TrustedHostKeyStore: TrustedHostKeys {
+    var folder: any SSHFolderAccessing { get }
+    var entries: HostKeyTrust.Entries { get set }
+    var lastKnownHostsProblem: KnownHostsProblem? { get set }
+}
+
+extension TrustedHostKeyStore {
+    func decision(for key: SSHHostKey, host: String, port: Int) -> HostKeyDecision {
+        let (knownHosts, problem) = HostKeyTrust.knownHosts(in: folder)
+        lastKnownHostsProblem = problem
+        let entryKey = HostKeyTrust.entryKey(host: host, port: port)
+        let (decision, fromKnownHosts) = HostKeyTrust.decide(key: key, host: host, port: port,
+                                                            knownHosts: knownHosts, trusted: entries[entryKey])
+        // Pinned once (no write when already there).
+        if fromKnownHosts, entries[entryKey]?[HostKeyTrust.keyType(key.algorithm)] != key.fingerprintSHA256 {
+            trust(key, host: host, port: port)
+        }
+        return decision
+    }
+
+    func trust(_ key: SSHHostKey, host: String, port: Int) {
+        entries = HostKeyTrust.adding(key, host: host, port: port, to: entries)
+    }
+
+    func forget(host: String, port: Int) {
+        entries[HostKeyTrust.entryKey(host: host, port: port)] = nil
+    }
 }
 
 /// The app's store: UserDefaults `trustedHostKeys` = `["host:port": ["key type": "SHA256:…"]]`
 /// (BackendSchema › AppSettings).
 @MainActor
-final class UserDefaultsTrustedHostKeys: TrustedHostKeys {
+final class UserDefaultsTrustedHostKeys: TrustedHostKeyStore {
     static let key = "trustedHostKeys"
 
     private let defaults: UserDefaults
-    private let folder: any SSHFolderAccessing
+    let folder: any SSHFolderAccessing
+    var lastKnownHostsProblem: KnownHostsProblem?
 
     init(defaults: UserDefaults = .standard, folder: any SSHFolderAccessing) {
         self.defaults = defaults
         self.folder = folder
     }
 
-    private var entries: HostKeyTrust.Entries {
-        get { defaults.dictionary(forKey: Self.key) as? HostKeyTrust.Entries ?? [:] }
+    var entries: HostKeyTrust.Entries {
+        get { HostKeyTrust.entries(from: defaults.dictionary(forKey: Self.key)) }
         set { newValue.isEmpty ? defaults.removeObject(forKey: Self.key) : defaults.set(newValue, forKey: Self.key) }
-    }
-
-    func decision(for key: SSHHostKey, host: String, port: Int) -> HostKeyDecision {
-        HostKeyTrust.decide(key: key, host: host, port: port, knownHosts: HostKeyTrust.knownHosts(in: folder),
-                            trusted: entries[HostKeyTrust.entryKey(host: host, port: port)])
-    }
-
-    func trust(_ key: SSHHostKey, host: String, port: Int) {
-        entries = HostKeyTrust.adding(key, host: host, port: port, to: entries)
-    }
-
-    func forget(host: String, port: Int) {
-        entries[HostKeyTrust.entryKey(host: host, port: port)] = nil
     }
 }
 
 /// The hosted tests and the demo modes: nothing is written to the user's defaults.
 @MainActor
-final class InMemoryTrustedHostKeys: TrustedHostKeys {
-    private(set) var entries: HostKeyTrust.Entries = [:]
-    private let folder: any SSHFolderAccessing
+final class InMemoryTrustedHostKeys: TrustedHostKeyStore {
+    var entries: HostKeyTrust.Entries = [:]
+    let folder: any SSHFolderAccessing
+    var lastKnownHostsProblem: KnownHostsProblem?
 
     init(folder: any SSHFolderAccessing) {
         self.folder = folder
-    }
-
-    func decision(for key: SSHHostKey, host: String, port: Int) -> HostKeyDecision {
-        HostKeyTrust.decide(key: key, host: host, port: port, knownHosts: HostKeyTrust.knownHosts(in: folder),
-                            trusted: entries[HostKeyTrust.entryKey(host: host, port: port)])
-    }
-
-    func trust(_ key: SSHHostKey, host: String, port: Int) {
-        entries = HostKeyTrust.adding(key, host: host, port: port, to: entries)
-    }
-
-    func forget(host: String, port: Int) {
-        entries[HostKeyTrust.entryKey(host: host, port: port)] = nil
     }
 }

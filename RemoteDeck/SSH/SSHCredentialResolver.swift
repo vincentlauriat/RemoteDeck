@@ -5,8 +5,8 @@ import SSHKit
 /// What an SSH connect attempt can authenticate with (TRD › Security › Secrets).
 enum CredentialResolution: Sendable {
     case ready(SSHCredentials)
-    /// The key is encrypted and no passphrase opened it: ask (Passphrase Sheet), or, for an automatic
-    /// attempt, end in "Connection lost" (the caller decides; plan Task 9).
+    /// The key is encrypted and no passphrase opened it: ask (Passphrase Sheet). Never returned when
+    /// `allowsInteraction` is false (an automatic attempt gets `.failed(.passphraseUnavailable)`).
     case needsPassphrase
     /// A key in `~/.ssh` and no folder grant on this Mac: ask for the folder at Connect.
     case needsFolderAccess
@@ -25,6 +25,10 @@ enum SSHCredentialFailure: Equatable, Sendable {
     /// A password machine without a password on this Mac, or whose Keychain read failed (an
     /// automatic attempt never shows the Keychain dialog).
     case passwordMissing
+    /// An automatic attempt (`allowsInteraction` false) on an encrypted key with no remembered
+    /// passphrase, or whose remembered passphrase cannot be read without a dialog: nobody can be
+    /// asked, so the caller ends in "Connection lost" (design › Passphrases).
+    case passphraseUnavailable
 }
 
 /// Turns a machine's SSH authentication method into `SSHCredentials`, reading the Keychain and the
@@ -90,7 +94,9 @@ struct SSHCredentialResolver {
             }
             // A read that fails (no item, needs a dialog) is no remembered passphrase.
             passphrase = try? secrets.secret(remembered, allowsInteraction: allowsInteraction)
-            guard passphrase?.isEmpty == false else { return .needsPassphrase }
+            guard passphrase?.isEmpty == false else {
+                return allowsInteraction ? .needsPassphrase : .failed(.passphraseUnavailable)
+            }
         }
         switch parse(text, passphrase: passphrase) {
         case .success(let key): return .ready(.key(user: user, key: key))
@@ -104,7 +110,7 @@ struct SSHCredentialResolver {
 
     private func failure(_ error: SSHKeyError, allowsInteraction: Bool) -> CredentialResolution {
         switch error {
-        case .passphraseRequired: .needsPassphrase
+        case .passphraseRequired: allowsInteraction ? .needsPassphrase : .failed(.passphraseUnavailable)
         case .wrongPassphrase: allowsInteraction ? .needsPassphrase : .failed(.keyUnreadable)
         case .unsupportedKeyType(let type): .failed(.unsupportedKey(type))
         case .malformed: .failed(.keyUnreadable)

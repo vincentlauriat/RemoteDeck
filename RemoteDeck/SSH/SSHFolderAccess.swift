@@ -12,6 +12,14 @@ enum SSHFolderError: Error, Equatable {
     case unreadable(String)
 }
 
+/// Why the last `requestAccess` granted nothing (a Cancel in the panel is not a problem).
+enum SSHFolderRequestProblem: Equatable, Sendable {
+    /// The chosen folder is not named `.ssh` (its name, for the message).
+    case notSSHFolder(String)
+    /// The bookmark could not be made.
+    case bookmarkFailed
+}
+
 /// Read-only access to the user's `~/.ssh` folder (TRD › Security › `~/.ssh`): granted once per Mac
 /// through an open panel, kept as an app-scoped security-scoped bookmark. Nothing in the folder is
 /// ever written: the API has no write, and the bookmark itself is read-only.
@@ -19,8 +27,14 @@ enum SSHFolderError: Error, Equatable {
 protocol SSHFolderAccessing: AnyObject {
     /// A grant exists and its bookmark resolves (a stale bookmark reads as not granted).
     var isGranted: Bool { get }
-    /// Shows the open panel on `~/.ssh` (directories only); true once the folder is granted.
+    /// A grant was made on this Mac but no longer works (bookmark stale or unresolvable): "~/.ssh
+    /// access lost", as opposed to never granted. Never true while `isGranted`.
+    var accessLost: Bool { get }
+    /// Shows the open panel on `~/.ssh` (directories only); true once the folder is granted. Only a
+    /// folder named `.ssh` is accepted.
     func requestAccess() async -> Bool
+    /// Why the last `requestAccess` granted nothing; nil after a grant or a Cancel.
+    var lastRequestProblem: SSHFolderRequestProblem? { get }
     /// The UTF-8 contents of a file of the folder (`id_ed25519`, `known_hosts`). Throws `SSHFolderError`.
     func readFile(_ relativePath: String) throws -> String
 }
@@ -32,6 +46,11 @@ enum SSHFolderPath {
         guard !relativePath.isEmpty, !relativePath.hasPrefix("/"), !relativePath.hasPrefix("~") else { return false }
         return !relativePath.split(separator: "/", omittingEmptySubsequences: false).contains("..")
     }
+
+    /// The folder the user picked must be a `.ssh` folder: key file names are relative to it.
+    nonisolated static func isSSHFolder(_ url: URL) -> Bool {
+        url.standardizedFileURL.lastPathComponent == ".ssh"
+    }
 }
 
 /// The real folder access. The bookmark (UserDefaults `sshFolderBookmark`, per Mac, never synced) is
@@ -42,12 +61,15 @@ final class SSHFolderAccess: SSHFolderAccessing {
     static let bookmarkKey = "sshFolderBookmark"
 
     private let defaults: UserDefaults
+    private(set) var lastRequestProblem: SSHFolderRequestProblem?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
     }
 
     var isGranted: Bool { grantedFolder() != nil }
+
+    var accessLost: Bool { defaults.data(forKey: Self.bookmarkKey) != nil && !isGranted }
 
     /// The user's real `~/.ssh`: in the sandbox, `NSHomeDirectory()` is the app's container, so the
     /// home folder comes from the password database.
@@ -67,10 +89,18 @@ final class SSHFolderAccess: SSHFolderAccessing {
         let response = await withCheckedContinuation { continuation in
             panel.begin { continuation.resume(returning: $0) }
         }
+        lastRequestProblem = nil
         guard response == .OK, let url = panel.url else { return isGranted }
+        guard SSHFolderPath.isSSHFolder(url) else {
+            lastRequestProblem = .notSSHFolder(url.lastPathComponent)
+            return isGranted
+        }
         guard let bookmark = try? url.bookmarkData(options: [.withSecurityScope, .securityScopeAllowOnlyReadAccess],
                                                    includingResourceValuesForKeys: nil, relativeTo: nil)
-        else { return false }
+        else {
+            lastRequestProblem = .bookmarkFailed
+            return isGranted
+        }
         defaults.set(bookmark, forKey: Self.bookmarkKey)
         return isGranted
     }
@@ -114,6 +144,8 @@ final class InMemorySSHFolderAccess: SSHFolderAccessing {
     }
 
     var isGranted: Bool { files != nil }
+    var accessLost: Bool { false }
+    var lastRequestProblem: SSHFolderRequestProblem? { nil }
 
     func requestAccess() async -> Bool { isGranted }
 

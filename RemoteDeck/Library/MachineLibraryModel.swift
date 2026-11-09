@@ -108,8 +108,9 @@ final class MachineLibraryModel {
 
     /// Deletes the machine, its Keychain password and its public-Internet confirmation (BackendSchema ›
     /// Retention and deletion), and its SSH secrets (`sshKey.<id>`, `sshPassphrase.<id>`,
-    /// `sshLocalPassphrase.<id>`) and this Mac's trusted host keys for its `host:port` (one machine
-    /// per `host:port`, so no other machine shares them; the `~/.ssh` grant stays).
+    /// `sshLocalPassphrase.<id>`) and this Mac's trusted host keys for its `host:port`, unless another
+    /// machine still has that normalized `host:port` (a synced duplicate not merged yet); the `~/.ssh`
+    /// grant stays.
     /// The machine goes first: if SwiftData fails, nothing changes (password kept). A Keychain
     /// failure afterwards does not resurrect the machine; the first one is reported in
     /// `deleteWarning`, never swallowed, and the other items are still deleted. Its SessionRecords
@@ -129,7 +130,11 @@ final class MachineLibraryModel {
         }
         if selection == id { selection = nil }
         publicConsents.forget(id)
-        ssh.trustedHostKeys.forget(host: host, port: port)
+        let entryKey = HostKeyTrust.entryKey(host: host, port: port)
+        let remaining = (try? context.fetch(FetchDescriptor<Machine>())) ?? []
+        if !remaining.contains(where: { HostKeyTrust.entryKey(host: $0.host, port: $0.port) == entryKey }) {
+            ssh.trustedHostKeys.forget(host: host, port: port)
+        }
         var firstError: KeychainError?
         do {
             try passwords.deletePassword(for: id)

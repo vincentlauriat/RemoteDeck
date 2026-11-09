@@ -12,6 +12,10 @@ final class FakeSSHFolderAccess: SSHFolderAccessing {
     var files: [String: String]
     /// `requestAccess` grants the folder (the user picked it in the panel).
     var grantsOnRequest = false
+    var accessLost = false
+    var lastRequestProblem: SSHFolderRequestProblem?
+    /// Files that exist but cannot be read.
+    var unreadable: Set<String> = []
     private(set) var calls: [String] = []
 
     init(granted: Bool = false, files: [String: String] = [:]) {
@@ -33,6 +37,7 @@ final class FakeSSHFolderAccess: SSHFolderAccessing {
     func readFile(_ relativePath: String) throws -> String {
         calls.append("readFile(\(relativePath))")
         guard granted else { throw SSHFolderError.notGranted }
+        if unreadable.contains(relativePath) { throw SSHFolderError.unreadable(relativePath) }
         guard let text = files[relativePath] else { throw SSHFolderError.fileMissing(relativePath) }
         return text
     }
