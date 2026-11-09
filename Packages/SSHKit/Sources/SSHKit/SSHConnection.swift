@@ -24,7 +24,7 @@ public struct SSHKeepalive: Sendable {
 }
 
 /// One SSH connection to one server: TCP, key exchange, host key check, user authentication, then
-/// channels: a pty shell, local port forwards (`LocalForward.swift`), and later SFTP.
+/// channels: a pty shell, local port forwards (`LocalForward.swift`) and SFTP (`SSHFileTransfer.swift`).
 ///
 /// The SSH library (swift-nio-ssh) stays behind this actor: its handlers run on a NIO event loop,
 /// and only `SSHError`, `SSHHostKey` and SSHKit types cross the boundary.
@@ -230,7 +230,7 @@ public actor SSHConnection {
         closedContinuation.finish()
     }
 
-    // MARK: For LocalForward.swift
+    // MARK: For LocalForward.swift and SSHFileTransfer.swift
 
     /// The authenticated connection's event loop and SSH handler, nil once it ended or before `open`.
     func forwardingContext() -> (loop: any EventLoop, ssh: NIOLoopBound<NIOSSHHandler>)? {

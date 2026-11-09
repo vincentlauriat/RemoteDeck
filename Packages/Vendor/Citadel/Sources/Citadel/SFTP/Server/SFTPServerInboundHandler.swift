@@ -1,3 +1,4 @@
+// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).
 import Foundation
 import NIO
 import NIOSSH
@@ -74,6 +75,9 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             )
         }.flatMap { handle in
             context.writeAndFlush(NIOAny(handle))
+        }.flatMapError { error in
+            // RemoteDeck: a failed open is answered with SSH_FXP_STATUS (upstream sent nothing).
+            self.remoteDeckReplyStatus(for: error, requestId: command.requestId, context: context)
         }
     }
     
@@ -255,7 +259,10 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                     )
                 ))
             )
-        }.flatMapErrorThrowing { _ in }
+        }.flatMapError { error in
+            // RemoteDeck: answer with SSH_FXP_STATUS instead of leaving the request unanswered.
+            self.remoteDeckReplyStatus(for: error, requestId: command.requestId, context: context)
+        }
     }
     
     func lstat(command: SFTPMessage.LStat, context: ChannelHandlerContext) {
@@ -273,7 +280,10 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                     )
                 ))
             )
-        }.flatMapErrorThrowing { _ in }
+        }.flatMapError { error in
+            // RemoteDeck: answer with SSH_FXP_STATUS instead of leaving the request unanswered.
+            self.remoteDeckReplyStatus(for: error, requestId: command.requestId, context: context)
+        }
     }
     
     func realPath(command: SFTPMessage.RealPath, context: ChannelHandlerContext) {
@@ -291,7 +301,10 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                     )
                 ))
             )
-        }.flatMapErrorThrowing { _ in }
+        }.flatMapError { error in
+            // RemoteDeck: answer with SSH_FXP_STATUS instead of leaving the request unanswered.
+            self.remoteDeckReplyStatus(for: error, requestId: command.requestId, context: context)
+        }
     }
     
     func openDir(command: SFTPMessage.OpenDir, context: ChannelHandlerContext) {
@@ -317,7 +330,10 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
             )
         }.flatMap { handle in
             context.writeAndFlush(NIOAny(handle))
-        }.flatMapErrorThrowing { _ in }
+        }.flatMapError { error in
+            // RemoteDeck: answer with SSH_FXP_STATUS instead of leaving the request unanswered.
+            self.remoteDeckReplyStatus(for: error, requestId: command.requestId, context: context)
+        }
     }
     
     func readDir(command: SFTPMessage.ReadDir, context: ChannelHandlerContext) {
@@ -408,7 +424,10 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                     )
                 )
             )
-        }.flatMapErrorThrowing { _ in }
+        }.flatMapError { error in
+            // RemoteDeck: answer with SSH_FXP_STATUS instead of leaving the request unanswered.
+            self.remoteDeckReplyStatus(for: error, requestId: command.requestId, context: context)
+        }
     }
     
     func fileSetStat(command: SFTPMessage.FileSetStat, context: ChannelHandlerContext) {
@@ -459,7 +478,10 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                     )
                 )
             )
-        }.flatMapErrorThrowing { _ in }
+        }.flatMapError { error in
+            // RemoteDeck: answer with SSH_FXP_STATUS instead of leaving the request unanswered.
+            self.remoteDeckReplyStatus(for: error, requestId: command.requestId, context: context)
+        }
     }
     
     func symlink(command: SFTPMessage.Symlink, context:ChannelHandlerContext) {
@@ -482,7 +504,10 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                     )
                 )
             )
-        }.flatMapErrorThrowing { _ in }
+        }.flatMapError { error in
+            // RemoteDeck: answer with SSH_FXP_STATUS instead of leaving the request unanswered.
+            self.remoteDeckReplyStatus(for: error, requestId: command.requestId, context: context)
+        }
     }
 
     func rename(command: SFTPMessage.Rename, context:ChannelHandlerContext) {
@@ -506,7 +531,10 @@ final class SFTPServerInboundHandler: ChannelInboundHandler {
                     )
                 )
             )
-        }.flatMapErrorThrowing { _ in }
+        }.flatMapError { error in
+            // RemoteDeck: answer with SSH_FXP_STATUS instead of leaving the request unanswered.
+            self.remoteDeckReplyStatus(for: error, requestId: command.requestId, context: context)
+        }
     }
 
     func readlink(command: SFTPMessage.Readlink, context:ChannelHandlerContext) {

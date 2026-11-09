@@ -20,6 +20,12 @@ public enum SSHError: Error, Equatable, Sendable {
     case sftpUnavailable
     /// A local port forward could not listen on this port.
     case portInUse(UInt16)
+    /// An upload's target file (the path) exists and overwriting was not asked for; the remote
+    /// file is untouched.
+    case fileExists(String)
+    /// An upload's target directory (the path) does not exist or is not a directory; nothing was
+    /// created.
+    case noSuchDirectory(String)
     /// Any other failure the server or the protocol reported, described for a log.
     case remote(String)
 }

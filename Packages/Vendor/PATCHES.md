@@ -166,6 +166,48 @@ more things favour that:
      time grows linearly with the rounds). Tested by SSHKit's `parsesAKeyHardenedWith100BcryptRounds`
      and `bcryptRoundsAboveTheCapThrowMalformed`.
 
+3. **SFTP over a channel SSHKit opened** (Task 6): Citadel reaches its SFTP client only through
+   `SSHClient.openSFTP()` and its SFTP server only through `SSHServer`, and SSHKit uses neither.
+   - **`Sources/Citadel/RemoteDeckSFTP.swift`** (new file): `RemoteDeckSFTP.attachClient(to:)`
+     puts Citadel's SFTP client handlers on a session channel whose `sftp` subsystem the server
+     already accepted, sends `SSH_FXP_INIT` and completes on `SSH_FXP_VERSION` 3, with a no-op
+     logger (Citadel logs paths at `info`). `RemoteDeckSFTP.installServer(on:delegate:username:)`
+     puts Citadel's SFTP server on a channel (SSHKit's test server only). `SFTPClient` gains
+     handle-level requests (`remoteDeckOpen`, `remoteDeckRead`, `remoteDeckWrite`,
+     `remoteDeckClose`) so several reads or writes can be in flight (`SFTPFile` sends one at a time
+     and is not `Sendable`), and `remoteDeckCloseChannel()`, which fails every pending request at
+     once (cancellation). `SFTPStatusCode` conforms to `Error` so a server delegate can throw a
+     status. No protocol code is new: it calls Citadel's existing handlers, parser and serializer.
+   - **`Sources/Citadel/SFTP/Client/SFTPClient.swift`:** `SFTPClient.channel`, `responses`,
+     `init` and `setupChannelHanders` go from `fileprivate` to `internal`, so the new file can
+     build a client. Nothing else changes.
+   - **Why not `openSFTP()`:** it needs an `SSHClient`, and the promise it waits on for the
+     subsystem request completes when the request is written, not when the server answers, so a
+     refusal waits for its 15 s timer. SSHKit asks for the subsystem itself and waits for
+     CHANNEL_SUCCESS / CHANNEL_FAILURE.
+
+4. **The SFTP server answers a failed request** (`Sources/Citadel/SFTP/Server/SFTPServerInboundHandler.swift`):
+   - **Bug:** when the delegate threw, `stat`, `lstat`, `realpath`, `opendir`, `remove`,
+     `setstat`, `symlink` and `rename` sent no reply (`flatMapErrorThrowing { _ in }`), and `open`
+     had no error branch at all. A client then waits forever: a missing file could not even be
+     reported, since `SFTPDelegate.fileAttributes` can only return attributes or throw.
+   - **Change:** those requests are answered with `SSH_FXP_STATUS`, carrying the thrown
+     `SFTPStatusCode` (or `SFTPMessage.Status`'s code), else `SSH_FX_FAILURE`
+     (`remoteDeckReplyStatus` in the new file).
+   - **Who uses it:** SSHKit's `TestSSHServer` only; the app never runs an SFTP server.
+
+5. **SFTP v3 RENAME has no flags field** (`Sources/Citadel/SFTP/SFTPSerializer.swift`,
+   `SFTPMessageParser.swift`):
+   - **Bug:** Citadel wrote, and required, a `uint32 flags` after the two paths of
+     `SSH_FXP_RENAME`. That field exists from SFTP v5 only; a v3 server reads 4 stray bytes.
+     OpenSSH's sftp-server discards trailing bytes, a stricter server may refuse the request.
+   - **Change:** the serializer no longer writes it; the parser reads it only if present (0 otherwise).
+
+6. **Modification notices:** `SFTPClient.swift`, `SFTPServerInboundHandler.swift`,
+   `SFTPSerializer.swift` and `SFTPMessageParser.swift` start with
+   `// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).`; `RemoteDeckSFTP.swift` starts
+   with `// Added for RemoteDeck (see Packages/Vendor/PATCHES.md).`.
+
 ## Updating
 
 1. Re-archive the new upstream revision into a scratch folder.

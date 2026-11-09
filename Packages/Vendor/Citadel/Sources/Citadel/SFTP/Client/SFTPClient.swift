@@ -1,3 +1,4 @@
+// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).
 import Foundation
 import NIO
 import NIOConcurrencyHelpers
@@ -9,7 +10,7 @@ import Logging
 /// Per specification, SFTP could be used over other transport layers, too.
 public final class SFTPClient: Sendable {
     /// The SSH child channel created for this connection.
-    fileprivate let channel: Channel
+    internal let channel: Channel
     
     /// A monotonically increasing counter for gneerating request IDs.
     private let _nextRequestId = NIOLockedValueBox<UInt32>(0)
@@ -22,12 +23,12 @@ public final class SFTPClient: Sendable {
     }
     
     /// In-flight request ID tracker.
-    fileprivate let responses: SFTPResponses
+    internal let responses: SFTPResponses
     
     /// What it says on the tin.
     public let logger: Logger
     
-    fileprivate init(channel: Channel, responses: SFTPResponses, logger: Logger) {
+    internal init(channel: Channel, responses: SFTPResponses, logger: Logger) {
         self.channel = channel
         self.responses = responses
         self.logger = logger
@@ -37,7 +38,7 @@ public final class SFTPClient: Sendable {
         try await self.channel.close()
     }
     
-    fileprivate static func setupChannelHanders(channel: Channel, logger: Logger) -> EventLoopFuture<SFTPClient> {
+    internal static func setupChannelHanders(channel: Channel, logger: Logger) -> EventLoopFuture<SFTPClient> {
         let responses = SFTPResponses(sftpVersion: channel.eventLoop.makePromise())
         
         let deserializeHandler = ByteToMessageHandler(SFTPMessageParser())

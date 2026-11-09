@@ -1,3 +1,4 @@
+// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).
 import NIO
 
 final class SFTPMessageSerializer: MessageToByteEncoder {
@@ -130,7 +131,8 @@ final class SFTPMessageSerializer: MessageToByteEncoder {
             out.writeInteger(rename.requestId)
             out.writeSSHString(rename.oldPath)
             out.writeSSHString(rename.newPath)
-            out.writeInteger(rename.flags)
+            // RemoteDeck: SFTP v3 SSH_FXP_RENAME has no flags field (it appeared in v5), so none is
+            // written; `rename.flags` is ignored on the wire.
         }
         
         let length = out.writerIndex - lengthIndex - 4

@@ -1,3 +1,4 @@
+import Citadel
 import Crypto
 import _CryptoExtras
 import Foundation
@@ -33,6 +34,9 @@ final class TestSSHServer: Sendable {
         /// How long the server waits before connecting to a forward target (and so before it
         /// answers CHANNEL_OPEN), like sshd connecting to a slow or filtered host.
         var forwardOpenDelay: Duration = .zero
+        /// The `sftp` subsystem (Citadel's SFTP server on `TestSFTPDelegate`), or nil for a server
+        /// without it: the subsystem request is then answered with CHANNEL_FAILURE, as sshd does.
+        var sftp: TestSFTPOptions?
     }
 
     struct ForwardTarget: Hashable, Sendable {
@@ -61,6 +65,8 @@ final class TestSSHServer: Sendable {
         var hostKeySignatures = 0
         /// Every `direct-tcpip` open request, accepted or refused.
         var directTCPIPRequests: [DirectTCPIPRequest] = []
+        /// The subsystem names requested on session channels.
+        var subsystemRequests: [String] = []
     }
 
     let port: UInt16
@@ -96,7 +102,7 @@ final class TestSSHServer: Sendable {
                             switch type {
                             case .session:
                                 return child.eventLoop.makeCompletedFuture {
-                                    try child.pipeline.syncOperations.addHandler(EchoShellHandler(state: state))
+                                    try child.pipeline.syncOperations.addHandler(EchoShellHandler(state: state, sftp: configuration.sftp, user: configuration.user))
                                 }
                             case .directTCPIP(let request):
                                 return openDirectTCPIP(child, request, configuration: configuration, state: state)
@@ -398,14 +404,21 @@ private final class CloseOnErrorHandler: ChannelInboundHandler {
 }
 
 /// A session channel: pty and shell requests succeed, input is echoed, `window-change` is reported
-/// as `"\u{1b}[size cols rows]"` and a line `exit` ends the shell with exit status 0.
-private final class EchoShellHandler: ChannelInboundHandler {
+/// as `"\u{1b}[size cols rows]"` and a line `exit` ends the shell with exit status 0. A `sftp`
+/// subsystem request replaces this handler with Citadel's SFTP server when the server has one.
+private final class EchoShellHandler: ChannelInboundHandler, RemovableChannelHandler {
     typealias InboundIn = SSHChannelData
     typealias OutboundOut = SSHChannelData
     let state: TestSSHServer.Shared
+    let sftp: TestSFTPOptions?
+    let user: String
     private var line = ""
 
-    init(state: TestSSHServer.Shared) { self.state = state }
+    init(state: TestSSHServer.Shared, sftp: TestSFTPOptions?, user: String) {
+        self.state = state
+        self.sftp = sftp
+        self.user = user
+    }
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         switch event {
@@ -418,6 +431,23 @@ private final class EchoShellHandler: ChannelInboundHandler {
             send("\u{1b}[size \(change.terminalCharacterWidth) \(change.terminalRowHeight)]", context: context)
         case let request as SSHChannelRequestEvent.ExecRequest:
             if request.wantReply { context.triggerUserOutboundEvent(ChannelFailureEvent(), promise: nil) }
+        case let request as SSHChannelRequestEvent.SubsystemRequest:
+            state.withLock { $0.record.subsystemRequests.append(request.subsystem) }
+            guard request.subsystem == "sftp", let sftp, let parent = context.channel.parent else {
+                // sshd without the subsystem: CHANNEL_FAILURE, the channel stays open.
+                if request.wantReply { context.triggerUserOutboundEvent(ChannelFailureEvent(), promise: nil) }
+                return
+            }
+            let channel = context.channel
+            let delegate = TestSFTPDelegate(options: sftp, connection: parent)
+            context.pipeline.syncOperations.removeHandler(context: context, promise: nil)
+            RemoteDeckSFTP.installServer(on: channel, delegate: delegate, username: user).whenComplete { result in
+                guard request.wantReply else { return }
+                switch result {
+                case .success: channel.triggerUserOutboundEvent(ChannelSuccessEvent(), promise: nil)
+                case .failure: channel.triggerUserOutboundEvent(ChannelFailureEvent(), promise: nil)
+                }
+            }
         default:
             context.fireUserInboundEventTriggered(event)
         }

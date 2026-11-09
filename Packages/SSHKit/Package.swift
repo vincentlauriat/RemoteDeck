@@ -51,6 +51,8 @@ let package = Package(
             name: "SSHKitTests",
             dependencies: [
                 "SSHKit",
+                // Citadel's SFTP server, for TestSSHServer's `sftp` subsystem.
+                .product(name: "Citadel", package: "Citadel"),
                 .product(name: "NIOSSH", package: "swift-nio-ssh"),
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),

@@ -1,3 +1,4 @@
+// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).
 import NIO
 
 struct SFTPMessageParser: ByteToMessageDecoder {
@@ -378,11 +379,12 @@ struct SFTPMessageParser: ByteToMessageDecoder {
             guard
                 let requestId = payload.readInteger(as: UInt32.self),
                 let oldPath = payload.readSSHString(),
-                let newPath = payload.readSSHString(),
-                let flags = payload.readInteger(as: UInt32.self)
+                let newPath = payload.readSSHString()
             else {
                 throw SFTPError.invalidPayload(type: type)
             }
+            // RemoteDeck: v3 has no flags field; read one only when a client sent it anyway.
+            let flags = payload.readInteger(as: UInt32.self) ?? 0
 
             message = .rename(
                 .init(
