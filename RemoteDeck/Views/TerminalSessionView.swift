@@ -29,11 +29,16 @@ struct TerminalSessionView: View {
                 TerminalSurfaceRepresentable(surface: surface)
                     .accessibilityLabel(settings.t("terminal_accessibility_label"))
             }
-            if terminal.phase != .connected || terminal.overlay != nil {
-                // Dims the last output and takes the clicks while the shell is not up.
-                Color.black.opacity(terminal.overlay != nil ? 0.6 : 0.35)
+            if let _ = terminal.overlay {
+                // Connecting, reconnecting, waiting for the network: the overlay takes the clicks.
+                Color.black.opacity(0.6)
                     .contentShape(Rectangle())
                     .onTapGesture {}
+            } else if terminal.phase != .connected {
+                // A banner or "The remote shell ended": the last output stays dimmed but can still be
+                // selected, copied and scrolled back (nothing is sent: the shell is not up).
+                Color.black.opacity(0.35)
+                    .allowsHitTesting(false)
             }
             if let overlay = terminal.overlay { connectingOverlay(overlay) }
         }

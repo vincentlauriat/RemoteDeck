@@ -127,6 +127,20 @@ struct TerminalSurfaceTests {
         #expect(sizes.count == 2)
     }
 
+    /// A frame set again at the same size does not resize the engine: a resize would end
+    /// synchronized output and send an in-band size report (mode 2048) to the shell.
+    @Test func anUnchangedSizeIsNotResizedAgain() {
+        let (surface, _) = makeSurface()
+        surface.view.setFrameSize(NSSize(width: 800, height: 500))
+        surface.feed(Data("\u{1B}[?2048h".utf8))   // in-band size reports on
+        let log = recording(surface)
+        surface.view.setFrameSize(NSSize(width: 800, height: 500))
+        surface.view.setFrameSize(NSSize(width: 801, height: 500))   // the same grid
+        #expect(log.chunks.isEmpty)
+        surface.view.setFrameSize(NSSize(width: 900, height: 500))
+        #expect(log.text.hasPrefix("\u{1B}[48;"))   // a real change is reported
+    }
+
     @Test func fontSizeChangeKeepsTheViewAndChangesTheGrid() {
         let (surface, _) = makeSurface()
         surface.view.setFrameSize(NSSize(width: 800, height: 500))

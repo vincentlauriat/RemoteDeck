@@ -96,6 +96,10 @@ final class GhosttyTerminalSurface: TerminalSurface {
     private var needsFullRefresh = true
     private var lastCursor: VTCursor?
     private var lastFocused = false
+    /// The last size given to the engine (columns, rows, cell pixels): an unchanged size is not
+    /// resized again, since a resize also ends synchronized output (mode 2026) and sends an in-band
+    /// size report (mode 2048) even when nothing changed.
+    private var lastEngineSize: [Int] = []
 
     init(columns: Int = 80, rows: Int = 24) {
         terminal = VTTerminal(columns: columns, rows: rows)
@@ -193,8 +197,8 @@ final class GhosttyTerminalSurface: TerminalSurface {
 
     // MARK: Grid
 
-    /// Columns and rows from the view's size; the engine and the server follow every change. Until
-    /// the view has a size the grid stays as created (80 × 24).
+    /// Columns and rows from the view's size; the engine and the server follow every change, and only
+    /// a change. Until the view has a size the grid stays as created (80 × 24).
     func layoutGrid() {
         let bounds = terminalView.bounds.size
         let grid = builder.grid
@@ -202,9 +206,13 @@ final class GhosttyTerminalSurface: TerminalSurface {
               bounds.height >= grid.cellHeight + 2 * TerminalGrid.padding else { return }
         let size = grid.size(fitting: bounds)
         let scale = terminalView.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let cellWidth = Int((grid.cellWidth * scale).rounded())
+        let cellHeight = Int((grid.cellHeight * scale).rounded())
+        let engineSize = [size.columns, size.rows, cellWidth, cellHeight]
+        guard engineSize != lastEngineSize else { return }
+        lastEngineSize = engineSize
         let changed = size.columns != terminal.columns || size.rows != terminal.rows
-        terminal.resize(columns: size.columns, rows: size.rows,
-                        cellWidth: Int((grid.cellWidth * scale).rounded()), cellHeight: Int((grid.cellHeight * scale).rounded()))
+        terminal.resize(columns: size.columns, rows: size.rows, cellWidth: cellWidth, cellHeight: cellHeight)
         if rowLayouts.count != terminal.rows { rowLayouts = Array(repeating: .empty, count: terminal.rows) }
         needsFullRefresh = true
         refresh()

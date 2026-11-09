@@ -86,6 +86,30 @@ struct VTTerminalTests {
         #expect(vt.encodeKey(event, optionAsAlt: false).isEmpty)
     }
 
+    /// Holding a key repeats it: a repeat sends what the press sends (⌫, arrows, letters).
+    @Test func repeatsSendLikePresses() {
+        let vt = VTTerminal(columns: 20, rows: 3)
+        let press = vt.encodeKey(VTKeyEvent(key: .arrowUp), optionAsAlt: false)
+        #expect(vt.encodeKey(VTKeyEvent(key: .arrowUp, action: .repeat), optionAsAlt: false) == press)
+        #expect(vt.encodeKey(VTKeyEvent(key: .backspace, action: .repeat), optionAsAlt: false) == [0x7F])
+        #expect(vt.encodeKey(VTKeyEvent(key: .a, action: .repeat, text: "a", unshifted: "a"), optionAsAlt: false) == [0x61])
+    }
+
+    /// The adapter redraws only what the engine marks dirty: moving the viewport must mark it.
+    @Test func scrollingTheViewportIsDirty() {
+        let vt = VTTerminal(columns: 20, rows: 3)
+        for i in 0..<20 { vt.write("line \(i)\r\n") }
+        vt.update()
+        vt.markClean()
+        #expect(vt.update() == .clean)
+        vt.markClean()
+        vt.scroll(by: -5)
+        #expect(vt.update() != .clean)
+        vt.markClean()
+        vt.scrollToBottom()
+        #expect(vt.update() != .clean)
+    }
+
     @Test func releasesSendNothingInLegacyMode() {
         let vt = VTTerminal(columns: 20, rows: 3)
         #expect(vt.encodeKey(VTKeyEvent(key: .arrowUp, action: .release), optionAsAlt: false).isEmpty)
