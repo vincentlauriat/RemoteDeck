@@ -81,7 +81,6 @@ struct LibraryDemoRenderingTests {
             window.isReleasedWhenClosed = false
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             window.contentView = host
-            window.orderBack(nil)
             #expect(await waitUntil { terminal.surface != nil })
             #expect(await waitUntil { terminal.target.portForwards.allSatisfy {
                 terminal.forwardStates[$0.id]?.isActive == true || terminal.forwardStates[$0.id]?.isFailed == true } })

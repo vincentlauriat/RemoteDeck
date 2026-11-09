@@ -50,7 +50,6 @@ extension LibraryDemo {
         HostName raspberrypi.local
         User pi
         IdentityFile ~/.ssh/id_ed25519
-        LocalForward 8080 localhost:80
 
     Host build
         HostName build.example.com
