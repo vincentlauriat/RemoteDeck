@@ -93,13 +93,53 @@ more things favour that:
      swift-nio-ssh sends only TCP forwarding global requests publicly; the generic sender and the
      message type are internal.
 
-4. **Modification notices (Apache-2.0 §4(b)):** every swift-nio-ssh file changed above starts
+4. **Connection-layer messages wait during a key re-exchange**, in
+   `Sources/NIOSSH/NIOSSHHandler.swift` and
+   `Sources/NIOSSH/Connection State Machine/SSHConnectionStateMachine.swift`, tested by
+   `Tests/NIOSSHTests/RekeyChannelMessageQueueTests.swift` (new file).
+   - **Bug:** while a re-key was in progress, the state machine refused every outbound channel
+     message with `protocolViolation("key exchange", "Sent unexpected message type: …")`. Data,
+     window adjusts, EOF, close, requests and opens written then were lost: a shell write failed,
+     and a port forward could stall for good (a lost window adjust leaves the peer without window).
+   - **RFC 4253 §7.1:** after sending KEXINIT for a re-exchange, a party sends only transport and
+     key exchange messages until it has sent NEWKEYS. The others must wait, not fail.
+   - **Change:** the state machine stays pure and only says when to wait
+     (`mustDeferConnectionMessages`: `receivedKexInitWhenActive`, `sentKexInitWhenActive`,
+     `rekeying`, `rekeyingReceivedNewKeysState`). `NIOSSHHandler` keeps the messages written from
+     child channels, and its own global request replies, in one queue in write order. A message
+     also waits while earlier ones do, so the order across channels is kept. The queue is written
+     right after our NEWKEYS, from the inbound path or the host key validation callback, then
+     flushed. Transport and key exchange messages never wait.
+   - **Promises:** each queued promise completes once. It completes with its write after the
+     re-key. It fails alone if the state machine refuses that message, for example after a
+     disconnect. It fails with `ioOnClosedChannel` when the connection goes inactive, and with
+     `eof` when the handler is removed. Nothing is queued once the parent channel is inactive.
+   - **Tests:** the internal `_deferredConnectionMessageCount` exists for the tests only, like
+     `_rekey()`. SSHKit's loopback tests use it to hold a real client mid re-key.
+   - **Check:** `swift test --filter RekeyChannelMessageQueueTests` checks the re-key at three
+     points: our KEXINIT, the peer's KEXINIT, and our NEWKEYS waiting for host key validation.
+     It checks the order across two channels (data, stderr, exec, EOF, close and a channel open),
+     a real window adjust, and failure on close.
+
+5. **EOF after the peer's EOF**, in `Sources/NIOSSH/Child Channels/ChildChannelStateMachine.swift`
+   (`sendChannelEOF`).
+   - **Bug:** upstream let `.halfClosedLocal` (our EOF already sent) send another EOF and moved to
+     `.quiescent`. It refused `.halfClosedRemote` (the peer's EOF received) with "Sent EOF out of
+     sequence". That is the reverse of `receiveChannelEOF`.
+   - **RFC 4254 §5.3:** each side sends its EOF independently.
+   - **Change:** the two cases are swapped. An EOF after the peer's moves to `.quiescent`, and a
+     second EOF of ours is refused.
+   - **Check:** `testEOFCanBeSentAfterThePeersEOF` in `RekeyChannelMessageQueueTests`.
+
+6. **Modification notices (Apache-2.0 §4(b)):** every swift-nio-ssh file changed above starts
    with `// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).`:
    `SSHKeyExchangeStateMachine.swift`, `ChildChannelStateMachine.swift`, `SSHChildChannel.swift`,
-   `NIOSSHHandler.swift` and `ChildChannelMultiplexerTests.swift`. `Package.swift` says so in its
+   `NIOSSHHandler.swift`, `SSHConnectionStateMachine.swift` and `ChildChannelMultiplexerTests.swift`.
+   The added `RekeyChannelMessageQueueTests.swift` starts with
+   `// Added for RemoteDeck (see Packages/Vendor/PATCHES.md).`. `Package.swift` says so in its
    own comment.
 
-5. **Manifest:** the `swift-docc-plugin` dependency is removed. It is a documentation-only
+7. **Manifest:** the `swift-docc-plugin` dependency is removed. It is a documentation-only
    plugin, and it would be one more unpinned remote package for Xcode to fetch.
 
 ### Citadel
@@ -131,4 +171,5 @@ more things favour that:
 1. Re-archive the new upstream revision into a scratch folder.
 2. Re-apply the changes above, then diff against this folder.
 3. Update the table, the `exact:` pins in `Packages/SSHKit/Package.swift`, and this file.
-4. Run `cd Packages/SSHKit && swift test`, and the swift-nio-ssh filter above.
+4. Run `cd Packages/SSHKit && swift test`, and `swift test` in `swift-nio-ssh` (the filters
+   above are a quick subset).

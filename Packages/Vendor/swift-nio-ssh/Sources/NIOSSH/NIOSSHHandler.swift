@@ -58,6 +58,14 @@ public final class NIOSSHHandler {
 
     private var pendingGlobalRequestResponses: CircularBuffer<PendingGlobalRequestResponse?>
 
+    // RemoteDeck patch (see Packages/Vendor/PATCHES.md): connection-layer messages written while a
+    // key re-exchange forbids sending them, in write order. They are written right after our
+    // NEWKEYS, or failed if the connection goes away first.
+    private var deferredConnectionMessages: CircularBuffer<(message: SSHMessage, promise: EventLoopPromise<Void>?)>
+
+    // Whether the parent channel went inactive: nothing is deferred after that.
+    private var parentChannelIsInactive = false
+
     // The authenticated username, if there was one.
     public var username: String? { stateMachine.username }
     
@@ -74,6 +82,7 @@ public final class NIOSSHHandler {
         self.pendingChannelInitializations = CircularBuffer(initialCapacity: 4)
         self.pendingGlobalRequests = CircularBuffer(initialCapacity: 4)
         self.pendingGlobalRequestResponses = CircularBuffer(initialCapacity: 4)
+        self.deferredConnectionMessages = CircularBuffer(initialCapacity: 4)
         self.multiplexer = SSHChannelMultiplexer(delegate: self, allocator: allocator, childChannelInitializer: inboundChildChannelInitializer, maximumPacketSize: role.maximumPacketSize)
     }
 }
@@ -129,6 +138,7 @@ extension NIOSSHHandler: ChannelDuplexHandler {
 
         self.dropAllPendingGlobalRequests(ChannelError.eof)
         self.dropUnsatisfiedGlobalRequests(ChannelError.eof)
+        self.failDeferredConnectionMessages(ChannelError.eof)
         while let next = self.pendingChannelInitializations.popFirst() {
             next.promise?.fail(ChannelError.eof)
         }
@@ -153,6 +163,8 @@ extension NIOSSHHandler: ChannelDuplexHandler {
     }
 
     public func channelInactive(context: ChannelHandlerContext) {
+        self.parentChannelIsInactive = true
+        self.failDeferredConnectionMessages(ChannelError.ioOnClosedChannel)
         self.multiplexer?.parentChannelInactive()
     }
 
@@ -208,6 +220,7 @@ extension NIOSSHHandler: ChannelDuplexHandler {
                 case .success(.some(let message)):
                     do {
                         try self.writeMessage(message, context: context)
+                        self.writeDeferredConnectionMessagesIfPossible(context: context)
                         self.pendingWrite = false
                         context.flush()
                     } catch {
@@ -232,6 +245,55 @@ extension NIOSSHHandler: ChannelDuplexHandler {
         case .event(let event):
             context.fireUserInboundEventTriggered(event)
         }
+
+        // An emitted NEWKEYS may have ended a re-key (or a disconnect may have made sending
+        // impossible): either way, the deferred messages go now.
+        self.writeDeferredConnectionMessagesIfPossible(context: context)
+    }
+
+    /// RemoteDeck patch (see Packages/Vendor/PATCHES.md): writes a connection-layer message, or
+    /// defers it while a key re-exchange is in progress (RFC 4253 §7.1). A message is also deferred
+    /// while earlier ones still wait, so the order across channels stays the write order.
+    private func writeConnectionMessage(_ message: SSHMessage, context: ChannelHandlerContext, promise: EventLoopPromise<Void>?) throws {
+        if self.stateMachine.mustDeferConnectionMessages || !self.deferredConnectionMessages.isEmpty {
+            guard !self.parentChannelIsInactive else {
+                promise?.fail(ChannelError.ioOnClosedChannel)
+                return
+            }
+            self.deferredConnectionMessages.append((message: message, promise: promise))
+            return
+        }
+        try self.writeMessage(SSHMultiMessage(message), context: context, promise: promise)
+    }
+
+    /// Writes the deferred messages, in order, once the state machine accepts them again (that is,
+    /// once our NEWKEYS is written). A message the state machine refuses fails its own promise only.
+    private func writeDeferredConnectionMessagesIfPossible(context: ChannelHandlerContext) {
+        guard !self.deferredConnectionMessages.isEmpty, !self.stateMachine.mustDeferConnectionMessages else {
+            return
+        }
+        while !self.stateMachine.mustDeferConnectionMessages, let next = self.deferredConnectionMessages.popFirst() {
+            do {
+                try self.writeMessage(SSHMultiMessage(next.message), context: context, promise: next.promise)
+            } catch {
+                next.promise?.fail(error)
+            }
+        }
+        if !self.expectingChannelReadComplete {
+            self.pendingWrite = false
+            context.flush()
+        }
+    }
+
+    private func failDeferredConnectionMessages(_ error: Error) {
+        while let next = self.deferredConnectionMessages.popFirst() {
+            next.promise?.fail(error)
+        }
+    }
+
+    /// The number of deferred messages (tests only).
+    var _deferredConnectionMessageCount: Int {
+        self.deferredConnectionMessages.count
     }
 }
 
@@ -359,7 +421,7 @@ extension NIOSSHHandler {
             if message.wantReply {
                 // There's no way to tell what message this is and how to respond from here.
                 // The only reasonable solution is to reply `SSH_MSG_REQUEST_FAILURE`
-                try self.writeMessage(.init(.requestFailure), context: context)
+                try self.writeConnectionMessage(.requestFailure, context: context, promise: nil)
             }
             return
         case .tcpipForward(let host, let port):
@@ -391,11 +453,11 @@ extension NIOSSHHandler {
             do {
                 switch result {
                 case .success(let tcpForwardingResponse):
-                    try self.writeMessage(.init(.requestSuccess(.init(.tcpForwarding(tcpForwardingResponse), allocator: context.channel.allocator))), context: context)
+                    try self.writeConnectionMessage(.requestSuccess(.init(.tcpForwarding(tcpForwardingResponse), allocator: context.channel.allocator)), context: context, promise: nil)
                     context.flush()
                 case .failure:
                     // We don't care why, we just say no.
-                    try self.writeMessage(.init(.requestFailure), context: context)
+                    try self.writeConnectionMessage(.requestFailure, context: context, promise: nil)
                     context.flush()
                 }
             } catch {
@@ -494,7 +556,7 @@ extension NIOSSHHandler: SSHMultiplexerDelegate {
         }
 
         do {
-            try self.writeMessage(SSHMultiMessage(message), context: context, promise: promise)
+            try self.writeConnectionMessage(message, context: context, promise: promise)
         } catch {
             promise?.fail(error)
         }

@@ -1,3 +1,4 @@
+// Modified for RemoteDeck (see Packages/Vendor/PATCHES.md).
 //===----------------------------------------------------------------------===//
 //
 // This source file is part of the SwiftNIO open source project
@@ -1116,6 +1117,22 @@ extension SSHConnectionStateMachine {
         case .idle, .sentVersion, .keyExchange, .receivedNewKeys, .sentNewKeys, .userAuthentication, .active,
              .receivedKexInitWhenActive, .sentKexInitWhenActive, .rekeying, .rekeyingReceivedNewKeysState,
              .rekeyingSentNewKeysState:
+            return false
+        }
+    }
+
+    /// RemoteDeck patch (see Packages/Vendor/PATCHES.md): whether connection-layer messages (channel
+    /// messages, global requests and their replies) must wait. RFC 4253 §7.1: once a party has sent
+    /// KEXINIT for a re-exchange, it sends nothing but transport and key exchange messages until it
+    /// has sent NEWKEYS. In `.receivedKexInitWhenActive` our KEXINIT is about to leave, so waiting
+    /// there is also correct. `.rekeyingSentNewKeysState` accepts them again; the disconnect states
+    /// refuse every message, so they do not wait.
+    var mustDeferConnectionMessages: Bool {
+        switch self.state {
+        case .receivedKexInitWhenActive, .sentKexInitWhenActive, .rekeying, .rekeyingReceivedNewKeysState:
+            return true
+        case .idle, .sentVersion, .keyExchange, .receivedNewKeys, .sentNewKeys, .userAuthentication, .active,
+             .rekeyingSentNewKeysState, .receivedDisconnect, .sentDisconnect:
             return false
         }
     }

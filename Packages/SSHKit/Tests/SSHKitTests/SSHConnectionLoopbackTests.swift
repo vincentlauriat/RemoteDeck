@@ -329,8 +329,24 @@ struct SSHConnectionLoopbackTests {
         let closed = Ending(await connection.closed)
         let transcript = try await Transcript(try await openShell(connection))
         let signed = server.record.hostKeySignatures
-        try await server.rekey()
-        #expect(await poll(within: .seconds(5)) { server.record.hostKeySignatures > signed })
+        // The server holds the client's bytes: once some are held, the client has answered the
+        // server's KEXINIT with its own and stays mid re-key until they are released.
+        try await server.rekeyHoldingClientBytes()
+        #expect(await pollAsync(within: .seconds(5)) { (try? await server.heldBytes()) ?? 0 > 0 })
+        let shell = transcript.shell
+        let write = Task { try await shell.write(Data("during rekey\n".utf8)) }
+        let written = Locked(false)
+        Task { _ = await write.result; written.withLock { $0 = true } }
+        // The write waits in the client's handler (it is not refused, and not sent).
+        #expect(await pollAsync(within: .seconds(5)) {
+            (try? await deferredSSHMessageCount(connection)) == 1 || written.withLock { $0 }
+        })
+        #expect(try await deferredSSHMessageCount(connection) == 1)
+        #expect(!written.withLock { $0 })
+        try await server.releaseHeldBytes()
+        try await bounded(.seconds(5)) { try await write.value }
+        #expect(await transcript.waitFor { $0.contains("during rekey") })
+        #expect(server.record.hostKeySignatures > signed)
         try await transcript.shell.write(Data("after rekey\n".utf8))
         #expect(await transcript.waitFor { $0.contains("after rekey") })
         #expect(calls.withLock { $0 } == 1)

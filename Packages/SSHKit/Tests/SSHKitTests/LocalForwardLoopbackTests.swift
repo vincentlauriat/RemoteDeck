@@ -90,6 +90,38 @@ struct LocalForwardLoopbackTests {
         await echo.stop()
     }
 
+    @Test func trafficCrossesARekeyWhole() async throws {
+        // 2 MB echoed while the server re-keys, then 1 MB written while the client is held mid
+        // re-key: every byte comes back in order, nothing stalls, and the teardown is bounded.
+        let echo = try await EchoTCPServer.start()
+        let rig = try await Rig.start(targetPort: echo.port)
+        let forward = try await rig.forward()
+        let client = try await TestTCPClient.connect("127.0.0.1", forward.localPort)
+        let before = Data((0 ..< 2 << 20).map { UInt8(truncatingIfNeeded: $0 &* 13 &+ $0 >> 11) })
+        let during = Data((0 ..< 1 << 20).map { UInt8(truncatingIfNeeded: $0 &* 29 &+ 7) })
+        try await bounded(.seconds(30)) { try await client.send(before) }
+        // All echoed: both SSH windows are open again, so the client has data to send below.
+        #expect(await client.waitForReceived(before.count, within: .seconds(30)))
+        try await rig.server.rekeyHoldingClientBytes()
+        #expect(await pollAsync(within: .seconds(5)) { (try? await rig.server.heldBytes()) ?? 0 > 0 })
+        // The send cannot finish while the server holds everything (the SSH window runs out).
+        let sending = Task { try await client.send(during) }
+        // Forwarded data now waits in the client's handler, not refused.
+        let connection = rig.connection
+        #expect(await pollAsync(within: .seconds(5)) { (try? await deferredSSHMessageCount(connection)) ?? 0 > 0 })
+        try await rig.server.releaseHeldBytes()
+        try await bounded(.seconds(30)) { try await sending.value }
+        try await client.shutdownOutput()
+        let echoed = await client.readToEnd(within: .seconds(30))
+        #expect(echoed?.count == before.count + during.count)
+        #expect(echoed == before + during)
+        await client.close()
+        try await bounded(.seconds(5)) { await forward.stop() }
+        try await bounded(.seconds(5)) { await connection.close() }
+        await rig.stop()
+        await echo.stop()
+    }
+
     @Test func largeHTTPBodyArrivesWhole() async throws {
         let body = Data((0 ..< 4 << 20).map { UInt8(truncatingIfNeeded: $0 &* 7) })
         let rig = try await Rig.start(body: body)

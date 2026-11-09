@@ -199,6 +199,11 @@ final class TestTCPClient: Sendable {
         return received.withLock { $0.data }
     }
 
+    /// Whether at least `count` bytes arrived within `limit`.
+    func waitForReceived(_ count: Int, within limit: Duration) async -> Bool {
+        await poll(within: limit) { self.received.withLock { $0.data.count } >= count }
+    }
+
     /// Whether the peer closed within `limit`.
     func ended(within limit: Duration) async -> Bool {
         await poll(within: limit) { self.received.withLock { $0.ended } }

@@ -179,6 +179,39 @@ final class TestSSHServer: Sendable {
         }
     }
 
+    /// Starts a key re-exchange on every connection, and from then on holds every byte the clients
+    /// send instead of reading it. Once `heldBytes()` is above zero, a client has answered the
+    /// server's KEXINIT with its own: it is mid re-key, and stays there until `releaseHeldBytes()`.
+    func rekeyHoldingClientBytes() async throws {
+        let children = state.withLock { $0.children }
+        for child in children {
+            try await child.eventLoop.submit {
+                try child.pipeline.syncOperations.handler(type: SilenceHandler.self).holding = true
+                try child.pipeline.syncOperations.handler(type: NIOSSHHandler.self)._rekey()
+            }.get()
+        }
+    }
+
+    /// The number of client bytes held since `rekeyHoldingClientBytes()`, over every connection.
+    func heldBytes() async throws -> Int {
+        var total = 0
+        for child in state.withLock({ $0.children }) {
+            total += try await child.eventLoop.submit {
+                try child.pipeline.syncOperations.handler(type: SilenceHandler.self).heldBytes
+            }.get()
+        }
+        return total
+    }
+
+    /// Reads the held bytes, in order, and stops holding.
+    func releaseHeldBytes() async throws {
+        for child in state.withLock({ $0.children }) {
+            try await child.eventLoop.submit {
+                try child.pipeline.syncOperations.handler(type: SilenceHandler.self).release()
+            }.get()
+        }
+    }
+
     /// From now on an RSA server signs key exchanges with `id_rsa_encrypted`: a re-key then
     /// presents another host key. The new key's public half is returned.
     func rotateRSAHostKey() throws -> SSHHostKey {
@@ -317,17 +350,42 @@ private final class AuthDelegate: NIOSSHServerUserAuthenticationDelegate, Sendab
     }
 }
 
-/// In front of the SSH handler: drops every inbound byte once the server is told to stop answering.
+/// In front of the SSH handler: drops every inbound byte once the server is told to stop answering,
+/// and holds them (to read them later, in order) while `holding`.
 private final class SilenceHandler: ChannelInboundHandler {
     typealias InboundIn = ByteBuffer
     typealias InboundOut = ByteBuffer
     let state: TestSSHServer.Shared
+    var holding = false
+    private var held: [ByteBuffer] = []
+    private var context: ChannelHandlerContext?
 
     init(state: TestSSHServer.Shared) { self.state = state }
 
+    var heldBytes: Int { held.reduce(0) { $0 + $1.readableBytes } }
+
+    func handlerAdded(context: ChannelHandlerContext) { self.context = context }
+
+    func handlerRemoved(context: ChannelHandlerContext) { self.context = nil }
+
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         guard !state.withLock({ $0.silent }) else { return }
+        guard !holding else {
+            held.append(unwrapInboundIn(data))
+            return
+        }
         context.fireChannelRead(data)
+    }
+
+    func release() {
+        holding = false
+        let buffers = held
+        held = []
+        guard let context, !buffers.isEmpty else { return }
+        for buffer in buffers {
+            context.fireChannelRead(wrapInboundOut(buffer))
+        }
+        context.fireChannelReadComplete()
     }
 }
 
@@ -449,6 +507,23 @@ final class StalledTCPServer: Sendable {
         for filler in fillers { try? await filler.close() }
         try? await channel.close()
     }
+}
+
+/// The connection-layer messages the client's swift-nio-ssh handler holds back during a re-key
+/// (the vendored patch, `Packages/Vendor/PATCHES.md`); -1 once the connection has ended.
+func deferredSSHMessageCount(_ connection: SSHConnection) async throws -> Int {
+    guard let (loop, ssh) = await connection.forwardingContext() else { return -1 }
+    return try await loop.submit { ssh.value._deferredConnectionMessageCount }.get()
+}
+
+/// Checks the async `condition` every 20 ms until it holds or `limit` passes.
+func pollAsync(within limit: Duration, _ condition: () async -> Bool) async -> Bool {
+    let deadline = ContinuousClock.now + limit
+    while ContinuousClock.now < deadline {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(20))
+    }
+    return await condition()
 }
 
 /// A port on 127.0.0.1 that nothing listens on: bound by a listener that is closed at once.

@@ -375,7 +375,10 @@ extension ChildChannelStateMachine {
             precondition(message.recipientChannel == channelID.peerChannelID)
             self.state = .halfClosedLocal(channelID: channelID)
 
-        case .halfClosedLocal(channelID: let channelID):
+        case .halfClosedRemote(channelID: let channelID):
+            // RemoteDeck patch (see Packages/Vendor/PATCHES.md): upstream had `.halfClosedLocal` here
+            // and refused `.halfClosedRemote`, the reverse of `receiveChannelEOF`. RFC 4254 §5.3 lets
+            // each side send its EOF on its own; it is a second EOF of ours that is out of sequence.
             precondition(message.recipientChannel == channelID.peerChannelID)
             self.state = .quiescent(channelID: channelID)
 
@@ -383,7 +386,7 @@ extension ChildChannelStateMachine {
             // In the idle state we haven't either sent a channel open or received one. This is not really possible.
             preconditionFailure("Somehow sent channel EOF for idle channel")
 
-        case .requestedLocally, .requestedRemotely, .halfClosedRemote, .quiescent, .closedLocally, .closedRemotely, .closed:
+        case .requestedLocally, .requestedRemotely, .halfClosedLocal, .quiescent, .closedLocally, .closedRemotely, .closed:
             throw NIOSSHError.protocolViolation(protocolName: "channel", violation: "Sent EOF out of sequence.")
         }
     }
