@@ -221,7 +221,7 @@ final class LibrarySync {
     func start() {
         guard observers.isEmpty else { return }
         observers.append(center.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshAccountStatus() }
+            MainActor.assumeIsolated { self?.accountChanged() }
         })
         if isActive {
             observers.append(center.addObserver(forName: NSPersistentCloudKitContainer.eventChangedNotification,
@@ -243,6 +243,14 @@ final class LibrarySync {
     func stop() {
         observers.forEach(center.removeObserver)
         observers.removeAll()
+    }
+
+    /// The iCloud account changed (signed out, or another account): CloudKit may purge the mirrored
+    /// store before the next import, so the earlier import no longer proves the store holds the
+    /// library; the orphan sweep waits for the next successful import.
+    func accountChanged() {
+        hasImported = false
+        refreshAccountStatus()
     }
 
     func refreshAccountStatus() {
