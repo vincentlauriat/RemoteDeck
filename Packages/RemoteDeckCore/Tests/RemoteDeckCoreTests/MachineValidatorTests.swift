@@ -135,21 +135,38 @@ struct MachineValidatorTests {
 
     @Test(arguments: [0, 22, 80, 1023, 65536])
     func forwardLocalPortBelow1024IsInvalid(_ port: Int) {
-        #expect(validator.validate(ssh(forwards: [PortForward(localPort: port, remotePort: 80)]))
-            == [.init(.portForwards, .invalidForwardPort)])
+        let forward = PortForward(localPort: port, remotePort: 80)
+        #expect(validator.validate(ssh(forwards: [forward]))
+            == [.init(.portForwards, .invalidForwardPort, forwardID: forward.id)])
     }
 
     @Test(arguments: [0, -1, 65536])
     func forwardRemotePortOutsideRangeIsInvalid(_ port: Int) {
-        #expect(validator.validate(ssh(forwards: [PortForward(localPort: 8080, remotePort: port)]))
-            == [.init(.portForwards, .invalidForwardPort)])
+        let forward = PortForward(localPort: 8080, remotePort: port)
+        #expect(validator.validate(ssh(forwards: [forward]))
+            == [.init(.portForwards, .invalidForwardPort, forwardID: forward.id)])
     }
 
     @Test func duplicateLocalPortsAreInvalid() {
         let forwards = [PortForward(localPort: 8080, remotePort: 80),
                         PortForward(localPort: 8080, remoteHost: "other", remotePort: 81),
                         PortForward(localPort: 8443, remotePort: 443)]
-        #expect(validator.validate(ssh(forwards: forwards)) == [.init(.portForwards, .duplicateLocalPort)])
+        // The row that repeats an earlier local port carries the error, not the first one.
+        #expect(validator.validate(ssh(forwards: forwards))
+            == [.init(.portForwards, .duplicateLocalPort, forwardID: forwards[1].id)])
+    }
+
+    /// Each faulty row gets its own issue (the editor shows it under that row), in list order.
+    @Test func forwardIssuesNameTheirRow() {
+        let good = PortForward(localPort: 8080, remotePort: 80)
+        let badLocal = PortForward(localPort: 80, remotePort: 80)
+        let badRemote = PortForward(localPort: 9000, remotePort: 0)
+        let repeated = PortForward(localPort: 8080, remotePort: 81)
+        #expect(validator.validate(ssh(forwards: [good, badLocal, badRemote, repeated])) == [
+            .init(.portForwards, .invalidForwardPort, forwardID: badLocal.id),
+            .init(.portForwards, .invalidForwardPort, forwardID: badRemote.id),
+            .init(.portForwards, .duplicateLocalPort, forwardID: repeated.id),
+        ])
     }
 
     /// Screen machines keep their rules: SSH fields are not looked at.

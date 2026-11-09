@@ -63,10 +63,13 @@ public struct MachineValidator: Sendable {
     public struct Issue: Equatable, Sendable {
         public let field: Field
         public let reason: Reason
+        /// `.portForwards` issues: the forward (row) at fault, so the editor shows the error under it.
+        public let forwardID: UUID?
 
-        public init(_ field: Field, _ reason: Reason) {
+        public init(_ field: Field, _ reason: Reason, forwardID: UUID? = nil) {
             self.field = field
             self.reason = reason
+            self.forwardID = forwardID
         }
     }
 
@@ -130,18 +133,21 @@ public struct MachineValidator: Sendable {
         return issues
     }
 
-    /// SSH fields: the key file of a key used in place, then the forwards (one issue per rule).
+    /// SSH fields: the key file of a key used in place, then the forwards, one issue per faulty row
+    /// (`forwardID`), in list order: a port out of range, else a local port an earlier row already
+    /// listens on (the later row carries the error).
     static func sshIssues(_ draft: MachineDraft) -> [Issue] {
         var issues: [Issue] = []
         if draft.sshAuth == .keyInSSHFolder, !isValidKeyFileName(draft.sshKeyFileName) {
             issues.append(Issue(.sshKeyFileName, .missingKeyFile))
         }
-        let forwards = draft.portForwards
-        if forwards.contains(where: { !forwardLocalPortRange.contains($0.localPort) || !portRange.contains($0.remotePort) }) {
-            issues.append(Issue(.portForwards, .invalidForwardPort))
-        }
-        if Set(forwards.map(\.localPort)).count != forwards.count {
-            issues.append(Issue(.portForwards, .duplicateLocalPort))
+        var localPorts: Set<Int> = []
+        for forward in draft.portForwards {
+            if !forwardLocalPortRange.contains(forward.localPort) || !portRange.contains(forward.remotePort) {
+                issues.append(Issue(.portForwards, .invalidForwardPort, forwardID: forward.id))
+            } else if !localPorts.insert(forward.localPort).inserted {
+                issues.append(Issue(.portForwards, .duplicateLocalPort, forwardID: forward.id))
+            }
         }
         return issues
     }
