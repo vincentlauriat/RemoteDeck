@@ -315,6 +315,28 @@ struct FileTransferModelTests {
         #expect(english("transfer_no_such_file") == "No such file")
     }
 
+    /// The pre-filled "/home/pi/" (Return right away) names a folder: no save panel, no download.
+    @Test func testDownloadOfAFolderPathNeverShowsTheSavePanel() async throws {
+        let files = try LocalFiles()
+        defer { files.remove() }
+        let fake = FakeFileTransfer()
+        let panels = FakePanels()
+        panels.downloadChoice = files.root.appendingPathComponent("pi")
+        let model = model(.download, Opener(fake), files: files, panels: panels)
+        model.prepare()
+        #expect(await waitUntil { model.step == .chooseRemoteFile(path: "/home/pi/") })
+        #expect(!model.canChooseDownloadLocation)
+        model.chooseDownloadLocation()
+        #expect(model.step == .noSuchFile("/home/pi/"))
+        model.setRemotePath("~")
+        #expect(!model.canChooseDownloadLocation)
+        model.setRemotePath("~/app.conf")
+        #expect(model.canChooseDownloadLocation)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(panels.savePanelNames.isEmpty)
+        #expect(await fake.downloadDestinations.isEmpty)
+    }
+
     @Test func testDownloadFailureRemovesTemporaryFile() async throws {
         let files = try LocalFiles()
         defer { files.remove() }

@@ -176,8 +176,9 @@ struct FileTransferSheet: View {
 
     private var primaryTitle: String? {
         switch model.step {
-        case .preparing, .chooseDestination, .transferring:
+        case .preparing, .chooseDestination:
             model.kind == .upload ? settings.t("transfer_upload") : settings.t("transfer_download")
+        case .transferring: nil   // Cancel only while bytes move
         case .confirmOverwrite: settings.t("transfer_replace_button")
         case .chooseRemoteFile, .noSuchFile: settings.t("transfer_download")
         case .finished, .failed: nil
@@ -188,7 +189,8 @@ struct FileTransferSheet: View {
         guard !model.isChecking else { return false }
         switch model.step {
         case .chooseDestination(let files, _): return !files.isEmpty
-        case .confirmOverwrite, .chooseRemoteFile: return true
+        case .confirmOverwrite: return true
+        case .chooseRemoteFile: return model.canChooseDownloadLocation
         default: return false
         }
     }

@@ -324,8 +324,8 @@ final class FileTransferModel {
     func chooseDownloadLocation() {
         guard !isEnded, work == nil, case .chooseRemoteFile(let typed) = step, let transfer, let home else { return }
         let remote = Self.resolve(typed, home: home)
-        let name = remote.split(separator: "/").last.map(String.init) ?? ""
-        guard !name.isEmpty else {
+        // A folder path (the pre-filled home and "/") names no file: never a save panel for it.
+        guard let name = Self.fileName(of: remote) else {
             step = .noSuchFile(remote)
             return
         }
@@ -481,6 +481,19 @@ final class FileTransferModel {
         if path.isEmpty || path == "~" { return home }
         if path.hasPrefix("~/") { return join(home, String(path.dropFirst(2))) }
         return path
+    }
+
+    /// The last component of a remote file path; nil for a path ending in "/" (a folder).
+    static func fileName(of path: String) -> String? {
+        guard !path.hasSuffix("/"), let last = path.split(separator: "/").last, !last.isEmpty else { return nil }
+        return String(last)
+    }
+
+    /// Download…: a path that can name a file (not empty, not ending in "/").
+    var canChooseDownloadLocation: Bool {
+        guard !isChecking, case .chooseRemoteFile(let typed) = step else { return false }
+        let path = typed.trimmingCharacters(in: .newlines)
+        return !path.isEmpty && path != "~" && Self.fileName(of: path) != nil
     }
 
     static func join(_ directory: String, _ name: String) -> String {
