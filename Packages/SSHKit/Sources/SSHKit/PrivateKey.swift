@@ -56,6 +56,31 @@ public struct SSHPrivateKey: Sendable {
         }
     }
 
+    /// What an OpenSSH private key file holds, read from its outer layer only: never decrypts, so
+    /// it is cheap (no bcrypt_pbkdf) and needs no passphrase. For an editor that shows the key type
+    /// of a key it imports and knows whether to ask for its passphrase.
+    public struct FileInfo: Equatable, Sendable {
+        /// The public half.
+        public let publicKey: SSHHostKey
+        /// The private section is encrypted: `parse` needs a passphrase.
+        public let isEncrypted: Bool
+
+        public var algorithm: String { publicKey.algorithm }
+    }
+
+    /// Reads the outer layer of an OpenSSH private key file: the same refusals as `parse` before
+    /// any decryption (not a key file, a PEM file, an unsupported key type), never
+    /// `passphraseRequired` or `wrongPassphrase`.
+    public static func inspect(openSSH text: String) throws(SSHKeyError) -> FileInfo {
+        let container = try OpenSSHKeyContainer(text: text)
+        guard supportedKeyTypes.contains(container.publicKey.algorithm) else {
+            throw .unsupportedKeyType(container.publicKey.algorithm)
+        }
+        return FileInfo(publicKey: container.publicKey,
+                        isEncrypted: OpenSSHPrivateSectionDecryption.isEncrypted(cipherName: container.cipher,
+                                                                                  kdfName: container.kdf))
+    }
+
     /// Reads an OpenSSH private key file. The container is parsed here; an encrypted private section
     /// is decrypted with Citadel's bcrypt_pbkdf and AES-CTR (`OpenSSHPrivateSectionDecryption`, see
     /// Packages/Vendor/PATCHES.md), and the key material goes to swift-crypto. A wrong passphrase is

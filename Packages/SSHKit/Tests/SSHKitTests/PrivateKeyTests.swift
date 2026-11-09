@@ -81,6 +81,23 @@ import Testing
         #expect(throws: SSHKeyError.malformed) { try SSHPrivateKey.parse(openSSH: text, passphrase: "test-pass") }
     }
 
+    /// The outer layer only (no bcrypt): the public key and whether a passphrase is needed.
+    @Test(arguments: [("id_ed25519", false), ("id_rsa", false), ("id_ecdsa", false),
+                      ("id_ed25519_encrypted", true), ("id_rsa_encrypted", true), ("id_ecdsa_encrypted", true)])
+    func inspectReadsThePublicKeyWithoutDecrypting(name: String, encrypted: Bool) throws {
+        let info = try SSHPrivateKey.inspect(openSSH: fixture(name))
+        #expect(info.publicKey == (try SSHHostKey(openSSHPublicKey: fixture(name + ".pub"))))
+        #expect(info.isEncrypted == encrypted)
+        #expect(info.algorithm == info.publicKey.algorithm)
+    }
+
+    @Test func inspectRefusesWhatParseRefuses() {
+        #expect(throws: SSHKeyError.malformed) { try SSHPrivateKey.inspect(openSSH: "hello world") }
+        #expect(throws: SSHKeyError.unsupportedKeyType("RSA PRIVATE KEY")) {
+            try SSHPrivateKey.inspect(openSSH: "-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n")
+        }
+    }
+
     @Test func encryptedKeyWithoutPassphraseThrowsPassphraseRequired() throws {
         let text = try fixture("id_ed25519_encrypted")
         #expect(throws: SSHKeyError.passphraseRequired) { try SSHPrivateKey.parse(openSSH: text, passphrase: nil) }
