@@ -10,13 +10,16 @@ import SSHKit
 /// forwards, the SSH Test connection with the Host Key Sheet, and trusted keys on edit. Never a
 /// panel, the network, the Keychain or the real `~/.ssh`.
 @MainActor
-struct MachineEditorSSHTests {
+final class MachineEditorSSHTests {
     let container: ModelContainer
     let context: ModelContext
     let passwords = FakePasswordStore()
     let folder: FakeSSHFolderAccess
     let trust: InMemoryTrustedHostKeys
     let secrets = FakeSSHSecrets()
+    /// Where the key files the "Import Key…" panel returns are written; removed after each test
+    /// (the unsigned test host is not sandboxed: this is the real temporary folder).
+    let keyFolder = FileManager.default.temporaryDirectory.appending(path: "remotedeck-test-keys-\(UUID().uuidString)")
 
     static let raspcorseConfig = """
     Host raspcorse
@@ -37,6 +40,11 @@ struct MachineEditorSSHTests {
         context = ModelContext(container)
         folder = FakeSSHFolderAccess()
         trust = InMemoryTrustedHostKeys(folder: folder)
+        try FileManager.default.createDirectory(at: keyFolder, withIntermediateDirectories: true)
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: keyFolder)
     }
 
     private var ssh: SSHServices { SSHServices(folder: folder, trustedHostKeys: trust, secrets: secrets) }
@@ -75,7 +83,7 @@ struct MachineEditorSSHTests {
 
     /// A key file the "Import Key…" panel returns (in the test host's temporary folder).
     private func keyFile(_ text: String) throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appending(path: "remotedeck-test-key-\(UUID().uuidString)")
+        let url = keyFolder.appending(path: UUID().uuidString)
         try Data(text.utf8).write(to: url)
         return url
     }
@@ -118,6 +126,17 @@ struct MachineEditorSSHTests {
         #expect(model.showsPasswordField)
         model.sshAuth = .keyInSSHFolder
         #expect(!model.showsPasswordField)
+    }
+
+    /// A screen machine's save leaves the SSH fields unset (no synced change for them).
+    @Test func screenMachineStoresNoSSHFields() throws {
+        let model = editor()
+        model.name = "Mini"
+        model.host = "mini.local"
+        model.username = "vincent"
+        model.password = "s3cret"
+        let machine = try #require(model.save())
+        #expect(machine.sshAuthMethod == nil && machine.sshKeyFileName == nil && machine.portForwardsData == nil)
     }
 
     @Test func editorOffersSSH() {
@@ -430,6 +449,17 @@ struct MachineEditorSSHTests {
         #expect(await waitUntil { model.testState == .failed(.hostKeyChanged) })
         #expect(model.sheet == nil)
         #expect(trust.decision(for: Self.hostKey, host: "pi.local", port: 22) != .trusted)
+    }
+
+    /// A conflict in `~/.ssh/known_hosts` (checked first) is not RemoteDeck's to remove: its own
+    /// failure, which points at that file.
+    @Test func knownHostsConflictPointsAtKnownHosts() async {
+        folder.granted = true
+        folder.files = ["known_hosts": "pi.local " + SSHTestKeys.ed25519EncryptedPublic]
+        let model = sshEditor(tester: FakeSSHTester(hostKey: Self.hostKey))
+        model.testConnection()
+        #expect(await waitUntil { model.testState == .failed(.hostKeyChangedInKnownHosts) })
+        #expect(model.sheet == nil)
     }
 
     @Test func cancellingTheTestDismissesTheHostKeySheet() async {

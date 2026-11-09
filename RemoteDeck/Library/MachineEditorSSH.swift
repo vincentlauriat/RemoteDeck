@@ -473,8 +473,9 @@ extension MachineEditorModel {
         switch ssh.trustedHostKeys.decision(for: key, host: host, port: port) {
         case .trusted:
             return true
-        case .changed:
-            hostKeyRefusal = (generation, .hostKeyChanged)
+        case .changed(let previous):
+            hostKeyRefusal = (generation, previous == HostKeyDecision.knownHostsConflict
+                ? .hostKeyChangedInKnownHosts : .hostKeyChanged)
             return false
         case .unknown:
             let accepted = await askHostKey(TerminalSessionModel.HostKeyPrompt(host: host, port: port, key: key))

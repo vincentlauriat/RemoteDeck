@@ -354,9 +354,13 @@ final class MachineEditorModel {
         machine.isWatched = isWatched
         machine.scalingModeValue = scalingMode
         machine.sharedClipboard = sharedClipboard
-        machine.sshAuth = draft.sshAuth
-        machine.sshKeyFileName = draft.sshKeyFileName
-        machine.portForwards = draft.portForwards
+        // Only an SSH machine writes its SSH fields: a screen machine keeps them unset (no synced
+        // change on each save), and one switched away from SSH keeps what it had.
+        if draft.kind == .ssh {
+            machine.sshAuth = draft.sshAuth
+            machine.sshKeyFileName = draft.sshKeyFileName
+            machine.portForwards = draft.portForwards
+        }
         // Orders duplicates when iCloud Sync merges them (T4.3): the last edit, on any Mac, wins.
         machine.modifiedAt = .now
         switch groupChoice {

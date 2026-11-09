@@ -222,6 +222,9 @@ enum TestConnectionFailure: Equatable, Sendable {
     /// SSH: the server presented another key than the trusted one; no trust path from here (the
     /// way out is "Remove from RemoteDeck's trusted keys…").
     case hostKeyChanged
+    /// SSH: the key conflicts with the one in `~/.ssh/known_hosts` (checked first): the way out is
+    /// that file, not RemoteDeck's trusted keys.
+    case hostKeyChangedInKnownHosts
     /// SSH: another failure of the connection (a refused channel, a protocol error).
     case ssh(SSHError)
     /// SSH: the key file, the imported key, or the key type (`SSHCredentialFailure`).
@@ -299,6 +302,7 @@ enum TestConnectionFailure: Equatable, Sendable {
         case .unexpectedResponse: return t("test_unexpected")
         case .hostKeyUnknown: return t("test_host_key_unknown")
         case .hostKeyChanged: return t("test_host_key_changed")
+        case .hostKeyChangedInKnownHosts: return t("test_host_key_changed_known_hosts")
         case .ssh(.channelFailed(let reason)): return withReason("test_ssh_refused", reason)
         case .ssh(.remote(let reason)): return withReason("test_ssh_unexpected", reason)
         case .ssh: return t("test_ssh_unexpected")
