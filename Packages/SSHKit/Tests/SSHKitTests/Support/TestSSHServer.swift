@@ -30,6 +30,9 @@ final class TestSSHServer: Sendable {
         /// Whether the server's socket to a forward target reads EOF as a half-close. When false,
         /// the target closing makes the server send CHANNEL_EOF then CHANNEL_CLOSE at once.
         var halfCloseTargets = true
+        /// How long the server waits before connecting to a forward target (and so before it
+        /// answers CHANNEL_OPEN), like sshd connecting to a slow or filtered host.
+        var forwardOpenDelay: Duration = .zero
     }
 
     struct ForwardTarget: Hashable, Sendable {
@@ -147,14 +150,19 @@ final class TestSSHServer: Sendable {
         let (socketGlue, channelGlue) = ForwardGlue.pair()
         let socketHalf = NIOLoopBound(socketGlue, eventLoop: child.eventLoop)
         let channelHalf = NIOLoopBound(channelGlue, eventLoop: child.eventLoop)
-        return ClientBootstrap(group: child.eventLoop)
+        let connect = ClientBootstrap(group: child.eventLoop)
             .channelOption(.allowRemoteHalfClosure, value: configuration.halfCloseTargets)
             .channelInitializer { socket in
                 socket.eventLoop.makeCompletedFuture {
                     try socket.pipeline.syncOperations.addHandler(socketHalf.value)
                 }
             }
-            .connect(host: "127.0.0.1", port: Int(target.port))
+        let delay = configuration.forwardOpenDelay
+        let delayed = delay == .zero
+            ? child.eventLoop.makeSucceededVoidFuture()
+            : child.eventLoop.scheduleTask(in: .milliseconds(Int64(delay.components.seconds * 1000))) {}.futureResult
+        return delayed
+            .flatMap { connect.connect(host: "127.0.0.1", port: Int(target.port)) }
             .flatMapThrowing { _ in
                 try child.syncOptions?.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
                 try child.pipeline.syncOperations.addHandlers(SSHChannelDataUnwrapper(), channelHalf.value)

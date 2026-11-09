@@ -207,6 +207,11 @@ struct LocalForwardLoopbackTests {
         let held6 = try await holdPort("::")
         #expect(await rig.forwardError(localPort: held6.port) == .portInUse(held6.port))
         try await held6.channel.close()
+        // An IPv6-only [::] listener leaves 0.0.0.0 free: only the IPv6 probe sees it.
+        let held6Only = try await holdPort("::", v6Only: true)
+        #expect(await TestTCPClient.connectError("127.0.0.1", held6Only.port) != nil)
+        #expect(await rig.forwardError(localPort: held6Only.port) == .portInUse(held6Only.port))
+        try await held6Only.channel.close()
         #expect(try await rig.shellWorks())
         await rig.stop()
     }
@@ -257,6 +262,36 @@ struct LocalForwardLoopbackTests {
         await rig.stop()
     }
 
+    @Test func stopIsBoundedWhileTheServerHoldsTheOpen() async throws {
+        // sshd answers CHANNEL_OPEN only once its connect to the target is done (minutes, for a
+        // filtered host); until then the SSH channel cannot close. stop() must not wait for it.
+        let rig = try await Rig.start(forwardOpenDelay: .seconds(30))
+        let forward = try await rig.forward()
+        let port = forward.localPort
+        let client = try await TestTCPClient.connect("127.0.0.1", port)
+        try await client.send(Self.request)
+        #expect(await poll(within: .seconds(5)) { rig.server.record.directTCPIPRequests.count == 1 })
+        let start = ContinuousClock.now
+        try await bounded(.seconds(5)) { await forward.stop() }
+        #expect(ContinuousClock.now - start < .seconds(1))
+        #expect(isConnectionRefused(await TestTCPClient.connectError("127.0.0.1", port)))
+        #expect(isConnectionRefused(await TestTCPClient.connectError("::1", port)))
+        #expect(await client.ended(within: .seconds(2)))
+        // The SSH channel is still waiting for its open: the scenario did happen.
+        #expect(await forward.openChannelCount == 1)
+        // Closing the connection releases it.
+        let connection = rig.connection
+        try await bounded(.seconds(5)) { await connection.close() }
+        var count = -1
+        for _ in 0 ..< 250 where count != 0 {
+            count = await forward.openChannelCount
+            if count != 0 { try await Task.sleep(for: .milliseconds(20)) }
+        }
+        #expect(count == 0)
+        await client.close()
+        await rig.stop()
+    }
+
     @Test func closeStopsAllForwards() async throws {
         let rig = try await Rig.start()
         let first = try await rig.forward()
@@ -282,8 +317,8 @@ struct LocalForwardLoopbackTests {
         await rig.server.stop()
         #expect(await closed.value(within: .seconds(5)) == .some(.connectionClosed))
         #expect(await poll(within: .seconds(5)) {
-            // Synchronous probe: a refused connect to loopback fails at once.
-            !canConnect(port: forward.localPort)
+            // Synchronous probes: a refused connect to loopback fails at once.
+            !canConnect(port: forward.localPort, ipv6: false) && !canConnect(port: forward.localPort, ipv6: true)
         })
         await rig.stop()
     }
@@ -311,10 +346,13 @@ private struct Rig {
     let target: TestSSHServer.ForwardTarget
     let http: TinyHTTPServer?
 
-    static func start(body: Data = Data("forwarded-ok\n".utf8), targetPort: UInt16? = nil, halfCloseTargets: Bool = true) async throws -> Rig {
+    static func start(
+        body: Data = Data("forwarded-ok\n".utf8), targetPort: UInt16? = nil, halfCloseTargets: Bool = true,
+        forwardOpenDelay: Duration = .zero
+    ) async throws -> Rig {
         let http = targetPort == nil ? try await TinyHTTPServer.start(body: body) : nil
         let target = TestSSHServer.ForwardTarget(host: "localhost", port: targetPort ?? http!.port)
-        let server = try await TestSSHServer.start(.init(forwardTargets: [target], halfCloseTargets: halfCloseTargets))
+        let server = try await TestSSHServer.start(.init(forwardTargets: [target], halfCloseTargets: halfCloseTargets, forwardOpenDelay: forwardOpenDelay))
         let connection = SSHConnection(host: "127.0.0.1", port: server.port)
         try await bounded {
             try await connection.open(credentials: .password(user: "tester", password: "s3cret"), timeout: .seconds(5)) { _ in true }
@@ -360,11 +398,24 @@ private struct Rig {
     }
 }
 
-/// A blocking connect to 127.0.0.1:`port`, for a probe inside a synchronous `poll` condition.
-private func canConnect(port: UInt16) -> Bool {
-    let fd = socket(AF_INET, SOCK_STREAM, 0)
+/// A blocking connect to 127.0.0.1 or [::1] on `port`, for a probe inside a synchronous `poll`
+/// condition.
+private func canConnect(port: UInt16, ipv6: Bool) -> Bool {
+    let fd = socket(ipv6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0)
     guard fd >= 0 else { return false }
     defer { close(fd) }
+    if ipv6 {
+        var address = sockaddr_in6()
+        address.sin6_len = UInt8(MemoryLayout<sockaddr_in6>.size)
+        address.sin6_family = sa_family_t(AF_INET6)
+        address.sin6_port = port.bigEndian
+        address.sin6_addr = in6addr_loopback
+        return withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in6>.size)) == 0
+            }
+        }
+    }
     var address = sockaddr_in()
     address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
     address.sin_family = sa_family_t(AF_INET)

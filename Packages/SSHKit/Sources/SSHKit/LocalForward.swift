@@ -108,12 +108,17 @@ struct ForwardStopped: Error {}
 
 /// Every channel of one forward (its listeners, accepted sockets and their SSH channels), so
 /// stopping can close them all. Mutated on `loop` only.
+///
+/// `stop()` waits for the TCP channels only (listeners, local sockets), which close at once. An
+/// SSH channel closes only when the server answers CHANNEL_CLOSE, and one still opening buffers
+/// its close until the server answers the open (sshd's connect to the target can take minutes):
+/// those are closed without being waited for, and the SSH connection's close bounds them.
 final class ForwardSockets: Sendable {
     let loop: any EventLoop
     private let state: NIOLoopBoundBox<State>
 
     private struct State {
-        var open: [ObjectIdentifier: any Channel] = [:]
+        var open: [ObjectIdentifier: (channel: any Channel, awaited: Bool)] = [:]
         /// Set by the first `stop()`: completes once every channel is closed.
         var stopped: EventLoopFuture<Void>?
     }
@@ -124,10 +129,11 @@ final class ForwardSockets: Sendable {
     }
 
     /// Tracks a channel until it closes; throws once stopped (the caller's channel then closes).
-    func admit(_ channel: any Channel) throws {
+    /// `awaited`: whether `stop()` waits for it to close (TCP channels, not SSH channels).
+    func admit(_ channel: any Channel, awaited: Bool = true) throws {
         guard state.value.stopped == nil else { throw ForwardStopped() }
         let id = ObjectIdentifier(channel)
-        state.value.open[id] = channel
+        state.value.open[id] = (channel, awaited)
         channel.closeFuture.whenComplete { [self] _ in
             state.value.open[id] = nil
         }
@@ -136,12 +142,12 @@ final class ForwardSockets: Sendable {
     /// The number of channels open (listeners included), for the tests. On the loop only.
     var openCount: Int { state.value.open.count }
 
-    /// Closes every channel; the same future on every call.
+    /// Closes every channel; completes once the TCP ones are closed. The same future on every call.
     func stop() -> EventLoopFuture<Void> {
         if let stopped = state.value.stopped { return stopped }
-        let channels = Array(state.value.open.values)
-        for channel in channels { channel.close(promise: nil) }
-        let stopped = EventLoopFuture.andAllComplete(channels.map(\.closeFuture), on: loop)
+        let entries = Array(state.value.open.values)
+        for entry in entries { entry.channel.close(promise: nil) }
+        let stopped = EventLoopFuture.andAllComplete(entries.filter(\.awaited).map(\.channel.closeFuture), on: loop)
         state.value.stopped = stopped
         return stopped
     }
@@ -190,7 +196,7 @@ private final class ForwardOpener: ChannelInboundHandler {
         let type = SSHChannelType.directTCPIP(.init(targetHost: target.host, targetPort: Int(target.port), originatorAddress: originator))
         ssh.value.createChannel(created, channelType: type) { child, _ in
             child.eventLoop.makeCompletedFuture {
-                try sockets.admit(child)
+                try sockets.admit(child, awaited: false)
                 try child.syncOptions?.setOption(ChannelOptions.allowRemoteHalfClosure, value: true)
                 try child.pipeline.syncOperations.addHandlers(SSHChannelDataUnwrapper(), glue.value)
             }
@@ -209,8 +215,10 @@ private final class ForwardOpener: ChannelInboundHandler {
 /// Binding a forward's two loopback listeners.
 enum LoopbackListeners {
     /// Binds 127.0.0.1 then [::1] on the same port (`port` 0: a free one, retried if ::1 has it
-    /// taken) and returns that port. On failure nothing stays bound.
+    /// taken) and returns that port. On failure nothing stays bound; `.portInUse` names the port
+    /// requested, or with 0 the last one tried.
     static func bind(_ bootstrap: ServerBootstrap, port requested: UInt16, sockets: ForwardSockets) async throws(SSHError) -> UInt16 {
+        var lastTried = requested
         for _ in 0 ..< (requested == 0 ? 8 : 1) {
             let v4: any Channel
             switch await listen(bootstrap, "127.0.0.1", requested) {
@@ -221,6 +229,7 @@ enum LoopbackListeners {
                 try? await v4.close()
                 throw .remote("listener has no port")
             }
+            lastTried = bound
             if wildcardTaken(port: bound, family: AF_INET) || wildcardTaken(port: bound, family: AF_INET6) {
                 try? await v4.close()
                 continue
@@ -235,7 +244,7 @@ enum LoopbackListeners {
                 guard case .inUse = error else { throw error.sshError(port: requested) }
             }
         }
-        throw .portInUse(requested)
+        throw .portInUse(lastTried)
     }
 
     enum Failure: Error {

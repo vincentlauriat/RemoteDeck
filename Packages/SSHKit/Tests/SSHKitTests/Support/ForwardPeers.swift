@@ -247,9 +247,16 @@ func isConnectionRefused(_ error: (any Error)?) -> Bool {
 }
 
 /// A listener the test holds on `ip`:`port` (0 = any free port), as another app would; no
-/// SO_REUSEADDR, like most servers that bind a fixed port.
-func holdPort(_ ip: String, _ port: UInt16 = 0) async throws -> (channel: any Channel, port: UInt16) {
-    let channel = try await ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+/// SO_REUSEADDR, like most servers that bind a fixed port. `v6Only`: an IPv6 socket that does
+/// not take IPv4 too (NIO's default on macOS is dual-stack).
+func holdPort(_ ip: String, _ port: UInt16 = 0, v6Only: Bool = false) async throws -> (channel: any Channel, port: UInt16) {
+    var bootstrap = ServerBootstrap(group: MultiThreadedEventLoopGroup.singleton)
+    if v6Only {
+        bootstrap = bootstrap.serverChannelOption(
+            ChannelOptions.Types.SocketOption(level: IPPROTO_IPV6, name: IPV6_V6ONLY), value: 1
+        )
+    }
+    let channel = try await bootstrap
         .childChannelInitializer { $0.eventLoop.makeSucceededVoidFuture() }
         .bind(to: SocketAddress(ipAddress: ip, port: Int(port))).get()
     guard let bound = channel.localAddress?.port else { throw TestServerError.noPort }
