@@ -279,7 +279,7 @@ struct SessionWindowView: View {
             machine: machine, context: manager.context, passwords: manager.passwords,
             tester: manager.tester, defaultSharedClipboard: settings.defaultSharedClipboard,
             publicConsents: manager.publicConsents, ssh: manager.ssh, sshTester: manager.sshTester,
-            keyPicker: OpenPanelKeyFilePicker()))
+            keyPicker: AppPanels.keyFilePicker()))
     }
 
     // MARK: Toolbar

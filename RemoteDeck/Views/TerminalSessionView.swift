@@ -163,7 +163,7 @@ struct TerminalSessionView: View {
         engine.acceptsFileDrop = { [terminal] in terminal.canTransferFiles }
         engine.onDropTargeted = { targeted.wrappedValue = $0 }
         engine.onDropFiles = { [terminal] urls in terminal.beginUpload(urls) }
-        terminal.fileTransferPanels = SystemFileTransferPanels()
+        terminal.fileTransferPanels = AppPanels.fileTransferPanels()
         terminal.separatorText = { [settings] in settings.t("terminal_reconnected_separator") }
         if terminal.surface !== engine { terminal.attach(engine) }
         surface = engine
@@ -289,7 +289,7 @@ struct TerminalSessionView: View {
             machine: machine, context: manager.context, passwords: manager.passwords,
             tester: manager.tester, defaultSharedClipboard: settings.defaultSharedClipboard,
             publicConsents: manager.publicConsents, ssh: manager.ssh, sshTester: manager.sshTester,
-            keyPicker: OpenPanelKeyFilePicker()))
+            keyPicker: AppPanels.keyFilePicker()))
     }
 
     /// The open panel on `~/.ssh`; granted, the attempt starts again; refused, the banner stays.

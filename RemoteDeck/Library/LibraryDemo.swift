@@ -33,6 +33,10 @@ import SSHKit
 /// the 30-day window, one left without an end by a "killed run", two of machines deleted since, one
 /// with a comma and quotes in its name), and the Session History window open at launch; "Mac mini" is
 /// connected on the fake connection, so its newest row is in progress.
+///
+/// `ssh` (plan Task 13, `LibraryDemoSSH.swift`): one more machine, "Raspberry" (SSH, two forwards),
+/// connected at launch on `SSHDemoConnection`. Every demo mode's SSH connection is that fake, and its
+/// `~/.ssh`, trusted host keys, secrets and panels are in memory or fake (`sshServices`, `AppPanels`).
 enum LibraryDemo {
     struct Tester: ConnectionTester {
         func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration,
@@ -246,42 +250,6 @@ enum LibraryDemo {
         var receivedByteCount: Int64 { received }
     }
 
-    /// SSH in a demo mode: never the network. Every attempt is refused as unreachable (no demo
-    /// machine is SSH yet; `-LibraryDemo ssh` comes with plan Task 13).
-    final class RefusingSSHConnection: SSHSessionConnection {
-        private let ends = AsyncStream.makeStream(of: SSHError?.self, bufferingPolicy: .bufferingNewest(1))
-
-        var closed: AsyncStream<SSHError?> { ends.stream }
-
-        func open(credentials: SSHCredentials, timeout: Duration,
-                  validateHostKey: @escaping @Sendable (SSHHostKey) async -> Bool) async throws(SSHError) {
-            ends.continuation.yield(.unreachable)
-            ends.continuation.finish()
-            throw .unreachable
-        }
-
-        func openShell(term: String, columns: Int, rows: Int) async throws(SSHError) -> any SSHShellChannel {
-            throw .connectionClosed
-        }
-
-        func startLocalForward(localPort: UInt16, remoteHost: String, remotePort: UInt16) async throws(SSHError)
-            -> any LocalForwarding {
-            throw .connectionClosed
-        }
-
-        func fileTransfer() async throws(SSHError) -> any FileTransferring {
-            throw .connectionClosed
-        }
-
-        func close() async {
-            ends.continuation.finish()
-        }
-    }
-
-    static func sshConnection(_ target: SessionTarget) -> any SSHSessionConnection {
-        RefusingSSHConnection()
-    }
-
     @MainActor
     static func connection(_ target: SessionTarget) -> any SessionConnection {
         // `computer-use`: the one real connection a demo mode makes, to loopback only.
@@ -478,6 +446,11 @@ enum LibraryDemo {
         }
         if showsPublicAddress {
             machines.append(Machine(name: publicMachineName, kind: .macARD, host: "203.0.113.10", username: "vincent"))
+        }
+        if showsSSH {
+            let raspberry = sshMachine()
+            raspberry.group = servers
+            machines.append(raspberry)
         }
         machines.forEach(context.insert)
         try? context.save()

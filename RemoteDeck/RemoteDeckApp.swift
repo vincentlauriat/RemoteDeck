@@ -79,7 +79,11 @@ struct RemoteDeckApp: App {
             ? InMemoryPublicAddressConsents() : UserDefaultsPublicAddressConsents()
         // SSH machines: `~/.ssh` access, trusted host keys and secrets, in memory under the hosted
         // tests and the demo (no panel, no `~/.ssh`, no defaults), secrets following the library.
-        let ssh = SSHServices.app(usesUserState: !inMemory, isInMemory: isInMemory)
+        var ssh = SSHServices.app(usesUserState: !inMemory, isInMemory: isInMemory)
+        #if DEBUG
+        // The demo's `~/.ssh` (a demo key and `config`), in memory like the rest (`-LibraryDemo ssh`).
+        if LibraryDemo.isEnabled { ssh = LibraryDemo.sshServices() }
+        #endif
         _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords,
                                                            publicConsents: publicConsents, ssh: ssh))
         var tester: any ConnectionTester = RFBConnectionTester()
@@ -102,7 +106,7 @@ struct RemoteDeckApp: App {
             tester = LibraryDemo.Tester()
             sshTester = LibraryDemo.SSHTester()
             makeConnection = LibraryDemo.connection   // never the network: the sample hosts are not real
-            makeSSHConnection = LibraryDemo.sshConnection
+            makeSSHConnection = LibraryDemo.sshConnection   // `SSHDemoConnection`: never a socket
             pasteboard = InMemoryPasteboard()         // nor the user's clipboard
             makeDiscovery = LibraryDemo.discovery
             LibraryDemo.suppressAccessibilityPrompt()

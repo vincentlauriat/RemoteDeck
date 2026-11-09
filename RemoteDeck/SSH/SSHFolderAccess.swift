@@ -222,3 +222,30 @@ struct OpenPanelKeyFilePicker: KeyFilePicking {
 struct NoKeyFilePicker: KeyFilePicking {
     func chooseKeyFile() async -> URL? { nil }
 }
+
+// MARK: - Panels of the app
+
+/// The panels SSH machines show (Import Key…, Upload File…, Download File…): the real ones, except
+/// in a Debug `-LibraryDemo` mode, which never shows a real panel (`LibraryDemo.FileTransferPanels`,
+/// and no key picker at all).
+@MainActor
+enum AppPanels {
+    static var isDemo: Bool {
+        #if DEBUG
+        LibraryDemo.isEnabled
+        #else
+        false
+        #endif
+    }
+
+    static func keyFilePicker(demo: Bool = isDemo) -> any KeyFilePicking {
+        demo ? NoKeyFilePicker() : OpenPanelKeyFilePicker()
+    }
+
+    static func fileTransferPanels(demo: Bool = isDemo) -> any FileTransferPanels {
+        #if DEBUG
+        if demo { return LibraryDemo.FileTransferPanels() }
+        #endif
+        return SystemFileTransferPanels()
+    }
+}

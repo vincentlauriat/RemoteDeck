@@ -15,6 +15,8 @@ paths = [
   '''^Packages/SSHKit/Tests/SSHKitTests/Fixtures/''',
   # Copies of two of those fixtures, embedded for the hosted app tests (which cannot read the package).
   '''^RemoteDeckTests/Fakes/SSHTestKeys\.swift$''',
+  # The Debug-only `-LibraryDemo ssh` key, generated for the demo only and authorised nowhere.
+  '''^RemoteDeck/Library/LibraryDemoKey\.swift$''',
   # `-----BEGIN … PRIVATE KEY-----` armor: SSHKit's format constant and its tests' fake key files.
   '''^Packages/SSHKit/Sources/SSHKit/PrivateKey\.swift$''',
   '''^Packages/SSHKit/Tests/SSHKitTests/PrivateKeyTests\.swift$''',
