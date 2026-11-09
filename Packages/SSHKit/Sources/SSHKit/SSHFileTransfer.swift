@@ -39,8 +39,10 @@ extension SSHConnection {
             }
             ready.futureResult.whenComplete { result in
                 timer.cancel()
-                // A failed or abandoned open closes its channel.
+                // A failed or abandoned open closes its channel, and completes `accepted`, which
+                // only the channel's handler completes otherwise (never, if the channel was refused).
                 if case .failure = result {
+                    accepted.fail(SSHError.connectionClosed)
                     created.futureResult.whenSuccess { $0.close(promise: nil) }
                 }
             }
@@ -150,8 +152,10 @@ public actor SSHFileTransfer {
         var targetRemoved = false
         do {
             try await withTaskCancellationHandler {
-                let handle = try await channel.remoteDeckOpen(part, flags: [.write, .create, .truncate])
+                // Set before the request: a server can still create the file after a cancel closed
+                // the channel under it, and removing a file that does not exist is harmless.
                 partCreated = true
+                let handle = try await channel.remoteDeckOpen(part, flags: [.write, .create, .truncate])
                 do {
                     try await Self.write(source, to: channel, handle: handle, progress: progress)
                 } catch {
@@ -466,11 +470,19 @@ private final class SFTPSubsystemRequest: ChannelInboundHandler {
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        if !answered {
-            answered = true
-            accepted.fail(context.channel.parent?.isActive == true ? SSHError.sftpUnavailable : SSHError.connectionClosed)
-        }
+        fail(context: context)
         context.fireChannelInactive()
+    }
+
+    /// A channel torn down without ever becoming active.
+    func handlerRemoved(context: ChannelHandlerContext) {
+        fail(context: context)
+    }
+
+    private func fail(context: ChannelHandlerContext) {
+        guard !answered else { return }
+        answered = true
+        accepted.fail(context.channel.parent?.isActive == true ? SSHError.sftpUnavailable : SSHError.connectionClosed)
     }
 }
 

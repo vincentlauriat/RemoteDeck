@@ -37,6 +37,8 @@ final class TestSSHServer: Sendable {
         /// The `sftp` subsystem (Citadel's SFTP server on `TestSFTPDelegate`), or nil for a server
         /// without it: the subsystem request is then answered with CHANNEL_FAILURE, as sshd does.
         var sftp: TestSFTPOptions?
+        /// Every `session` channel open is refused (CHANNEL_OPEN_FAILURE).
+        var refuseSessions = false
     }
 
     struct ForwardTarget: Hashable, Sendable {
@@ -100,6 +102,8 @@ final class TestSSHServer: Sendable {
                         SilenceHandler(state: state),
                         NIOSSHHandler(role: .server(server), allocator: channel.allocator) { child, type in
                             switch type {
+                            case .session where configuration.refuseSessions:
+                                return child.eventLoop.makeFailedFuture(TestServerError.unsupportedChannel)
                             case .session:
                                 return child.eventLoop.makeCompletedFuture {
                                     try child.pipeline.syncOperations.addHandler(EchoShellHandler(state: state, sftp: configuration.sftp, user: configuration.user))

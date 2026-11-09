@@ -315,6 +315,19 @@ struct FileTransferLoopbackTests {
         await rig.stop()
     }
 
+    @Test func refusedSessionChannelIsSFTPUnavailable() async throws {
+        // CHANNEL_OPEN_FAILURE for the session channel: a typed error, the connection still open.
+        let rig = try await SFTPRig.start(refuseSessions: true)
+        let connection = rig.connection
+        await #expect(throws: SSHError.sftpUnavailable) {
+            try await bounded { try await connection.fileTransfer() }
+        }
+        #expect(rig.server.record.subsystemRequests.isEmpty)
+        let forward = try await bounded { try await connection.startLocalForward(localPort: 0, remoteHost: "localhost", remotePort: 9) }
+        await forward.stop()
+        await rig.stop()
+    }
+
     @Test func closedConnectionIsConnectionClosed() async throws {
         let rig = try await SFTPRig.start()
         let transfer = try await rig.transfer()
@@ -343,7 +356,9 @@ private struct SFTPRig {
     /// The local side's directory.
     let local: URL
 
-    static func start(sftp: Bool = true, dropConnectionAfterBytes: Int64? = nil, failWritesAfterBytes: Int64? = nil) async throws -> SFTPRig {
+    static func start(
+        sftp: Bool = true, dropConnectionAfterBytes: Int64? = nil, failWritesAfterBytes: Int64? = nil, refuseSessions: Bool = false
+    ) async throws -> SFTPRig {
         let base = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
             .appendingPathComponent("sshkit-sftp-\(UUID().uuidString)")
         let root = base.appendingPathComponent("remote")
@@ -352,7 +367,7 @@ private struct SFTPRig {
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
         let options = sftp ? TestSFTPOptions(root: root, dropConnectionAfterBytes: dropConnectionAfterBytes, failWritesAfterBytes: failWritesAfterBytes) : nil
-        let server = try await TestSSHServer.start(.init(sftp: options))
+        let server = try await TestSSHServer.start(.init(sftp: options, refuseSessions: refuseSessions))
         let connection = SSHConnection(host: "127.0.0.1", port: server.port)
         try await bounded {
             try await connection.open(credentials: .password(user: "tester", password: "s3cret"), timeout: .seconds(5)) { _ in true }
