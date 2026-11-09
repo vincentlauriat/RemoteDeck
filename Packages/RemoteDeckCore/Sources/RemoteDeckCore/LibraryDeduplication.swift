@@ -101,6 +101,26 @@ public enum LibraryDeduplication {
         }
     }
 
+    /// The user-visible fields of the most recently edited copy (`Merge.fieldsFrom`), copied to the
+    /// survivor: its host and port share the key. Identity (`id`, `createdAt`) stays the survivor's,
+    /// and `lastConnectedAt` is the caller's (it keeps the later one).
+    public static func copyFields(from source: Machine, to target: Machine) {
+        target.name = source.name
+        target.kind = source.kind
+        target.host = source.host
+        target.port = source.port
+        target.username = source.username
+        target.group = source.group
+        target.isFavorite = source.isFavorite
+        target.isWatched = source.isWatched
+        target.scalingMode = source.scalingMode
+        target.sharedClipboard = source.sharedClipboard
+        target.modifiedAt = source.modifiedAt
+        target.sshAuthMethod = source.sshAuthMethod
+        target.sshKeyFileName = source.sshKeyFileName
+        target.portForwardsData = source.portForwardsData
+    }
+
     /// Duplicate groups, one merge per name with more than one group, in name order.
     public static func groupMerges(_ groups: [GroupFacts]) -> [Merge] {
         let byKey = Dictionary(grouping: groups, by: \.key)

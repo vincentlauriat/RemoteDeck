@@ -25,6 +25,7 @@ struct RemoteDeckApp: App {
     private let onboardingLaunch: OnboardingLaunch
     private let notificationAuthorizer: any NotificationAuthorizing
     private let tester: any ConnectionTester
+    private let sshTester: any SSHTester
     private let makeDiscovery: @MainActor () -> DiscoveryService
     private let apiKeyChecker: any APIKeyChecking
     /// Sparkle (T6.3): started only in a Release build outside XCTest and the debug modes.
@@ -76,10 +77,19 @@ struct RemoteDeckApp: App {
         // tests and the demo, which never write them.
         let publicConsents: any PublicAddressConsents = inMemory
             ? InMemoryPublicAddressConsents() : UserDefaultsPublicAddressConsents()
+        // SSH machines: `~/.ssh` access, trusted host keys and secrets, in memory under the hosted
+        // tests and the demo (no panel, no `~/.ssh`, no defaults), secrets following the library.
+        var ssh = SSHServices.app(usesUserState: !inMemory, isInMemory: isInMemory)
+        #if DEBUG
+        // The demo's `~/.ssh` (a demo key and `config`), in memory like the rest (`-LibraryDemo ssh`).
+        if LibraryDemo.isEnabled { ssh = LibraryDemo.sshServices() }
+        #endif
         _library = State(initialValue: MachineLibraryModel(context: container.mainContext, passwords: passwords,
-                                                           publicConsents: publicConsents))
+                                                           publicConsents: publicConsents, ssh: ssh))
         var tester: any ConnectionTester = RFBConnectionTester()
+        var sshTester: any SSHTester = SSHConnectionTester()
         var makeConnection: @MainActor (SessionTarget) -> any SessionConnection = SessionManager.rfbConnection
+        var makeSSHConnection: @MainActor (SessionTarget) -> any SSHSessionConnection = SessionManager.sshConnection
         // The hosted tests never touch the real pasteboard.
         var pasteboard: any ClipboardPasteboard = LibraryStore.isRunningTests() ? InMemoryPasteboard() : SystemPasteboard()
         // Built when the Discovery Panel opens: nothing browses the network before that.
@@ -94,7 +104,9 @@ struct RemoteDeckApp: App {
             if LibraryDemo.simulatesStoreError { storeError = LibraryDemo.storeError }
             notificationAuthorizer = LibraryDemo.NotificationAuthorizer()   // never the system prompt
             tester = LibraryDemo.Tester()
+            sshTester = LibraryDemo.SSHTester()
             makeConnection = LibraryDemo.connection   // never the network: the sample hosts are not real
+            makeSSHConnection = LibraryDemo.sshConnection   // `SSHDemoConnection`: never a socket
             pasteboard = InMemoryPasteboard()         // nor the user's clipboard
             makeDiscovery = LibraryDemo.discovery
             LibraryDemo.suppressAccessibilityPrompt()
@@ -117,6 +129,7 @@ struct RemoteDeckApp: App {
         }
         apiKeyChecker = claudeClient
         self.tester = tester
+        self.sshTester = sshTester
         self.makeDiscovery = makeDiscovery
         self.storeError = storeError
         self.notificationAuthorizer = notificationAuthorizer
@@ -136,7 +149,8 @@ struct RemoteDeckApp: App {
                                       pasteboard: pasteboard,
                                       makeAssistant: { [claudeClient] session in
             AssistantModel(port: session, client: claudeClient, apiKey: { settings.anthropicAPIKey })
-        }, path: sessionPath, workspaceCenter: powerCenter, publicConsents: publicConsents)
+        }, path: sessionPath, workspaceCenter: powerCenter, publicConsents: publicConsents,
+                                      ssh: ssh, makeSSHConnection: makeSSHConnection, sshTester: sshTester)
         _sessions = State(initialValue: sessions)
 
         // Status Notifications (T4.5). The hosted tests never probe, post or read the notification
@@ -164,7 +178,7 @@ struct RemoteDeckApp: App {
         let reachability = ReachabilityMonitor(
             probe: probe, path: path, poster: poster, configuration: configuration,
             notificationsEnabled: { settings.notificationsEnabled },
-            sessionState: { [sessions] id in sessions.sessions[id]?.phase.watchedState ?? .noSession })
+            sessionState: { [sessions] id in sessions.watchedState(id) })
         _reachability = State(initialValue: reachability)
         let watchFeed = WatchTargetFeed(context: container.mainContext, monitor: reachability)
         self.watchFeed = watchFeed
@@ -183,8 +197,9 @@ struct RemoteDeckApp: App {
         }
         #endif
         let merger = opened.syncsWithICloud
-            ? LibraryMerger(context: container.mainContext, passwords: passwords,
-                            hasSession: { [sessions] id in sessions.sessions[id] != nil })
+            ? LibraryMerger(context: container.mainContext, passwords: passwords, sshSecrets: ssh.secrets,
+                            trustedHostKeys: ssh.trustedHostKeys,
+                            hasSession: { [sessions] id in sessions.hasSession(id) })
             : nil
         let sync = LibrarySync(isActive: syncActive, isEntitled: syncEntitled,
                                openError: opened.syncError.map { String(describing: $0) },
@@ -199,9 +214,11 @@ struct RemoteDeckApp: App {
         // the file keychain move to the data-protection keychain, local passwords to iCloud Keychain.
         // Detached: a file-keychain item that asks for its keychain password never holds the main actor.
         if !isInMemory {
-            let ids = ((try? container.mainContext.fetch(FetchDescriptor<Machine>())) ?? []).map(\.id)
+            let machines = (try? container.mainContext.fetch(FetchDescriptor<Machine>())) ?? []
+            let ids = machines.map(\.id)
+            let sshIDs = machines.filter { $0.kindValue == .ssh }.map(\.id)
             let keychain = KeychainStore.app
-            Task.detached(priority: .utility) { keychain.migrateAtLaunch(machineIDs: ids) }
+            Task.detached(priority: .utility) { keychain.migrateAtLaunch(machineIDs: ids, sshMachineIDs: sshIDs) }
         }
         let router = StatusNotificationRouter()
         _notificationRouter = State(initialValue: router)
@@ -220,7 +237,7 @@ struct RemoteDeckApp: App {
 
     var body: some Scene {
         Window(settings.t("app_name"), id: LibraryWindow.id) {
-            LibraryView(model: library, tester: tester, makeDiscovery: makeDiscovery, storeError: storeError,
+            LibraryView(model: library, tester: tester, sshTester: sshTester, makeDiscovery: makeDiscovery, storeError: storeError,
                         onboardingLaunch: onboardingLaunch, notificationAuthorizer: notificationAuthorizer)
                 .environment(settings)
                 .environment(sessions)
@@ -239,6 +256,7 @@ struct RemoteDeckApp: App {
             UpdateCommands(settings: settings, updater: updater)
             LibraryCommands(settings: settings)
             SessionTabCommands(settings: settings, sessions: sessions)
+            FileTransferCommands(settings: settings)
             HelpCommands(settings: settings)
         }
 

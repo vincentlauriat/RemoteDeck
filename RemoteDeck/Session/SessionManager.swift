@@ -4,22 +4,34 @@ import Observation
 import SwiftData
 import RemoteDeckCore
 import RFBKit
+import SSHKit
 
 /// The open sessions, one per machine, each in its own tab of the Session Window (`SessionTabs`), with
 /// its own connection. Connect on a machine that already has a session selects its tab and opens no
 /// second tab or connection. This does not rely on `openWindow(value:)` finding the existing window:
 /// two Connects in a row (measured with `-LibraryDemo session`) opened two windows for the same value.
 /// A session ends only when its own tab (window) closes (`close`); the other tabs are untouched.
+///
+/// SSH machines get a `TerminalSessionModel` in `terminals`, every other kind a `SessionModel` in
+/// `sessions`; a machine is in at most one of them. Every path that opens, finds, watches or ends a
+/// session (Connect, `isConnecting`, `close`, `watchedState`, `liveRecordIDs`, the network and
+/// sleep fan-out, quit) covers both.
 @Observable
 @MainActor
 final class SessionManager {
     private(set) var sessions: [UUID: SessionModel] = [:]
+    private(set) var terminals: [UUID: TerminalSessionModel] = [:]
 
     @ObservationIgnored let context: ModelContext
     @ObservationIgnored let passwords: any MachinePasswordStore
     @ObservationIgnored let tester: any ConnectionTester
+    /// The Machine Editor's SSH Test (its "Edit credentials" opens the editor).
+    @ObservationIgnored let sshTester: any SSHTester
     @ObservationIgnored private let clock: SessionClock
     @ObservationIgnored private let makeConnection: @MainActor (SessionTarget) -> any SessionConnection
+    @ObservationIgnored private let makeSSHConnection: @MainActor (SessionTarget) -> any SSHSessionConnection
+    /// `~/.ssh` access, trusted host keys and SSH secrets (in memory unless the app passes its own).
+    @ObservationIgnored let ssh: SSHServices
     @ObservationIgnored private let makeDisplay: @MainActor () -> SessionDisplayModel?
     @ObservationIgnored private let pasteboard: any ClipboardPasteboard
     @ObservationIgnored private let makeAssistant: @MainActor (SessionModel) -> AssistantModel?
@@ -49,8 +61,14 @@ final class SessionManager {
          reconnectClock: any ReachabilityClock = ContinuousReachabilityClock(),
          path: (any NetworkPathMonitoring)? = nil,
          workspaceCenter: NotificationCenter? = nil,
-         publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents()) {
+         publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents(),
+         ssh: SSHServices = .inMemory(),
+         makeSSHConnection: @escaping @MainActor (SessionTarget) -> any SSHSessionConnection = SessionManager.sshConnection,
+         sshTester: any SSHTester = DisabledSSHTester()) {
+        self.sshTester = sshTester
         self.publicConsents = publicConsents
+        self.ssh = ssh
+        self.makeSSHConnection = makeSSHConnection
         self.resilience = resilience
         self.reconnectClock = reconnectClock
         self.path = path
@@ -99,6 +117,9 @@ final class SessionManager {
         for session in sessions.values {
             if available { session.networkRestored() } else { session.networkLost() }
         }
+        for terminal in terminals.values {
+            if available { terminal.networkRestored() } else { terminal.networkLost() }
+        }
     }
 
     /// Every running session closes cleanly before the Mac sleeps, and remembers to reconnect.
@@ -107,6 +128,7 @@ final class SessionManager {
         wakeGrace?.cancel()
         wakeGrace = nil
         sessions.values.forEach { $0.suspendForSleep() }
+        terminals.values.forEach { $0.suspendForSleep() }
     }
 
     /// `wakeGrace` after wake, even if the path flaps back meanwhile, the sessions still open (a window
@@ -120,6 +142,7 @@ final class SessionManager {
             guard (try? await clock.sleep(for: grace)) != nil, let self else { return }
             self.wakeGrace = nil
             self.sessions.values.forEach { $0.resumeAfterWake() }
+            self.terminals.values.forEach { $0.resumeAfterWake() }
         }
     }
 
@@ -132,11 +155,17 @@ final class SessionManager {
     /// leaves an end time, whether the window's `willClose` came before `willTerminate` or not.
     func appWillTerminate() {
         sessions.values.forEach { $0.beginClose() }
+        terminals.values.forEach { $0.beginClose() }
     }
 
     /// The real connection. The port was validated (1–65535) when the machine was saved.
     nonisolated static func rfbConnection(_ target: SessionTarget) -> any SessionConnection {
         RFBConnection(host: target.host, port: UInt16(clamping: target.port))
+    }
+
+    /// The real SSH connection (keepalive 30 s x 4, Vincent's `ServerAliveInterval`/`CountMax`).
+    nonisolated static func sshConnection(_ target: SessionTarget) -> any SSHSessionConnection {
+        SSHConnection(host: target.host, port: UInt16(clamping: target.port))
     }
 
     /// The Metal renderer behind the window's `FramebufferView`; `nil` without Metal.
@@ -146,11 +175,11 @@ final class SessionManager {
         return SessionDisplayModel(renderer: renderer)
     }
 
-    /// The machine's session, started on first use; `nil` if the machine no longer exists.
+    /// The machine's screen session, started on first use; `nil` if the machine no longer exists or
+    /// is an SSH machine (those get a terminal: `terminal(for:)`).
     func session(for machineID: UUID) -> SessionModel? {
         if let session = sessions[machineID] { return session }
-        guard let machine = try? context.fetch(FetchDescriptor<Machine>(predicate: #Predicate { $0.id == machineID }))
-            .first else { return nil }
+        guard let machine = fetchMachine(machineID), machine.kindValue != .ssh else { return nil }
         let session = SessionModel(machine: machine, context: context, passwords: passwords, display: makeDisplay(),
                                    clock: clock, pasteboard: pasteboard, resilience: resilience,
                                    reconnectClock: reconnectClock, publicConsents: publicConsents,
@@ -164,7 +193,29 @@ final class SessionManager {
         return session
     }
 
-    /// Connect from the Library: `true` when the caller must open a Session Window (the session is
+    /// The SSH machine's terminal session, started on first use; `nil` if the machine no longer
+    /// exists or is not an SSH machine.
+    func terminal(for machineID: UUID) -> TerminalSessionModel? {
+        if let terminal = terminals[machineID] { return terminal }
+        guard let machine = fetchMachine(machineID), machine.kindValue == .ssh else { return nil }
+        let terminal = TerminalSessionModel(machine: machine, context: context, resolver: ssh.resolver(passwords: passwords),
+                                            trust: ssh.trustedHostKeys, secrets: ssh.secrets, clock: clock,
+                                            resilience: resilience, reconnectClock: reconnectClock,
+                                            urlOpener: AppPanels.urlOpener(), makeConnection: makeSSHConnection)
+        terminal.isNetworkAvailable = { [weak self] in self?.isNetworkAvailable ?? true }
+        openCount += 1
+        terminal.openOrder = openCount
+        terminals[machineID] = terminal
+        terminal.connect()
+        return terminal
+    }
+
+    private func fetchMachine(_ machineID: UUID) -> Machine? {
+        try? context.fetch(FetchDescriptor<Machine>(predicate: #Predicate { $0.id == machineID })).first
+    }
+
+    /// Connect from the Library, the Menu Bar Extra or the History (`SessionLauncher`): `true` when
+    /// the caller must open a Session Window tab (the session, a terminal for an SSH machine, is
     /// created and connecting already); `false` when the machine has one, which is brought forward,
     /// or no longer exists.
     func requestWindow(for machineID: UUID) -> Bool {
@@ -172,20 +223,42 @@ final class SessionManager {
             session.bringWindowForward?()
             return false
         }
-        return session(for: machineID) != nil
+        if let terminal = terminals[machineID] {
+            terminal.bringWindowForward?()
+            return false
+        }
+        return terminal(for: machineID) != nil || session(for: machineID) != nil
     }
 
     /// Library row spinner (AppFlow › Connect: "Row spinner").
     func isConnecting(_ machineID: UUID) -> Bool {
-        sessions[machineID]?.isConnecting ?? false
+        sessions[machineID]?.isConnecting ?? terminals[machineID]?.isConnecting ?? false
+    }
+
+    /// The machine has an open session of either kind (the merge keeps it, T4.3).
+    func hasSession(_ machineID: UUID) -> Bool {
+        sessions[machineID] != nil || terminals[machineID] != nil
+    }
+
+    /// Open tabs of both kinds (⌘1…⌘9).
+    var openSessionCount: Int { sessions.count + terminals.count }
+
+    /// What the Reachability monitor makes of the machine's session (T4.5), either kind.
+    func watchedState(_ machineID: UUID) -> WatchedSessionState {
+        sessions[machineID]?.phase.watchedState ?? terminals[machineID]?.phase.watchedState ?? .noSession
     }
 
     /// Its tab (window) closed: forget the session at once (a new Connect starts a fresh one), end its
     /// record now (`beginClose`), and tear it down in order in the background.
     func close(_ machineID: UUID) {
-        guard let session = sessions.removeValue(forKey: machineID) else { return }
-        let record = session.beginClose()
-        Task { await session.completeClose(record: record) }
+        if let session = sessions.removeValue(forKey: machineID) {
+            let record = session.beginClose()
+            Task { await session.completeClose(record: record) }
+        }
+        if let terminal = terminals.removeValue(forKey: machineID) {
+            let record = terminal.beginClose()
+            Task { await terminal.completeClose(record: record) }
+        }
     }
 }
 

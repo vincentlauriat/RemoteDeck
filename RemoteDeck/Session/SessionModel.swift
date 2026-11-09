@@ -78,6 +78,25 @@ struct SessionTarget: Equatable, Sendable {
     var port: Int
     var username: String?
     var scalingMode: ScalingMode
+    /// SSH machines only (meaningless for screen sessions): how they authenticate, the key file in
+    /// `~/.ssh` for `keyInSSHFolder`, and the saved local port forwards.
+    var sshAuth: SSHAuthMethod = .password
+    var sshKeyFileName: String?
+    var portForwards: [PortForward] = []
+
+    /// A target from fields not saved yet (the Machine Editor's Test).
+    init(machineID: UUID, name: String, kind: MachineKind, host: String, port: Int, username: String?,
+         sshAuth: SSHAuthMethod, sshKeyFileName: String?) {
+        self.machineID = machineID
+        self.name = name
+        self.kind = kind
+        self.host = host
+        self.port = port
+        self.username = username
+        scalingMode = .fit
+        self.sshAuth = sshAuth
+        self.sshKeyFileName = sshKeyFileName
+    }
 
     init(_ machine: Machine) {
         machineID = machine.id
@@ -87,9 +106,13 @@ struct SessionTarget: Equatable, Sendable {
         port = machine.port
         username = machine.username
         scalingMode = machine.scalingModeValue
+        sshAuth = machine.sshAuth
+        sshKeyFileName = machine.sshKeyFileName
+        portForwards = machine.portForwards
     }
 
     /// ⌘ and ⌥ per machine kind (TRD › Input): Mac ARD → Alt/Meta, VNC and Anthropic VM → X11 Super/Alt.
+    /// `.ssh` takes X11 but never gets here: SSH machines get a `TerminalSessionModel`.
     var modifierProfile: ModifierProfile {
         kind == .macARD ? .appleRemoteDesktop : .x11
     }
@@ -100,11 +123,15 @@ extension RFBCredentials {
     /// them: no user name for an Anthropic VM, a blank user name or password counts as none. A Mac
     /// (ARD) with a user name requires Apple DH (type 30, T5.3 M4): its macOS password never goes out
     /// as a VNC DES response, and the session never falls back to no authentication.
+    ///
+    /// `.ssh` gets no credentials at all: its password is an SSH secret and must never reach an RFB
+    /// handshake. SSH machines are routed to `TerminalSessionModel` (`SessionManager.requestWindow`);
+    /// this stays as a second line of defence: one that reached RFB would fail with nothing sent.
     init(kind: MachineKind, username: String?, password: String?) {
         let user = username?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let effectiveUser = kind == .anthropicVM || user?.isEmpty != false ? nil : user
+        let effectiveUser = kind == .anthropicVM || kind == .ssh || user?.isEmpty != false ? nil : user
         self.init(username: effectiveUser,
-                  password: password?.isEmpty == false ? password : nil,
+                  password: kind != .ssh && password?.isEmpty == false ? password : nil,
                   requiredSecurityType: kind == .macARD && effectiveUser != nil ? SecurityType.appleDiffieHellman : nil)
     }
 }
@@ -904,6 +931,7 @@ final class SessionModel {
 extension SessionModel: AssistantSessionPort {
     var assistantCanAct: Bool { phase == .connected && sender != nil }
 
+    /// `.ssh` has no desktop (SSH machines get a `TerminalSessionModel`): X11 is the inert default.
     var assistantDesktop: RemoteDesktopKind { target.kind == .macARD ? .mac : .x11 }
 
     var assistantProfile: ModifierProfile { target.modifierProfile }

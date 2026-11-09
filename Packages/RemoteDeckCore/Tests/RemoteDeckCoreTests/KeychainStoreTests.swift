@@ -13,6 +13,59 @@ struct KeychainStoreTests {
         #expect(KeychainAccount.anthropicAPIKey.name == "anthropic.apiKey")
     }
 
+    @Test func keychainAccountNamesAndSync() {
+        let id = UUID(uuidString: "6F9619FF-8B86-D011-B42D-00C04FC964FF")!
+        #expect(KeychainAccount.sshPrivateKey(id).name == "sshKey.6F9619FF-8B86-D011-B42D-00C04FC964FF")
+        #expect(KeychainAccount.sshKeyPassphrase(id).name == "sshPassphrase.6F9619FF-8B86-D011-B42D-00C04FC964FF")
+        #expect(KeychainAccount.sshLocalKeyPassphrase(id).name
+            == "sshLocalPassphrase.6F9619FF-8B86-D011-B42D-00C04FC964FF")
+        #expect(KeychainAccount.sshPrivateKey(id).isSynchronizable)
+        #expect(KeychainAccount.sshKeyPassphrase(id).isSynchronizable)
+        #expect(!KeychainAccount.sshLocalKeyPassphrase(id).isSynchronizable)
+        // The passphrase of a key used in place from ~/.ssh never leaves this Mac.
+        let local = KeychainStore().addAttributes(for: .sshLocalKeyPassphrase(id), data: Data("p".utf8))
+        #expect(local[kSecAttrSynchronizable as String] as? Bool == false)
+        #expect(local[kSecAttrAccessible as String] as? String
+            == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
+        let synced = KeychainStore().addAttributes(for: .sshPrivateKey(id), data: Data("k".utf8))
+        #expect(synced[kSecAttrSynchronizable as String] as? Bool == true)
+        #expect(synced[kSecAttrAccessible as String] as? String == kSecAttrAccessibleAfterFirstUnlock as String)
+    }
+
+    @Test func localPassphraseIDsAreParsedFromAccountNames() {
+        let id = UUID()
+        #expect(KeychainAccount.sshLocalKeyPassphraseID(fromName: KeychainAccount.sshLocalKeyPassphrase(id).name) == id)
+        #expect(KeychainAccount.sshLocalKeyPassphraseID(fromName: KeychainAccount.sshKeyPassphrase(id).name) == nil)
+        #expect(KeychainAccount.sshLocalKeyPassphraseID(fromName: KeychainAccount.machine(id).name) == nil)
+        #expect(KeychainAccount.sshLocalKeyPassphraseID(fromName: "sshLocalPassphrase.not-a-uuid") == nil)
+    }
+
+    /// The orphan sweep lists local items by name only: this service's, never their data, never a
+    /// synchronizable item; an empty service lists nothing.
+    @Test func localAccountNamesListOnlyThisServicesLocalItems() throws {
+        let store = KeychainStore(service: "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)")
+        let other = KeychainStore(service: "fr.vincentlauriat.remotedeck.tests.\(UUID().uuidString)")
+        #expect(try store.localAccountNames().isEmpty)
+        let id = UUID()
+        try store.save("p", for: .sshLocalKeyPassphrase(id))
+        try store.save("k", for: .anthropicAPIKey)
+        try other.save("x", for: .sshLocalKeyPassphrase(UUID()))
+        defer {
+            try? store.delete(.sshLocalKeyPassphrase(id))
+            try? store.delete(.anthropicAPIKey)
+            try? other.localAccountNames().forEach { name in
+                if let otherID = KeychainAccount.sshLocalKeyPassphraseID(fromName: name) {
+                    try? other.delete(.sshLocalKeyPassphrase(otherID))
+                }
+            }
+        }
+        #expect(try store.localAccountNames()
+                == [KeychainAccount.anthropicAPIKey.name, KeychainAccount.sshLocalKeyPassphrase(id).name].sorted())
+        let query = store.listQuery(dataProtection: false)
+        #expect(query[kSecReturnData as String] == nil)
+        #expect(query[kSecAttrSynchronizable as String] as? Bool == false)
+    }
+
     @Test func defaultServiceIsAppService() {
         #expect(KeychainStore().service == "fr.vincentlauriat.remotedeck")
     }

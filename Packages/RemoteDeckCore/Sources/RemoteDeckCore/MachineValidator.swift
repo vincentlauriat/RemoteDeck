@@ -8,19 +8,30 @@ public struct MachineDraft: Equatable, Sendable {
     public var host: String
     public var port: Int
     public var username: String?
+    /// SSH only: checked when `kind == .ssh`.
+    public var sshAuth: SSHAuthMethod
+    public var sshKeyFileName: String?
+    public var portForwards: [PortForward]
 
-    public init(name: String, kind: MachineKind, host: String, port: Int, username: String? = nil) {
+    public init(name: String, kind: MachineKind, host: String, port: Int, username: String? = nil,
+                sshAuth: SSHAuthMethod = .password, sshKeyFileName: String? = nil,
+                portForwards: [PortForward] = []) {
         self.name = name
         self.kind = kind
         self.host = host
         self.port = port
         self.username = username
+        self.sshAuth = sshAuth
+        self.sshKeyFileName = sshKeyFileName
+        self.portForwards = portForwards
     }
 
     public init(_ machine: Machine) {
         self.init(
             name: machine.name, kind: machine.kindValue,
-            host: machine.host, port: machine.port, username: machine.username
+            host: machine.host, port: machine.port, username: machine.username,
+            sshAuth: machine.sshAuth, sshKeyFileName: machine.sshKeyFileName,
+            portForwards: machine.portForwards
         )
     }
 }
@@ -29,6 +40,10 @@ public struct MachineDraft: Equatable, Sendable {
 public struct MachineValidator: Sendable {
     public enum Field: String, Sendable {
         case name, host, port, username, groupName
+        /// SSH: the key file in `~/.ssh` (`keyInSSHFolder`).
+        case sshKeyFileName
+        /// SSH: the machine's port forwards, checked as a list.
+        case portForwards
     }
 
     public enum Reason: Equatable, Sendable {
@@ -37,21 +52,32 @@ public struct MachineValidator: Sendable {
         case invalidHost
         case outOfRange
         case duplicate
+        /// `keyInSSHFolder` without a usable file name: empty, absolute, or with a `..` component.
+        case missingKeyFile
+        /// A forward's local port outside 1024–65535 or its remote port outside 1–65535.
+        case invalidForwardPort
+        /// Two forwards of the machine listen on the same local port.
+        case duplicateLocalPort
     }
 
     public struct Issue: Equatable, Sendable {
         public let field: Field
         public let reason: Reason
+        /// `.portForwards` issues: the forward (row) at fault, so the editor shows the error under it.
+        public let forwardID: UUID?
 
-        public init(_ field: Field, _ reason: Reason) {
+        public init(_ field: Field, _ reason: Reason, forwardID: UUID? = nil) {
             self.field = field
             self.reason = reason
+            self.forwardID = forwardID
         }
     }
 
     public static let maxNameLength = 64
     public static let maxGroupNameLength = 40
     public static let portRange = 1...65535
+    /// Forward local ports: unprivileged only (no root listener on this Mac).
+    public static let forwardLocalPortRange = 1024...65535
 
     public init() {}
 
@@ -87,9 +113,13 @@ public struct MachineValidator: Sendable {
             issues.append(Issue(.port, .outOfRange))
         }
 
-        if draft.kind == .macARD,
+        if draft.kind == .macARD || draft.kind == .ssh,
            (draft.username ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             issues.append(Issue(.username, .empty))
+        }
+
+        if draft.kind == .ssh {
+            issues += Self.sshIssues(draft)
         }
 
         if hostValid && portValid {
@@ -101,6 +131,33 @@ public struct MachineValidator: Sendable {
         }
 
         return issues
+    }
+
+    /// SSH fields: the key file of a key used in place, then the forwards, one issue per faulty row
+    /// (`forwardID`), in list order: a port out of range, else a local port an earlier row already
+    /// listens on (the later row carries the error).
+    static func sshIssues(_ draft: MachineDraft) -> [Issue] {
+        var issues: [Issue] = []
+        if draft.sshAuth == .keyInSSHFolder, !isValidKeyFileName(draft.sshKeyFileName) {
+            issues.append(Issue(.sshKeyFileName, .missingKeyFile))
+        }
+        var localPorts: Set<Int> = []
+        for forward in draft.portForwards {
+            if !forwardLocalPortRange.contains(forward.localPort) || !portRange.contains(forward.remotePort) {
+                issues.append(Issue(.portForwards, .invalidForwardPort, forwardID: forward.id))
+            } else if !localPorts.insert(forward.localPort).inserted {
+                issues.append(Issue(.portForwards, .duplicateLocalPort, forwardID: forward.id))
+            }
+        }
+        return issues
+    }
+
+    /// A path relative to `~/.ssh`: non-empty, not absolute, no `/..` and no `..` component, so it
+    /// never leaves the folder (`../id_rsa` included, which has no `/..`).
+    static func isValidKeyFileName(_ name: String?) -> Bool {
+        guard let name = name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+              !name.hasPrefix("/"), !name.contains("/..") else { return false }
+        return !name.split(separator: "/", omittingEmptySubsequences: false).contains("..")
     }
 
     /// Checks a MachineGroup name. `existingNames` maps every stored group id to its

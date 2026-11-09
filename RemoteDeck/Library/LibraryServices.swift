@@ -3,6 +3,7 @@ import Security
 import SwiftData
 import RemoteDeckCore
 import RFBKit
+import SSHKit
 
 // MARK: - Machine passwords
 
@@ -152,6 +153,41 @@ struct RFBConnectionTester: ConnectionTester {
     }
 }
 
+/// Opens and closes one SSH connection for the Machine Editor's Test (SSH machines): TCP, key
+/// exchange, the host key check, authentication, then `close()` at once. Injectable so the hosted
+/// tests never touch the network.
+protocol SSHTester: Sendable {
+    /// `trusted` is the host key validator (`SSHConnection.open`'s): awaited during key exchange,
+    /// before anything is sent to authenticate, and its time (a Host Key Sheet on screen) is not
+    /// counted in `timeout`.
+    func test(host: String, port: UInt16, credentials: SSHCredentials, timeout: Duration,
+              trusted: @escaping @Sendable (SSHHostKey) async -> Bool) async throws(SSHError)
+}
+
+/// The real tester: `SSHConnection.open`, then `close()`.
+struct SSHConnectionTester: SSHTester {
+    func test(host: String, port: UInt16, credentials: SSHCredentials, timeout: Duration,
+              trusted: @escaping @Sendable (SSHHostKey) async -> Bool) async throws(SSHError) {
+        let connection = SSHConnection(host: host, port: port)
+        do {
+            try await connection.open(credentials: credentials, timeout: timeout, validateHostKey: trusted)
+        } catch {
+            await connection.close()
+            throw error
+        }
+        await connection.close()
+    }
+}
+
+/// A tester that never connects: the default of models built without the app's (tests that do not
+/// test SSH), so nothing reaches the network by accident.
+struct DisabledSSHTester: SSHTester {
+    func test(host: String, port: UInt16, credentials: SSHCredentials, timeout: Duration,
+              trusted: @escaping @Sendable (SSHHostKey) async -> Bool) async throws(SSHError) {
+        throw .unreachable
+    }
+}
+
 /// Why a Test connection failed, as shown in the Machine Editor (AppFlow › Machine Editor).
 enum TestConnectionFailure: Equatable, Sendable {
     /// Transport error (DNS, TCP refused, no route): "Unreachable".
@@ -181,6 +217,22 @@ enum TestConnectionFailure: Equatable, Sendable {
     case notRFBServer(banner: String)
     /// Protocol violation or crypto failure.
     case unexpectedResponse
+    /// SSH: the server's key is not trusted and the Host Key Sheet was cancelled (its fingerprint).
+    case hostKeyUnknown(String)
+    /// SSH: the server presented another key than the trusted one; no trust path from here (the
+    /// way out is "Remove from RemoteDeck's trusted keys…").
+    case hostKeyChanged
+    /// SSH: the key conflicts with the one in `~/.ssh/known_hosts` (checked first): the way out is
+    /// that file, not RemoteDeck's trusted keys.
+    case hostKeyChangedInKnownHosts
+    /// SSH: another failure of the connection (a refused channel, a protocol error).
+    case ssh(SSHError)
+    /// SSH: the key file, the imported key, or the key type (`SSHCredentialFailure`).
+    case sshCredential(SSHCredentialFailure)
+    /// SSH: a key in `~/.ssh` and no folder grant on this Mac.
+    case sshFolderAccessNeeded
+    /// SSH: the key is encrypted and its passphrase was not given (sheet cancelled).
+    case passphraseRequired
 
     /// `nil` for `.cancelled`: a cancelled test goes back to idle, never to an error.
     init?(_ error: RFBError) {
@@ -201,6 +253,19 @@ enum TestConnectionFailure: Equatable, Sendable {
         case .publicAddressNotAdmitted: self = .publicAddressNotConfirmed
         case .unsupportedVersion(let banner): self = .notRFBServer(banner: banner)
         case .protocolViolation, .cryptoFailure: self = .unexpectedResponse
+        }
+    }
+
+    /// An SSH test's error. `hostKeyRejected` is the editor's call (it knows whether the key was
+    /// unknown or changed): here an unknown key with its fingerprint.
+    init(_ error: SSHError) {
+        switch error {
+        case .unreachable: self = .unreachable
+        case .timedOut: self = .timedOut
+        case .connectionClosed: self = .connectionClosed
+        case .authFailed: self = .authFailed(reason: nil)
+        case .hostKeyRejected(let key): self = .hostKeyUnknown(key.fingerprintSHA256)
+        default: self = .ssh(error)
         }
     }
 
@@ -235,6 +300,20 @@ enum TestConnectionFailure: Equatable, Sendable {
         case .publicAddressNotConfirmed: return t("test_public_not_confirmed")
         case .notRFBServer: return t("test_not_rfb")
         case .unexpectedResponse: return t("test_unexpected")
+        case .hostKeyUnknown: return t("test_host_key_unknown")
+        case .hostKeyChanged: return t("test_host_key_changed")
+        case .hostKeyChangedInKnownHosts: return t("test_host_key_changed_known_hosts")
+        case .ssh(.channelFailed(let reason)): return withReason("test_ssh_refused", reason)
+        case .ssh(.remote(let reason)): return withReason("test_ssh_unexpected", reason)
+        case .ssh: return t("test_ssh_unexpected")
+        case .sshCredential(.keyFileMissing(let name)):
+            return t("terminal_key_file_missing").replacingOccurrences(of: "%@", with: DisplayText.serverString(name))
+        case .sshCredential(.unsupportedKey(let type)):
+            return t("terminal_key_unsupported").replacingOccurrences(of: "%@", with: DisplayText.serverString(type))
+        case .sshCredential(.passwordMissing): return t("terminal_password_missing")
+        case .sshCredential(.keyUnreadable), .sshCredential(.passphraseUnavailable): return t("terminal_key_unreadable")
+        case .sshFolderAccessNeeded: return t("terminal_ssh_folder_needed")
+        case .passphraseRequired: return t("test_passphrase_required")
         }
     }
 }
@@ -333,7 +412,7 @@ extension MachineValidator.Reason {
         switch (self, field) {
         case (.empty, .name): return t("err_name_empty")
         case (.empty, .host): return t("err_host_empty")
-        case (.empty, .username): return t("err_username_empty")
+        case (.empty, .username): return t("err_username_empty")   // Mac ARD and SSH: kind-neutral wording
         case (.empty, .groupName): return t("err_group_empty")
         case (.tooLong(let max), _): return t("err_name_too_long").replacingOccurrences(of: "%d", with: String(max))
         case (.invalidHost, _): return t("err_host_invalid")
@@ -341,6 +420,9 @@ extension MachineValidator.Reason {
         case (.duplicate, .groupName): return t("err_group_duplicate")
         case (.duplicate, _): return t("err_duplicate")
         case (.empty, .port): return t("err_port")
+        case (.missingKeyFile, _), (.empty, .sshKeyFileName): return t("err_ssh_key_file")
+        case (.invalidForwardPort, _), (.empty, .portForwards): return t("err_forward_port")
+        case (.duplicateLocalPort, _): return t("err_forward_duplicate")
         }
     }
 }
@@ -378,7 +460,12 @@ extension KeychainStore {
     /// items from the shared service it used before T4.3 (moved: those machines are Debug's), and a
     /// copy of the API key (left in place: it may be the Release app's). Without a keychain access
     /// group (ad-hoc, CI) nothing moves.
-    func migrateAtLaunch(machineIDs: [UUID]) {
+    ///
+    /// SSH machines (post-1.0, `sshMachineIDs`): their local `sshKey.<id>` / `sshPassphrase.<id>`
+    /// move to synced items (`SSHSecretMigration`), and a local `sshLocalPassphrase.<id>` left in the
+    /// file keychain moves to the data-protection keychain. No adoption from the pre-T4.3 shared
+    /// service: SSH secrets did not exist then.
+    func migrateAtLaunch(machineIDs: [UUID], sshMachineIDs: [UUID]) {
         guard usesDataProtectionKeychain else { return }
         if service != KeychainStore.defaultService {
             // Data-protection store of the old service: also finds (and deletes) its file-keychain copies.
@@ -388,5 +475,7 @@ extension KeychainStore {
         }
         _ = try? migrateLegacyItem(.anthropicAPIKey)
         _ = migrateLocalMachinePasswordsToSynced(machineIDs)
+        for id in sshMachineIDs { _ = try? migrateLegacyItem(.sshLocalKeyPassphrase(id)) }
+        _ = SSHSecretMigration.migrateLocalToSynced(machineIDs: sshMachineIDs, keychain: self)
     }
 }

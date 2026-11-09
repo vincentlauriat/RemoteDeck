@@ -116,7 +116,8 @@ git commit -m "docs: report the SSH library and terminal engine spike"
 @Test func commaSeparatedHostsAndIPs()        // "raspcorse,192.168.1.20 …" matches both names
 @Test func sameAlgorithmDifferentKeyIsMismatch()
 @Test func otherAlgorithmOnlyIsNotFound()     // Review Focus 1: file has ssh-rsa only, server shows ssh-ed25519 → .notFound
-@Test func markersAndCommentsIgnored()        // "@revoked", "@cert-authority", "#…" lines never match
+@Test func markersAndCommentsIgnored()        // "@cert-authority" and "#…" lines never match
+@Test func revokedExactKeyBlocksEvenWhenAnotherLineMatches()   // "@revoked" holding the presented key → .mismatch (blocked; ruling during Task 3: OpenSSH refuses revoked keys)
 ```
 
 - [ ] **Step 2: Run** `swift test --filter KnownHostsTests` — expected: FAIL.
@@ -139,7 +140,7 @@ git commit -m "docs: report the SSH library and terminal engine spike"
   - `public enum SSHCredentials: Sendable { case password(user: String, password: String); case key(user: String, key: SSHPrivateKey) }`
   - `public struct SSHKeepalive: Sendable { public var interval: Duration = .seconds(30); public var maxMissed = 4 }`
   - `public enum SSHError: Error, Equatable, Sendable { case unreachable, timedOut, connectionClosed, hostKeyRejected(SSHHostKey), authFailed, channelFailed(String), sftpUnavailable, portInUse(UInt16), remote(String) }`
-  - `public actor SSHConnection { public init(host: String, port: UInt16, keepalive: SSHKeepalive = .init()); public func open(credentials: SSHCredentials, timeout: Duration, validateHostKey: @Sendable (SSHHostKey) async -> Bool) async throws(SSHError); public func openShell(term: String, columns: Int, rows: Int) async throws(SSHError) -> SSHShell; public func close() async; public var closed: AsyncStream<SSHError?> { get } }`
+  - `public actor SSHConnection { public init(host: String, port: UInt16, keepalive: SSHKeepalive = .init()); public func open(credentials: SSHCredentials, timeout: Duration, validateHostKey: @escaping @Sendable (SSHHostKey) async -> Bool) async throws(SSHError); public func openShell(term: String, columns: Int, rows: Int) async throws(SSHError) -> SSHShell; public func close() async; public var closed: AsyncStream<SSHError?> { get } }`
   - `public final class SSHShell: Sendable { public let output: AsyncThrowingStream<Data, any Error>; public func write(_ data: Data) async throws(SSHError); public func resize(columns: Int, rows: Int) async }`
 
 - [ ] **Step 1: Write the failing tests**
@@ -162,6 +163,13 @@ git commit -m "docs: report the SSH library and terminal engine spike"
 - [ ] **Step 3: Implement** on the library; map every library error into `SSHError` at the boundary (no library type in the public API).
 - [ ] **Step 4: Run** — expected: PASS; then the whole SSHKit suite.
 - [ ] **Step 5: Commit** `feat(sshkit): connect, authenticate and open a pty shell`
+
+**As built (Task 4 report, `.superpowers/sdd/2026-11-08-ssh-terminal/task-4-report.md`):**
+- `SSHConnection` owns a swift-nio-ssh pipeline. It holds no Citadel `SSHClient`, for two reasons: `SSHClient.connect(on:)` must run on the event loop, and every Citadel connect path has a fixed 10 s login timer that would cut off the host-key prompt.
+- Keepalive uses the vendored swift-nio-ssh patch `sendKeepalive(promise:)`.
+- `TestSSHServer` is built on swift-nio-ssh's server side.
+- **Task 5** can open `direct-tcpip` channels on the `NIOSSHHandler` that the actor holds.
+- **Task 6:** Citadel's SFTP client and server are reachable only through `SSHClient` and `SSHServer`. Getting to them needs a new file in vendored Citadel, recorded in PATCHES.md, that wraps an authenticated channel into an `SSHClient` and installs the SFTP subsystem on a test server channel.
 
 ---
 
@@ -306,9 +314,9 @@ func testMergeCopiesImportedKeyToSurvivor()
 **Interfaces:**
 - Consumes: Tasks 4, 7, 8; `SessionClock`, `SessionResilience`, `ReachabilityClock`, `MachinePasswordStore`, `SessionTarget`, `SessionModel.WaitReason`, `SessionRecord` (existing).
 - Produces:
-  - `protocol SSHSessionConnection: AnyObject, Sendable { func open(credentials: SSHCredentials, timeout: Duration, validateHostKey: @Sendable (SSHHostKey) async -> Bool) async throws(SSHError); func openShell(term: String, columns: Int, rows: Int) async throws(SSHError) -> any SSHShellChannel; func startLocalForward(localPort: UInt16, remoteHost: String, remotePort: UInt16) async throws(SSHError) -> any LocalForwarding; func fileTransfer() async throws(SSHError) -> any FileTransferring; func close() async; var closed: AsyncStream<SSHError?> { get } }` with `SSHShellChannel`, `LocalForwarding`, `FileTransferring` mirroring `SSHShell`, `LocalForwardHandle`, `SSHFileTransfer`.
+  - `protocol SSHSessionConnection: AnyObject, Sendable { func open(credentials: SSHCredentials, timeout: Duration, validateHostKey: @escaping @Sendable (SSHHostKey) async -> Bool) async throws(SSHError); func openShell(term: String, columns: Int, rows: Int) async throws(SSHError) -> any SSHShellChannel; func startLocalForward(localPort: UInt16, remoteHost: String, remotePort: UInt16) async throws(SSHError) -> any LocalForwarding; func fileTransfer() async throws(SSHError) -> any FileTransferring; func close() async; var closed: AsyncStream<SSHError?> { get } }` with `SSHShellChannel`, `LocalForwarding`, `FileTransferring` mirroring `SSHShell`, `LocalForwardHandle`, `SSHFileTransfer`.
   - `@MainActor protocol TerminalSurface: AnyObject { var view: NSView { get }; var onInput: (Data) -> Void { get set }; var onResize: (_ columns: Int, _ rows: Int) -> Void { get set }; func feed(_ data: Data); func showSeparator(_ text: String); func apply(_ appearance: TerminalAppearance) }`, `struct TerminalAppearance: Equatable { var isDark: Bool; var fontSize: CGFloat; var optionAsMeta: Bool }`.
-  - `@MainActor @Observable final class TerminalSessionModel { enum Phase: Equatable { case idle, connecting, connected, failed(TerminalFailure), waiting(SessionModel.WaitReason), closed }; enum TerminalFailure: Equatable { case connect(SSHError), credentials(SSHCredentialFailure), hostKeyChanged(previousFingerprint: String, newFingerprint: String), connectionLost }; struct HostKeyPrompt: Equatable { let host: String; let port: Int; let key: SSHHostKey }; private(set) var phase: Phase; private(set) var hostKeyPrompt: HostKeyPrompt?; private(set) var needsPassphrase: Bool; func connect(); func trustHostKey(); func rejectHostKey(); func providePassphrase(_ passphrase: String, remember: Bool); func cancelPassphrase(); func attach(_ surface: any TerminalSurface); func beginClose() -> SessionRecord?; func completeClose(record: SessionRecord?) async; func networkLost(); func networkRestored(); func suspendForSleep(); func resumeAfterWake() }`
+  - `@MainActor @Observable final class TerminalSessionModel { enum Phase: Equatable { case idle, connecting, connected, failed(TerminalFailure), waiting(SessionModel.WaitReason), ended /* remote shell exited: no reconnect (9a) */, closed }; enum TerminalFailure: Equatable { case connect(SSHError), credentials(SSHCredentialFailure), sshFolderAccessNeeded /* 9a */, hostKeyChanged(previousFingerprint: String, newFingerprint: String), connectionLost }; /* 9a also: failure.action/outcome/message(t), passphraseRejected, overlay, separatorText, hasWindow, bringWindowForward, openOrder; SessionManager.watchedState(_:)/hasSession(_:)/openSessionCount; SSHCredentialResolver.resolveOffMain */ struct HostKeyPrompt: Equatable { let host: String; let port: Int; let key: SSHHostKey }; private(set) var phase: Phase; private(set) var hostKeyPrompt: HostKeyPrompt?; private(set) var needsPassphrase: Bool; func connect(); func trustHostKey(); func rejectHostKey(); func providePassphrase(_ passphrase: String, remember: Bool); func cancelPassphrase(); func attach(_ surface: any TerminalSurface); func beginClose() -> SessionRecord?; func completeClose(record: SessionRecord?) async; func networkLost(); func networkRestored(); func suspendForSleep(); func resumeAfterWake() }`
   - `SessionManager`: `private(set) var terminals: [UUID: TerminalSessionModel]`, `func terminal(for machineID: UUID) -> TerminalSessionModel?`; `requestWindow`, `isConnecting`, `close`, `watchedState`, `liveRecordIDs`, the network/sleep fan-out and `stop()` cover both dictionaries. `makeTerminal` is injected like `rfbConnection` (`nonisolated static func sshConnection(_ target: SessionTarget) -> any SSHSessionConnection`).
   - `TerminalOutputCoalescer`: collects shell output off the main actor and delivers at most one `feed` per display frame (≤ 16 ms) with everything received since.
 

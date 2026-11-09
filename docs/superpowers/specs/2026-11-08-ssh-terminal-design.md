@@ -199,7 +199,8 @@ UI in his browser through a tunnel.
 - Pinned dependency versions (`exactVersion`), like Sparkle; licences must allow a public repo and
   binary distribution.
 - An SSH library is needed (none in the app today). Requirements, not a choice: ed25519 and RSA user
-  keys (OpenSSH key format, encrypted or not), password and keyboard-interactive auth, ed25519 /
+  keys (OpenSSH key format, encrypted or not), password and keyboard-interactive auth (*deviation, 2026-11-08: keyboard-interactive is
+  not in v1, PRD › Open questions 15*), ed25519 /
   ECDSA / RSA-SHA2 host keys, session channel with pty, local port forwarding, SFTP. **Note:** Apple's
   `swift-nio-ssh` alone does not cover RSA; a layer on top of it (e.g. Citadel) or another library
   may be needed — the builder verifies.

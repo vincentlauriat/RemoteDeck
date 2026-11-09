@@ -4,6 +4,7 @@ import Foundation
 import SwiftData
 import Testing
 import RemoteDeckCore
+import SSHKit
 @testable import RemoteDeck
 
 /// Answers a fixed status and counts the calls; never a `CKContainer`.
@@ -354,5 +355,128 @@ struct LibraryMergerTests {
         #expect(afterInsert == 1)
         #expect(LibraryMerger(context: context, passwords: passwords).mergeDuplicates().count == 1)
         #expect(saves.count == afterInsert + 1)
+    }
+}
+
+/// The post-import sweep of this Mac's SSH state (Important 2 of the final review): a machine deleted
+/// or merged on another Mac arrives through CloudKit, so its local passphrase and trusted host keys
+/// must go on this Mac too. Fakes and an in-memory store only, never the real Keychain or defaults.
+@MainActor
+struct OrphanedSSHStateSweepTests {
+    let context: ModelContext
+    let secrets = FakeSSHSecrets()
+    let trust = InMemoryTrustedHostKeys(folder: FakeSSHFolderAccess())
+    let center = NotificationCenter()
+    private var hostKey: SSHHostKey { SSHTestKeys.hostKey(SSHTestKeys.ed25519Public) }
+
+    init() throws {
+        context = try makeTestContext()
+    }
+
+    private func merger(hasSession: @escaping @MainActor (UUID) -> Bool = { _ in false }) -> LibraryMerger {
+        LibraryMerger(context: context, passwords: FakePasswordStore(), sshSecrets: secrets,
+                      trustedHostKeys: trust, hasSession: hasSession)
+    }
+
+    /// One kept machine, plus the local state of a machine deleted on another Mac (not in the store).
+    private func seed() throws -> (kept: UUID, gone: UUID) {
+        let kept = Machine(name: "Pi", kind: .ssh, host: "pi.local", port: 22, username: "vincent",
+                           sshAuthMethod: .keyInSSHFolder, sshKeyFileName: "id_ed25519")
+        context.insert(kept)
+        try context.save()
+        let gone = UUID()
+        secrets.items[.sshLocalKeyPassphrase(kept.id)] = "kept"
+        secrets.items[.sshLocalKeyPassphrase(gone)] = "orphan"
+        secrets.items[.sshPrivateKey(kept.id)] = "synced key"
+        trust.trust(hostKey, host: "pi.local", port: 22)
+        trust.trust(hostKey, host: "gone.local", port: 2222)
+        return (kept.id, gone)
+    }
+
+    @Test func sweepDeletesOrphanedLocalPassphrasesAndUnusedTrust() throws {
+        let (kept, gone) = try seed()
+        merger().sweepOrphanedSSHState()
+        #expect(secrets.items[.sshLocalKeyPassphrase(kept)] == "kept")
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == nil)
+        #expect(secrets.items[.sshPrivateKey(kept)] == "synced key")
+        #expect(secrets.deleted == [.sshLocalKeyPassphrase(gone)])
+        #expect(trust.hasTrustedKeys(host: "pi.local", port: 22))
+        #expect(!trust.hasTrustedKeys(host: "gone.local", port: 2222))
+    }
+
+    /// A machine with an open session keeps its passphrase for now; a listing that fails deletes
+    /// nothing.
+    @Test func openSessionsAndListingFailuresKeepThePassphrase() throws {
+        let (_, gone) = try seed()
+        merger(hasSession: { $0 == gone }).sweepOrphanedSSHState()
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == "orphan")
+        secrets.listError = .interactionNotAllowed
+        merger().sweepOrphanedSSHState()
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == "orphan")
+    }
+
+    /// Never before a successful import (an empty or reset store would make every passphrase look
+    /// orphaned): not after setup alone, not on app activation, not after a failed import, and a new
+    /// setup starting clears the earlier import.
+    @Test func syncSweepsOnlyAfterASuccessfulImport() async throws {
+        let (_, gone) = try seed()
+        let sync = LibrarySync(isActive: true, isEntitled: true, statusProvider: nil, merger: merger(),
+                               center: center)
+        sync.start()
+        defer { sync.stop() }
+        sync.handle(SyncEvent(kind: .setup, endDate: .now, succeeded: true))
+        center.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == "orphan")
+        sync.handle(SyncEvent(kind: .import, endDate: .now, succeeded: false, errorDescription: "partial"))
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == "orphan")
+        #expect(trust.hasTrustedKeys(host: "gone.local", port: 2222))
+
+        sync.handle(SyncEvent(kind: .import, endDate: .now, succeeded: true))
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == nil)
+        secrets.items[.sshLocalKeyPassphrase(gone)] = "orphan again"
+
+        // A setup starts again (zone reset): the earlier import no longer counts.
+        let setup = UUID()
+        sync.handle(SyncEvent(id: setup, kind: .setup, endDate: nil, succeeded: false))
+        sync.handle(SyncEvent(id: setup, kind: .setup, endDate: .now, succeeded: true))
+        center.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == "orphan again")
+        sync.handle(SyncEvent(kind: .import, endDate: .now, succeeded: true))
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == nil)
+        #expect(!trust.hasTrustedKeys(host: "gone.local", port: 2222))
+    }
+
+    /// An iCloud account change may empty the mirrored store before the next import: the earlier
+    /// import no longer counts, so no merge pass sweeps (every passphrase and trust pin would look
+    /// orphaned) until a new import succeeds.
+    @Test func accountChangeStopsTheSweepUntilTheNextSuccessfulImport() async throws {
+        let (kept, gone) = try seed()
+        let sync = LibrarySync(isActive: true, isEntitled: true, statusProvider: nil, merger: merger(),
+                               center: center)
+        sync.start()
+        defer { sync.stop() }
+        sync.handle(SyncEvent(kind: .import, endDate: .now, succeeded: true))
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == nil)
+
+        // The account changes; the store is then emptied (CloudKit purge) before any new import.
+        center.post(name: .CKAccountChanged, object: nil)
+        secrets.items[.sshLocalKeyPassphrase(gone)] = "orphan again"
+        trust.trust(hostKey, host: "gone.local", port: 2222)
+        for machine in try context.fetch(FetchDescriptor<Machine>()) { context.delete(machine) }
+        try context.save()
+
+        center.post(name: NSApplication.didBecomeActiveNotification, object: nil)
+        sync.handle(SyncEvent(kind: .export, endDate: .now, succeeded: true))
+        sync.handle(SyncEvent(kind: .import, endDate: .now, succeeded: false, errorDescription: "partial"))
+        #expect(secrets.items[.sshLocalKeyPassphrase(kept)] == "kept")
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == "orphan again")
+        #expect(trust.hasTrustedKeys(host: "pi.local", port: 22))
+        #expect(trust.hasTrustedKeys(host: "gone.local", port: 2222))
+
+        // A successful import: the sweep runs again, against the store as it now is.
+        sync.handle(SyncEvent(kind: .import, endDate: .now, succeeded: true))
+        #expect(secrets.items[.sshLocalKeyPassphrase(gone)] == nil)
+        #expect(secrets.items[.sshLocalKeyPassphrase(kept)] == nil)
+        #expect(!trust.hasTrustedKeys(host: "gone.local", port: 2222))
     }
 }

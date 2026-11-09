@@ -7,7 +7,8 @@ import RemoteDeckCore
 // MARK: - Connect path
 
 /// The Library's Connect, shared by the Menu Bar Extra and the Session History View's Reconnect: a
-/// connectable machine gets its Session Window tab (a new one, or its open tab brought forward).
+/// connectable machine gets its Session Window tab (a new one, or its open tab brought forward): a
+/// terminal for an SSH machine, a screen session otherwise (`SessionManager.requestWindow`).
 @MainActor
 enum SessionLauncher {
     /// `true` when a new tab was requested through `openWindow`; `false` for a machine that is gone,
@@ -24,12 +25,19 @@ extension SessionManager {
     /// The records of the sessions open now (connecting or connected): those rows are "in progress".
     /// A record without an end that is not in here was left by a killed run.
     var liveRecordIDs: Set<UUID> {
-        Set(sessions.values.compactMap { session in
+        let screens = sessions.values.compactMap { session in
             switch session.phase {
             case .connecting, .connected: session.record?.id
             case .idle, .failed, .waiting, .closed: nil
             }
-        })
+        }
+        let shells = terminals.values.compactMap { terminal in
+            switch terminal.phase {
+            case .connecting, .connected: terminal.record?.id
+            case .idle, .failed, .waiting, .ended, .closed: nil
+            }
+        }
+        return Set(screens + shells)
     }
 }
 

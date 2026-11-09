@@ -6,7 +6,13 @@
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- SSH machines' local port forwards: listeners on 127.0.0.1 and ::1 only (TRD › Security). -->
+    <key>com.apple.security.network.server</key>
+    <true/>
     <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <!-- The per-Mac security-scoped bookmark of the ~/.ssh folder (SSH machines; read only). -->
+    <key>com.apple.security.files.bookmarks.app-scope</key>
     <true/>
     <key>com.apple.developer.icloud-container-identifiers</key>
     <array>

@@ -167,6 +167,10 @@ final class LibrarySync {
     @ObservationIgnored private var isSetUp = false
     /// An import ended while another event still ran: merge once they are all done.
     @ObservationIgnored private var mergePending = false
+    /// An import ended successfully since the last setup started: only then does the store hold
+    /// the whole library, so only then may the orphan sweep run (a store just reset, or still
+    /// empty before its first import, would make every local passphrase look orphaned).
+    @ObservationIgnored private var hasImported = false
     @ObservationIgnored private var statusGeneration = 0
 
     /// `statusProvider` nil: the status is never asked (hosted tests, demo modes, unentitled
@@ -217,7 +221,7 @@ final class LibrarySync {
     func start() {
         guard observers.isEmpty else { return }
         observers.append(center.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refreshAccountStatus() }
+            MainActor.assumeIsolated { self?.accountChanged() }
         })
         if isActive {
             observers.append(center.addObserver(forName: NSPersistentCloudKitContainer.eventChangedNotification,
@@ -241,6 +245,14 @@ final class LibrarySync {
         observers.removeAll()
     }
 
+    /// The iCloud account changed (signed out, or another account): CloudKit may purge the mirrored
+    /// store before the next import, so the earlier import no longer proves the store holds the
+    /// library; the orphan sweep waits for the next successful import.
+    func accountChanged() {
+        hasImported = false
+        refreshAccountStatus()
+    }
+
     func refreshAccountStatus() {
         guard let statusProvider else { return }
         statusGeneration += 1
@@ -257,6 +269,8 @@ final class LibrarySync {
     func handle(_ event: SyncEvent) {
         if event.endDate == nil {
             running.insert(event.id)
+            // A setup (first launch, zone reset, account change) may start from an empty store.
+            if event.kind == .setup { hasImported = false }
         } else {
             running.remove(event.id)
             if event.succeeded {
@@ -268,6 +282,7 @@ final class LibrarySync {
             // A finished import also proves the setup ran (its own event may predate `start`).
             if event.succeeded, event.kind != .export { isSetUp = true }
             if event.kind == .import { mergePending = true }
+            if event.kind == .import, event.succeeded { hasImported = true }
         }
         isSyncing = !running.isEmpty
         if mergePending { mergeIfIdle() }
@@ -275,10 +290,12 @@ final class LibrarySync {
 
     /// Merges (and refreshes the watch feed) only after setup and while no mirroring event runs:
     /// a half-imported batch could show one copy of a pair whose other half has not landed yet.
+    /// Then, once an import has completed, sweeps the SSH state of machines gone from the library.
     private func mergeIfIdle() {
         guard isSetUp, running.isEmpty else { return }
         mergePending = false
         merger?.mergeDuplicates()
+        if hasImported { merger?.sweepOrphanedSSHState() }
         onRemoteChange()
     }
 }
@@ -294,17 +311,49 @@ final class LibrarySync {
 /// saved (a failed save deletes nothing; an item orphaned by a later failure is harmless). A machine
 /// whose password cannot be read without a dialog, whose copy fails, or that has an open session on
 /// this Mac is left for a later merge.
+///
+/// SSH secrets (post-1.0) follow the same rules, the imported key and its remembered passphrase as
+/// one pair (`sshKey.<id>`, `sshPassphrase.<id>`): a survivor with its own key keeps its pair;
+/// otherwise the dropped copy's pair is copied and read back. The dropped machines' three SSH items
+/// are deleted after the save. `sshLocalPassphrase.<id>` (a key in this Mac's `~/.ssh`) is never
+/// copied: it is local by design, and the survivor asks again at its next Connect.
+///
+/// A deletion or merge made on another Mac arrives through CloudKit, so this Mac's local SSH state
+/// (`sshLocalPassphrase.<id>`, never synced, and the `trustedHostKeys` entries) is cleaned up by
+/// `sweepOrphanedSSHState`, run after the merge once an import has completed (never at launch).
+/// A merger exists only for the on-disk store that syncs: never in memory, a demo mode or XCTest.
 @MainActor
 final class LibraryMerger {
     private let context: ModelContext
     private let passwords: any MachinePasswordStore
+    private let sshSecrets: any SSHSecretStore
+    private let trustedHostKeys: (any TrustedHostKeys)?
     private let hasSession: @MainActor (UUID) -> Bool
 
     init(context: ModelContext, passwords: any MachinePasswordStore,
+         sshSecrets: any SSHSecretStore = InMemorySSHSecretStore(),
+         trustedHostKeys: (any TrustedHostKeys)? = nil,
          hasSession: @escaping @MainActor (UUID) -> Bool = { _ in false }) {
         self.context = context
         self.passwords = passwords
+        self.sshSecrets = sshSecrets
+        self.trustedHostKeys = trustedHostKeys
         self.hasSession = hasSession
+    }
+
+    /// Deletes the `sshLocalPassphrase.<id>` items of machines no longer in the store (a machine with
+    /// an open session on this Mac keeps its item for now), and forgets the trusted `host:port`
+    /// entries no machine uses. A store that cannot be read sweeps nothing: a failed fetch is never
+    /// an empty library.
+    func sweepOrphanedSSHState() {
+        guard let machines = try? context.fetch(FetchDescriptor<Machine>()) else { return }
+        let ids = Set(machines.map(\.id))
+        if let withPassphrase = try? sshSecrets.localPassphraseMachineIDs() {
+            for id in withPassphrase where !ids.contains(id) && !hasSession(id) {
+                try? sshSecrets.deleteSecret(.sshLocalKeyPassphrase(id))
+            }
+        }
+        trustedHostKeys?.forgetEntries(unusedBy: machines)
     }
 
     /// Returns the ids of the machines removed. Saves once, only when something changed.
@@ -332,9 +381,10 @@ final class LibraryMerger {
             guard let survivor = machinesByID[merge.survivor] else { continue }
             for id in merge.dropped {
                 guard let dropped = machinesByID[id], !hasSession(id),
-                      let deletesPassword = foldPassword(of: id, into: merge.survivor) else { continue }
+                      let deletesPassword = foldPassword(of: id, into: merge.survivor),
+                      foldSSHSecrets(of: id, into: merge.survivor) else { continue }
                 // Only from a copy that goes now: a kept duplicate keeps its own fields.
-                if id == merge.fieldsFrom { Self.copyFields(from: dropped, to: survivor) }
+                if id == merge.fieldsFrom { LibraryDeduplication.copyFields(from: dropped, to: survivor) }
                 survivor.lastConnectedAt = [survivor.lastConnectedAt, dropped.lastConnectedAt].compactMap { $0 }.max()
                 context.delete(dropped)
                 removed.append(id)
@@ -351,22 +401,35 @@ final class LibraryMerger {
             return []
         }
         for id in passwordsToDelete { try? passwords.deletePassword(for: id) }
+        for id in removed {
+            for account in [KeychainAccount.sshPrivateKey(id), .sshKeyPassphrase(id), .sshLocalKeyPassphrase(id)] {
+                try? sshSecrets.deleteSecret(account)
+            }
+        }
         return removed
     }
 
-    /// The user-visible fields of the most recently edited copy (its host and port share the key).
-    private static func copyFields(from source: Machine, to target: Machine) {
-        target.name = source.name
-        target.kind = source.kind
-        target.host = source.host
-        target.port = source.port
-        target.username = source.username
-        target.group = source.group
-        target.isFavorite = source.isFavorite
-        target.isWatched = source.isWatched
-        target.scalingMode = source.scalingMode
-        target.sharedClipboard = source.sharedClipboard
-        target.modifiedAt = source.modifiedAt
+    /// False: keep the dropped machine for now (a read needs a dialog, or the copy did not read back).
+    /// Reads never ask.
+    private func foldSSHSecrets(of dropped: UUID, into survivor: UUID) -> Bool {
+        do throws(KeychainError) {
+            guard try sshSecrets.secret(.sshPrivateKey(survivor), allowsInteraction: false) == nil,
+                  let key = try sshSecrets.secret(.sshPrivateKey(dropped), allowsInteraction: false)
+            else { return true }
+            let passphrase = try sshSecrets.secret(.sshKeyPassphrase(dropped), allowsInteraction: false)
+            try sshSecrets.setSecret(key, for: .sshPrivateKey(survivor))
+            if let passphrase {
+                try sshSecrets.setSecret(passphrase, for: .sshKeyPassphrase(survivor))
+            } else {
+                // A passphrase the survivor kept without a key cannot belong to the copied one.
+                try sshSecrets.deleteSecret(.sshKeyPassphrase(survivor))
+            }
+            let copiedKey = try sshSecrets.secret(.sshPrivateKey(survivor), allowsInteraction: false)
+            let copiedPassphrase = try sshSecrets.secret(.sshKeyPassphrase(survivor), allowsInteraction: false)
+            return copiedKey == key && copiedPassphrase == passphrase
+        } catch {
+            return false
+        }
     }
 
     /// nil: keep the dropped machine for now. Otherwise it may go, and `true` says it has a password

@@ -40,6 +40,10 @@ jobs:
         working-directory: Packages/ClaudeKit
         run: swift test
 
+      - name: SSHKit tests
+        working-directory: Packages/SSHKit
+        run: swift test
+
       - name: Generate Xcode project
         run: xcodegen generate
 

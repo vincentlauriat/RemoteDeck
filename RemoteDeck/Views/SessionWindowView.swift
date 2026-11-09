@@ -43,6 +43,8 @@ struct SessionWindowView: View {
     let machineID: UUID
 
     @State private var session: SessionModel?
+    /// An SSH machine's terminal session (`TerminalSessionView`).
+    @State private var terminal: TerminalSessionModel?
     @State private var missing = false
     /// Another window already shows this machine: this one closes and leaves the session alone.
     @State private var duplicate = false
@@ -54,6 +56,8 @@ struct SessionWindowView: View {
         Group {
             if let session {
                 content(session)
+            } else if let terminal {
+                TerminalSessionView(terminal: terminal, machineID: machineID)
             } else if missing {
                 ContentUnavailableView(settings.t("session_machine_missing"), systemImage: "questionmark.circle")
             } else {
@@ -64,7 +68,18 @@ struct SessionWindowView: View {
         .onAppear {
             // SwiftUI may run this again for the same window (its tab shown again): it already holds
             // its session, and must not take itself for a duplicate.
-            guard session == nil, !duplicate else { return }
+            guard session == nil, terminal == nil, !duplicate else { return }
+            if let found = manager.terminal(for: machineID) {
+                if found.hasWindow {
+                    duplicate = true
+                    found.bringWindowForward?()
+                    dismissWindow()
+                    return
+                }
+                found.hasWindow = true
+                terminal = found
+                return
+            }
             guard let found = manager.session(for: machineID) else {
                 missing = true
                 return
@@ -263,7 +278,8 @@ struct SessionWindowView: View {
         editorRequest = EditorRequest(model: MachineEditorModel(
             machine: machine, context: manager.context, passwords: manager.passwords,
             tester: manager.tester, defaultSharedClipboard: settings.defaultSharedClipboard,
-            publicConsents: manager.publicConsents))
+            publicConsents: manager.publicConsents, ssh: manager.ssh, sshTester: manager.sshTester,
+            keyPicker: AppPanels.keyFilePicker()))
     }
 
     // MARK: Toolbar

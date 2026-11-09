@@ -44,12 +44,17 @@ final class MachineLibraryModel {
     @ObservationIgnored let passwords: any MachinePasswordStore
     /// The "Connect anyway" confirmations (T5.3 H1), forgotten with the machine.
     @ObservationIgnored let publicConsents: any PublicAddressConsents
+    /// SSH machines (post-1.0): their Keychain secrets and this Mac's trusted host keys, removed with
+    /// the machine; the `~/.ssh` folder access.
+    @ObservationIgnored let ssh: SSHServices
 
     init(context: ModelContext, passwords: any MachinePasswordStore,
-         publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents()) {
+         publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents(),
+         ssh: SSHServices = .inMemory()) {
         self.context = context
         self.passwords = passwords
         self.publicConsents = publicConsents
+        self.ssh = ssh
     }
 
     // MARK: Search and sections
@@ -102,12 +107,19 @@ final class MachineLibraryModel {
     // MARK: Delete
 
     /// Deletes the machine, its Keychain password and its public-Internet confirmation (BackendSchema ›
-    /// Retention and deletion).
+    /// Retention and deletion), and its SSH secrets (`sshKey.<id>`, `sshPassphrase.<id>`,
+    /// `sshLocalPassphrase.<id>`) and this Mac's trusted host keys for its `host:port`, unless another
+    /// machine still has that normalized `host:port` (a synced duplicate not merged yet); the `~/.ssh`
+    /// grant stays.
     /// The machine goes first: if SwiftData fails, nothing changes (password kept). A Keychain
-    /// failure afterwards does not resurrect the machine; it is reported in `deleteWarning`,
-    /// never swallowed. Its SessionRecords are kept (soft link).
+    /// failure afterwards does not resurrect the machine; the first one is reported in
+    /// `deleteWarning`, never swallowed, and the other items are still deleted. Its SessionRecords
+    /// are kept (soft link).
     func delete(_ machine: Machine) {
+        // Read before the delete: a deleted model's properties are not to be trusted.
         let id = machine.id
+        let host = machine.host
+        let port = machine.port
         context.delete(machine)
         do {
             try context.save()
@@ -118,11 +130,22 @@ final class MachineLibraryModel {
         }
         if selection == id { selection = nil }
         publicConsents.forget(id)
+        ssh.trustedHostKeys.forget(host: host, port: port,
+                                   unlessUsedBy: (try? context.fetch(FetchDescriptor<Machine>())) ?? [])
+        var firstError: KeychainError?
         do {
             try passwords.deletePassword(for: id)
         } catch {
-            deleteWarning = error
+            firstError = error
         }
+        for account in [KeychainAccount.sshPrivateKey(id), .sshKeyPassphrase(id), .sshLocalKeyPassphrase(id)] {
+            do {
+                try ssh.secrets.deleteSecret(account)
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        if let firstError { deleteWarning = firstError }
     }
 
     /// Deletes a group; its machines become ungrouped (`.nullify`).

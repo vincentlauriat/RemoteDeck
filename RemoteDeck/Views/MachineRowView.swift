@@ -8,10 +8,14 @@ extension MachineKind {
         case .macARD: "desktopcomputer"
         case .vnc: "display"
         case .anthropicVM: "sparkles"
+        case .ssh: "terminal"
         }
     }
 
     var titleKey: String { "kind_\(rawValue)" }
+
+    /// The kinds the Machine Editor offers, in picker order.
+    static var editorKinds: [MachineKind] { allCases }
 }
 
 extension Machine {

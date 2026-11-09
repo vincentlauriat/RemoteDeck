@@ -52,7 +52,7 @@ public struct HistoryEntry: Sendable, Equatable, Identifiable {
 /// `connecting` while its session is open, else `interrupted` (the run was killed while connecting),
 /// never as a cancellation. Every other record shows its stored outcome.
 public enum HistoryOutcome: String, CaseIterable, Sendable {
-    case connected, authFailed, unreachable, cancelled, dropped, connecting, interrupted
+    case connected, authFailed, unreachable, cancelled, dropped, hostKeyRejected, connecting, interrupted
 
     public init(_ entry: HistoryEntry, liveRecordIDs: Set<UUID>) {
         if entry.endedAt == nil && entry.connectMillis == nil {
@@ -179,7 +179,8 @@ func byName(_ lhs: String, _ lhsID: UUID, _ rhs: String, _ rhsID: UUID) -> Bool 
 /// - **p50 / p90**: nearest-rank percentiles of the sessions' `connectMillis`;
 /// - **connected time**: the sum of `endedAt − startedAt` over sessions with an end (in progress and
 ///   unknown ones are counted, not added);
-/// - **failures**: attempts per outcome `authFailed`, `unreachable`, `dropped`; `cancelled` apart (the
+/// - **failures**: attempts per outcome `authFailed`, `unreachable`, `dropped`, `hostKeyRejected` (an
+///   SSH host key declined or changed); `cancelled` apart (the
 ///   user's choice, not a failure); `interrupted` (no end, no first frame, no open session) apart too.
 ///   Outcomes are the presented ones (`HistoryOutcome`), as in the table.
 public struct HistorySummary: Sendable, Equatable {
@@ -210,6 +211,7 @@ public struct HistorySummary: Sendable, Equatable {
     public let authFailed: Int
     public let unreachable: Int
     public let dropped: Int
+    public let hostKeyRejected: Int
     public let cancelled: Int
     /// Most sessions first, then by name.
     public let machines: [Machine]
@@ -249,6 +251,7 @@ public struct HistorySummary: Sendable, Equatable {
         authFailed = count(.authFailed)
         unreachable = count(.unreachable)
         dropped = count(.dropped)
+        hostKeyRejected = count(.hostKeyRejected)
         cancelled = count(.cancelled)
         machines = Dictionary(grouping: inWindow, by: \.machineID)
             .map { id, entries in

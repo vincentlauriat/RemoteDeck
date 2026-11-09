@@ -4,6 +4,7 @@ import SwiftData
 import ClaudeKit
 import RemoteDeckCore
 import RFBKit
+import SSHKit
 
 /// Debug-only `-LibraryDemo list|editor|session|discovery` launch argument: runs the Library Window on an
 /// in-memory store seeded with sample machines (for screenshots), with in-memory passwords, so neither
@@ -32,6 +33,10 @@ import RFBKit
 /// the 30-day window, one left without an end by a "killed run", two of machines deleted since, one
 /// with a comma and quotes in its name), and the Session History window open at launch; "Mac mini" is
 /// connected on the fake connection, so its newest row is in progress.
+///
+/// `ssh` (plan Task 13, `LibraryDemoSSH.swift`): one more machine, "Raspberry" (SSH, two forwards),
+/// connected at launch on `SSHDemoConnection`. Every demo mode's SSH connection is that fake, and its
+/// `~/.ssh`, trusted host keys, secrets and panels are in memory or fake (`sshServices`, `AppPanels`).
 enum LibraryDemo {
     struct Tester: ConnectionTester {
         func test(host: String, port: UInt16, credentials: RFBCredentials, timeout: Duration,
@@ -45,6 +50,19 @@ enum LibraryDemo {
             let address = RemoteAddress(text: host, scope: AddressScope(literal: host) ?? .privateNetwork)
             guard PublicAddressPolicy.admits(address, confirmed: allowsPublicInternet) else {
                 throw .publicAddressNotAdmitted(address: address.text)
+            }
+        }
+    }
+
+    /// The Machine Editor's SSH Test: "Reachable, auth OK" after half a second, never a host key
+    /// prompt nor the network.
+    struct SSHTester: RemoteDeck.SSHTester {
+        func test(host: String, port: UInt16, credentials: SSHCredentials, timeout: Duration,
+                  trusted: @escaping @Sendable (SSHHostKey) async -> Bool) async throws(SSHError) {
+            do {
+                try await Task.sleep(for: .milliseconds(500))
+            } catch {
+                throw .connectionClosed
             }
         }
     }
@@ -428,6 +446,11 @@ enum LibraryDemo {
         }
         if showsPublicAddress {
             machines.append(Machine(name: publicMachineName, kind: .macARD, host: "203.0.113.10", username: "vincent"))
+        }
+        if showsSSH {
+            let raspberry = sshMachine()
+            raspberry.group = servers
+            machines.append(raspberry)
         }
         machines.forEach(context.insert)
         try? context.save()

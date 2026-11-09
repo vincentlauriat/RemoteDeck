@@ -49,6 +49,21 @@ struct HistorySummaryTests {
         #expect(summary.interrupted == 1)
     }
 
+    /// A refused SSH host key (declined or changed) is a failure of its own, never a session.
+    @Test func hostKeyRejectionsAreCountedAsFailures() {
+        let entries = [
+            entry(ago: 100, connect: 900, lasts: 60),
+            entry(nas, "NAS", ago: 200, lasts: 1, outcome: .hostKeyRejected),
+            entry(nas, "NAS", ago: 300, lasts: 12, outcome: .hostKeyRejected),   // a slow prompt: slow failure
+            entry(ago: 400, lasts: 1, outcome: .authFailed),
+        ]
+        let summary = HistorySummary(entries, now: now)
+        #expect(summary.hostKeyRejected == 2)
+        #expect(summary.authFailed == 1)
+        #expect(summary.sessions == 1)
+        #expect(summary.slowFailures == 1)
+    }
+
     /// Floored to 0.1 %: 89.96 % never shows as 90 %.
     @Test func displayedShareIsFloored() {
         #expect(HistorySummary.displayShare(0.8996) == 0.899)
@@ -172,6 +187,15 @@ struct HistoryListTests {
         #expect(summary.unknownDuration == 1)
         // An open record with a first frame keeps its stored outcome (the duration is what is unknown).
         #expect(HistoryOutcome(entry(ago: 10, connect: 900), liveRecordIDs: []) == .connected)
+    }
+
+    /// SSH (V3): a refused host key shows and exports as itself, never as the `cancelled` fallback.
+    @Test func hostKeyRejectedIsPresentedAsItself() {
+        let rejected = entry(ago: 60, lasts: 2, outcome: .hostKeyRejected)
+        #expect(HistoryOutcome(rejected, liveRecordIDs: []) == .hostKeyRejected)
+        #expect(SessionHistory.rows([rejected], liveRecordIDs: [], outcome: .hostKeyRejected).count == 1)
+        #expect(HistoryCSV.make([rejected], liveRecordIDs: []).contains(",hostKeyRejected,"))
+        #expect(HistorySummary([rejected], now: now).cancelled == 0)
     }
 
     @Test func filtersBySearchMachineAndOutcome() {

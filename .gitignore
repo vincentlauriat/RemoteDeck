@@ -28,6 +28,9 @@ dmg-staging/
 # ── Swift Package Manager ──────────────────────────────
 .build/
 .swiftpm/
+# Local packages pin in their manifests (`exact:`); a resolve or an Xcode build rewrites these files
+# (Xcode put the whole app graph, Sparkle included, in Packages/SSHKit/Package.resolved).
+Packages/**/Package.resolved
 
 # ── Tooling / local state (not for publication) ────────
 .omc/
@@ -48,3 +51,6 @@ Packages/RFBKit/Tests/RFBKitTests/Captures/new/
 Packages/RFBKit/Tests/RFBKitTests/Captures/**/*-server.bin
 Packages/RFBKit/Tests/RFBKitTests/Captures/**/*-summary.json
 Packages/RFBKit/Tests/RFBKitTests/Captures/**/*.png
+
+# Throwaway spikes (scratch packages, deleted after their report)
+Spikes/

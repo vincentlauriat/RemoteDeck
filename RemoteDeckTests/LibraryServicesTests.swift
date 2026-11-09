@@ -55,15 +55,34 @@ struct ValidationMessageTests {
             (.empty, .host, "Enter a host name or IP address."),
             (.invalidHost, .host, english("err_host_invalid")),
             (.outOfRange, .port, "The port must be between 1 and 65535."),
-            (.empty, .username, "A user name is required for a Mac."),
+            (.empty, .username, "Enter a user name."),
             (.duplicate, .host, "Another machine already uses this host and port."),
             (.empty, .groupName, "Enter a group name."),
             (.tooLong(max: 40), .groupName, "Use at most 40 characters."),
             (.duplicate, .groupName, "A group with this name already exists."),
+            (.missingKeyFile, .sshKeyFileName, english("err_ssh_key_file")),
+            (.invalidForwardPort, .portForwards, english("err_forward_port")),
+            (.duplicateLocalPort, .portForwards, english("err_forward_duplicate")),
         ]
         for (reason, field, message) in cases {
             #expect(reason.message(for: field, english) == message)
+            #expect(!message.hasPrefix("err_"), "\(message) has no English string")
         }
+    }
+
+    /// SSH (Task 7): the kind's label and the refused-host-key outcome exist in both languages.
+    @Test func sshKindAndOutcomeHaveLabels() throws {
+        for language in ["fr", "en"] {
+            let table = try #require(Strings.table[language])
+            #expect(table[MachineKind.ssh.titleKey] != nil)
+            #expect(table[HistoryOutcome.hostKeyRejected.titleKey] != nil)
+        }
+        #expect(MachineKind.ssh.symbolName == "terminal")
+    }
+
+    /// Task 10: the editor edits SSH machines too.
+    @Test func editorOffersEveryKind() {
+        #expect(MachineKind.editorKinds == [.macARD, .vnc, .anthropicVM, .ssh])
     }
 }
 

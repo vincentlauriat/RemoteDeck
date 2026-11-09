@@ -4,7 +4,7 @@
 
 **A native macOS client for every remote screen you use.**
 
-Macs over Apple Remote Desktop / Screen Sharing, VNC desktops and Anthropic computer use environments, from one window, with saved credentials, tabs, and an optional Claude Assistant that acts on the remote screen one confirmed action at a time.
+Macs over Apple Remote Desktop / Screen Sharing, VNC desktops, Anthropic computer use environments and SSH terminals, from one window, with saved credentials, tabs, and an optional Claude Assistant that acts on the remote screen one confirmed action at a time.
 
 [![Platform](https://img.shields.io/badge/platform-macOS%2015%2B-blue.svg)](https://www.apple.com/macos)
 [![Release](https://img.shields.io/github/v/release/vincentlauriat/RemoteDeck?color=brightgreen)](https://github.com/vincentlauriat/RemoteDeck/releases/latest)
@@ -35,6 +35,7 @@ It is a native SwiftUI + AppKit app with its own RFB/VNC protocol library (Apple
 | 🖥️ **Screen Session** | View and control a remote Mac (ARD, Apple Diffie-Hellman auth) or a VNC desktop; Raw, CopyRect, ZRLE and Tight decoding, Metal rendering |
 | 📡 **Bonjour Discovery** | Find Macs with Screen Sharing or Remote Management on the LAN without typing an address |
 | 🤖 **Anthropic VM Connect** | Open a Claude computer use environment (VNC endpoint) like any other machine |
+| 💻 **SSH machines** *(next release)* | A terminal tab on a Linux server, Raspberry Pi or cloud VM: password or key (from `~/.ssh`, granted once, or imported into the Keychain), host keys checked against `known_hosts` and trusted once per Mac, a native terminal (libghostty-vt parsing, CoreText drawing), saved local port forwards started with the session, file upload (drop or `⌘U`) and download over SFTP, import from `~/.ssh/config` |
 | 🗃️ **Session Tabs** | Several sessions as tabs of one window, `⌘1`…`⌘9` |
 | ⌨️ **Keyboard capture** | Key combos go to the remote; `⌃⌥⌘R` releases them; ⌘Tab, ⌘Space and other system shortcuts too, with Accessibility access |
 | 📋 **Shared Clipboard** | Text both ways, Extended Clipboard (UTF-8) when the server supports it; off for a session over the Internet until you turn it on |
@@ -62,7 +63,7 @@ First launch:
 - **Notifications (optional).** Asked only when you click "Allow notifications", for watched machines going offline or coming back.
 - **iCloud.** Machine Library sync uses your iCloud account; turn it on in onboarding or in Settings › iCloud.
 
-RFB is not encrypted beyond the Apple authentication exchange: use RemoteDeck on your LAN or through a VPN. A connection that reaches a public Internet address stops first and asks.
+RFB is not encrypted beyond the Apple authentication exchange: use RemoteDeck on your LAN or through a VPN. A connection that reaches a public Internet address stops first and asks. SSH sessions are encrypted end to end; RemoteDeck asks once for read-only access to `~/.ssh` (to use your keys and `known_hosts`, never written) and never changes `known_hosts`.
 
 ## Quick start (build from source)
 
@@ -87,6 +88,7 @@ open "build/DerivedData/Build/Products/Debug/RemoteDeck Dev.app" --args -Library
 │  Library Window · Session Window (tabs) · Discovery Panel  │
 │  Claude Assistant Panel · Session History · Settings · Help│
 │  FramebufferView (CAMetalLayer) · SessionInputController   │
+│  Terminal tab (TerminalView, CoreText) · File Transfer     │
 └───────┬───────────────────┬───────────────────┬────────────┘
         │                   │                   │
 ┌───────▼────────┐  ┌───────▼─────────┐  ┌──────▼───────────┐
@@ -98,6 +100,13 @@ open "build/DerivedData/Build/Products/Debug/RemoteDeck Dev.app" --args -Library
 │ input, clip-   │  │ Session History │  │ ter use toolset  │
 │ board          │  │                 │  │                  │
 └────────────────┘  └─────────────────┘  └──────────────────┘
+┌────────────────────────────────┐  ┌────────────────────────┐
+│ SSHKit                         │  │ GhosttyVT              │
+│ connect, host keys, known_hosts│  │ libghostty-vt 1.0.0    │
+│ shell, port forwards, SFTP     │  │ (VT parsing, no UI)    │
+│ over vendored swift-nio-ssh +  │  │                        │
+│ Citadel (Packages/Vendor)      │  │                        │
+└────────────────────────────────┘  └────────────────────────┘
 ```
 
 | Layer | Choice | Reason |
@@ -108,6 +117,8 @@ open "build/DerivedData/Build/Products/Debug/RemoteDeck Dev.app" --args -Library
 | Data | SwiftData, Machine Library mirrored to CloudKit (private database) | iCloud Sync without a server |
 | Secrets | Keychain only (machine passwords synchronizable, API key local) | Never in SwiftData, logs or CloudKit |
 | Claude | `ClaudeKit`, raw HTTP to the Messages API | No Anthropic Swift SDK exists |
+| SSH | `SSHKit` over swift-nio-ssh 0.3.5 and Citadel 0.12.0, vendored with their patches listed in `Packages/Vendor/PATCHES.md` | Host-key prompt without a login timer, SFTP, re-key fixes; no C dependency |
+| Terminal | libghostty-vt 1.0.0 (`GhosttyVT`), drawn with CoreText, JetBrains Mono bundled | A proven VT parser (Ghostty's), native rendering |
 | Updates | [Sparkle](https://sparkle-project.org) 2.10.0 | EdDSA-signed updates from GitHub Releases |
 | Project file | [XcodeGen](https://github.com/yonaskolb/XcodeGen) | YAML source of truth, no `.pbxproj` merge pain |
 
@@ -123,6 +134,7 @@ RemoteDeck/
 │   ├── RemoteDeckApp.swift     # @main: scenes, menus, dependency wiring
 │   ├── Library/ Views/         # Library Window, Machine Editor, Settings, Help windows…
 │   ├── Session/                # Session Window, tabs, framebuffer, input, clipboard
+│   ├── SSH/                    # terminal sessions, ~/.ssh access, host keys, forwards, file transfer
 │   ├── Discovery/ Reachability/ History/ Sync/ Onboarding/ Assistant/ Updates/
 │   ├── Help/                   # Help & What's New: GitHub fetch, Markdown block splitter
 │   ├── Localization/           # fr + en strings
@@ -130,7 +142,10 @@ RemoteDeck/
 ├── Packages/
 │   ├── RFBKit/                 # RFB/VNC protocol, no UI (+ the rfb-probe tool)
 │   ├── RemoteDeckCore/         # SwiftData models, Keychain store, validation
-│   └── ClaudeKit/              # Claude Assistant protocol side
+│   ├── ClaudeKit/              # Claude Assistant protocol side
+│   ├── SSHKit/                 # SSH: connect, host keys, shell, forwards, SFTP, no UI
+│   ├── GhosttyVT/              # libghostty-vt wrapper (terminal engine), no UI
+│   └── Vendor/                 # swift-nio-ssh and Citadel with local patches (PATCHES.md)
 ├── RemoteDeckTests/            # hosted app tests (fakes only: no network, Keychain or pasteboard)
 ├── Scripts/
 │   ├── release.sh              # archive → Developer ID export → DMG → notarize → staple → appcast
@@ -147,15 +162,17 @@ RemoteDeck/
 ```bash
 xcodegen generate                                   # after editing project.yml or adding files
 xcodebuild -project RemoteDeck.xcodeproj -scheme RemoteDeck -derivedDataPath build/DerivedData -allowProvisioningUpdates build
-xcodebuild -project RemoteDeck.xcodeproj -scheme RemoteDeck -derivedDataPath build/DerivedData-unsigned CODE_SIGNING_ALLOWED=NO test   # all four suites
+xcodebuild -project RemoteDeck.xcodeproj -scheme RemoteDeck -derivedDataPath build/DerivedData-unsigned CODE_SIGNING_ALLOWED=NO test   # hosted app tests
 cd Packages/RFBKit && swift test                    # protocol (fastest loop)
 cd Packages/RemoteDeckCore && swift test            # models, Keychain, validation
 cd Packages/ClaudeKit && swift test                 # Claude Assistant (fake HTTP only)
+cd Packages/SSHKit && swift test                    # SSH against an in-process server (loopback only)
+cd Packages/GhosttyVT && swift test                 # terminal engine, headless
 ./Scripts/make-icon.swift all                       # redraw the AppIcon set
 ./Scripts/release.sh --dry-run 0.1.0                # every release step up to notarization
 ```
 
-The Debug app also has demo modes for screenshots and manual checks, `-LibraryDemo list | session | history | help | whats-new | …` (see [CLAUDE.md](CLAUDE.md)). CI on GitHub Actions is manual only (`workflow_dispatch`): pull requests merge on the four suites passing locally.
+The Debug app also has demo modes for screenshots and manual checks, `-LibraryDemo list | session | ssh | history | help | whats-new | …` (see [CLAUDE.md](CLAUDE.md)). CI on GitHub Actions is manual only (`workflow_dispatch`): pull requests merge on the six suites passing locally.
 
 Releases (maintainer): bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in `project.yml`, write `release/release-notes-<version>.md`, then `CLOUDKIT_SCHEMA_DEPLOYED=1 ./Scripts/release.sh <version>`; it prints the `gh release create` command and the pages to update.
 
@@ -168,11 +185,12 @@ Releases (maintainer): bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in
 - [x] **Step 4 — secondary features (P1)** — clipboard, tabs, iCloud Sync, Claude Assistant, notifications, history (live two-Mac sync check pending)
 - [ ] **Step 5 — quality** — resilience, security review and parser fuzzing done; accessibility pass (T5.2) and 4K performance (T5.4) pending
 - [ ] **Step 6 — go-live** — v1.0.0 released (signed, notarized DMG, Sparkle updates), CloudKit Production schema deployed, landing page live; clean-Mac test run pending
-- [ ] **File Transfer** (P2)
+- [ ] **Step 7 — SSH machines** — terminal tabs, port forwards and SFTP file transfer built and tested on fakes and a loopback server; live checks on real machines pending
+- [ ] **Screen-session File Transfer** (P2)
 
 ## Contributing
 
-This is a personal project, but issues and pull requests are welcome. Read [CLAUDE.md](CLAUDE.md) and the spec documents first: feature, screen and entity names are shared verbatim across them. Every change keeps the four test suites green and never lets a test reach a real host, the Keychain, the pasteboard or the Anthropic API.
+This is a personal project, but issues and pull requests are welcome. Read [CLAUDE.md](CLAUDE.md) and the spec documents first: feature, screen and entity names are shared verbatim across them. Every change keeps the six test suites green and never lets a test reach a real host, the Keychain, the pasteboard or the Anthropic API.
 
 ## License
 

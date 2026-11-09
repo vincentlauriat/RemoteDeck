@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Environment(LibrarySync.self) private var sync
     let apiKeyChecker: any APIKeyChecking
     @State private var editor: APIKeyEditorModel?
+    @State private var showsNotices = false
 
     var body: some View {
         @Bindable var settings = settings
@@ -60,19 +61,69 @@ struct SettingsView: View {
                 NotificationPermissionNotice(showsAuthorized: true)
             }
 
+            // Terminal (SSH machines, AppFlow › Settings Window › Terminal options): applies to open
+            // terminals at once.
+            Section(settings.t("settings_terminal")) {
+                Toggle(settings.t("settings_option_as_meta"), isOn: $settings.terminalOptionAsMeta)
+                Text(settings.t("settings_option_as_meta_help"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Stepper(value: $settings.terminalFontSize, in: AppSettings.terminalFontSizeRange, step: 1) {
+                    Text(settings.t("settings_terminal_font_size", Int(settings.terminalFontSize)))
+                }
+                Text(settings.t("settings_terminal_font_size_help"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
             Section(settings.t("settings_about")) {
                 Text(settings.t("settings_about_text"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                Button(settings.t("settings_notices")) { showsNotices = true }
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showsNotices) { ThirdPartyNoticesView() }
         .onAppear {
             if editor == nil { editor = APIKeyEditorModel(settings: settings, checker: apiKeyChecker) }
         }
         #if os(macOS)
         .frame(width: 460, height: 600)
         #endif
+    }
+}
+
+/// The licences of the bundled third-party software (`ThirdPartyNotices.txt`: libghostty-vt and the
+/// libraries it links, JetBrains Mono, the SSH stack, Sparkle).
+private struct ThirdPartyNoticesView: View {
+    @Environment(AppSettings.self) private var settings
+    @Environment(\.dismiss) private var dismiss
+
+    private static let text: String = {
+        guard let url = Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        return text
+    }()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(settings.t("notices_title")).font(.headline)
+            ScrollView {
+                Text(verbatim: Self.text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(.background.secondary)
+            HStack {
+                Spacer()
+                Button(settings.t("ok")) { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 620, height: 520)
     }
 }
 

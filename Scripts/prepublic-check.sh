@@ -2,8 +2,8 @@
 # Checks to run before the repository is made public (T6.3 prerequisite): it changes nothing, and
 # never changes the repository's visibility. Every check runs and the summary is always printed.
 #   1. gitleaks over the whole history (every ref) and over the files git would publish. Known false
-#      positives: generated test vectors (.gitleaksignore) and the public Sparkle key
-#      (`# gitleaks:allow` in project.yml).
+#      positives: generated test vectors (.gitleaksignore), SSH test keys and key-format constants
+#      (path allowlist in .gitleaks.toml) and the public Sparkle key (`# gitleaks:allow` in project.yml).
 #   2. The 10 largest blobs ever committed.
 #   3. No real RFB capture, key, certificate, profile, archive or private tracking doc ever committed.
 #   4. Personal or local details anywhere in history (private IPv4 ranges, minim6, @lauriat, /Users/,
@@ -25,7 +25,7 @@ trap 'rm -rf "$TREE"' EXIT
 
 echo "▶︎ 1. gitleaks"
 if command -v gitleaks >/dev/null; then
-  if gitleaks git . --log-opts="--all" --redact --no-banner; then
+  if gitleaks git . --log-opts="--all" --config "$ROOT/.gitleaks.toml" --redact --no-banner; then
     record ok "gitleaks history (all refs): no leaks"
   else
     record fail "gitleaks history (all refs): leaks found (see above)"
@@ -46,7 +46,7 @@ for path in sys.stdin.buffer.read().split(b"\0"):
     shutil.copy2(path, os.path.join(dest, path))
     copied += 1
 print("  copied %d files, skipped %d missing" % (copied, missing))' "$TREE"; then
-    if (cd "$TREE" && gitleaks dir . --redact --no-banner --gitleaks-ignore-path "$ROOT/.gitleaksignore"); then
+    if (cd "$TREE" && gitleaks dir . --config "$ROOT/.gitleaks.toml" --redact --no-banner --gitleaks-ignore-path "$ROOT/.gitleaksignore"); then
       record ok "gitleaks working tree: no leaks"
     else
       record fail "gitleaks working tree: leaks found (see above)"
