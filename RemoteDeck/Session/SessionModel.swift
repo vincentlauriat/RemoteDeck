@@ -98,7 +98,7 @@ struct SessionTarget: Equatable, Sendable {
     }
 
     /// ⌘ and ⌥ per machine kind (TRD › Input): Mac ARD → Alt/Meta, VNC and Anthropic VM → X11 Super/Alt.
-    /// `.ssh` takes X11 but never gets here once routed to TerminalSessionModel in Task 9.
+    /// `.ssh` takes X11 but never gets here: SSH machines get a `TerminalSessionModel`.
     var modifierProfile: ModifierProfile {
         kind == .macARD ? .appleRemoteDesktop : .x11
     }
@@ -111,8 +111,8 @@ extension RFBCredentials {
     /// as a VNC DES response, and the session never falls back to no authentication.
     ///
     /// `.ssh` gets no credentials at all: its password is an SSH secret and must never reach an RFB
-    /// handshake. SSH machines are routed to TerminalSessionModel in Task 9; until then one that reaches
-    /// RFB fails on the server's banner with nothing sent.
+    /// handshake. SSH machines are routed to `TerminalSessionModel` (`SessionManager.requestWindow`);
+    /// this stays as a second line of defence: one that reached RFB would fail with nothing sent.
     init(kind: MachineKind, username: String?, password: String?) {
         let user = username?.trimmingCharacters(in: .whitespacesAndNewlines)
         let effectiveUser = kind == .anthropicVM || kind == .ssh || user?.isEmpty != false ? nil : user
@@ -917,7 +917,7 @@ final class SessionModel {
 extension SessionModel: AssistantSessionPort {
     var assistantCanAct: Bool { phase == .connected && sender != nil }
 
-    /// `.ssh` has no desktop (routed to TerminalSessionModel in Task 9): X11 is the inert default.
+    /// `.ssh` has no desktop (SSH machines get a `TerminalSessionModel`): X11 is the inert default.
     var assistantDesktop: RemoteDesktopKind { target.kind == .macARD ? .mac : .x11 }
 
     var assistantProfile: ModifierProfile { target.modifierProfile }

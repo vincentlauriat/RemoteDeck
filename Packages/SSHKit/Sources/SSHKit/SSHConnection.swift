@@ -63,7 +63,7 @@ public actor SSHConnection {
     /// - the error `open` threw, when it failed: that error is both thrown and yielded here.
     ///
     /// Single consumer: it is one `AsyncStream`, so read it from one place only.
-    public var closed: AsyncStream<SSHError?> { closedStream }
+    public nonisolated var closed: AsyncStream<SSHError?> { closedStream }
 
     /// Connects and authenticates.
     ///

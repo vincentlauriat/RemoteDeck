@@ -80,7 +80,7 @@ struct ValidationMessageTests {
         #expect(MachineKind.ssh.symbolName == "terminal")
     }
 
-    /// Until SSH sessions exist (Task 9) and the editor edits them (Task 10), the editor never offers SSH.
+    /// Until the editor edits SSH machines (Task 10), it never offers SSH.
     @Test func editorDoesNotOfferSSHYet() {
         #expect(MachineKind.editorKinds == [.macARD, .vnc, .anthropicVM])
     }

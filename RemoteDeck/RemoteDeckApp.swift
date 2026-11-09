@@ -83,6 +83,7 @@ struct RemoteDeckApp: App {
                                                            publicConsents: publicConsents, ssh: ssh))
         var tester: any ConnectionTester = RFBConnectionTester()
         var makeConnection: @MainActor (SessionTarget) -> any SessionConnection = SessionManager.rfbConnection
+        var makeSSHConnection: @MainActor (SessionTarget) -> any SSHSessionConnection = SessionManager.sshConnection
         // The hosted tests never touch the real pasteboard.
         var pasteboard: any ClipboardPasteboard = LibraryStore.isRunningTests() ? InMemoryPasteboard() : SystemPasteboard()
         // Built when the Discovery Panel opens: nothing browses the network before that.
@@ -98,6 +99,7 @@ struct RemoteDeckApp: App {
             notificationAuthorizer = LibraryDemo.NotificationAuthorizer()   // never the system prompt
             tester = LibraryDemo.Tester()
             makeConnection = LibraryDemo.connection   // never the network: the sample hosts are not real
+            makeSSHConnection = LibraryDemo.sshConnection
             pasteboard = InMemoryPasteboard()         // nor the user's clipboard
             makeDiscovery = LibraryDemo.discovery
             LibraryDemo.suppressAccessibilityPrompt()
@@ -139,7 +141,8 @@ struct RemoteDeckApp: App {
                                       pasteboard: pasteboard,
                                       makeAssistant: { [claudeClient] session in
             AssistantModel(port: session, client: claudeClient, apiKey: { settings.anthropicAPIKey })
-        }, path: sessionPath, workspaceCenter: powerCenter, publicConsents: publicConsents)
+        }, path: sessionPath, workspaceCenter: powerCenter, publicConsents: publicConsents,
+                                      ssh: ssh, makeSSHConnection: makeSSHConnection)
         _sessions = State(initialValue: sessions)
 
         // Status Notifications (T4.5). The hosted tests never probe, post or read the notification
@@ -167,7 +170,7 @@ struct RemoteDeckApp: App {
         let reachability = ReachabilityMonitor(
             probe: probe, path: path, poster: poster, configuration: configuration,
             notificationsEnabled: { settings.notificationsEnabled },
-            sessionState: { [sessions] id in sessions.sessions[id]?.phase.watchedState ?? .noSession })
+            sessionState: { [sessions] id in sessions.watchedState(id) })
         _reachability = State(initialValue: reachability)
         let watchFeed = WatchTargetFeed(context: container.mainContext, monitor: reachability)
         self.watchFeed = watchFeed
@@ -187,7 +190,7 @@ struct RemoteDeckApp: App {
         #endif
         let merger = opened.syncsWithICloud
             ? LibraryMerger(context: container.mainContext, passwords: passwords, sshSecrets: ssh.secrets,
-                            hasSession: { [sessions] id in sessions.sessions[id] != nil })
+                            hasSession: { [sessions] id in sessions.hasSession(id) })
             : nil
         let sync = LibrarySync(isActive: syncActive, isEntitled: syncEntitled,
                                openError: opened.syncError.map { String(describing: $0) },

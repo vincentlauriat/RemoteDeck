@@ -206,7 +206,7 @@ struct ARDAuthenticationTests {
         #expect(RFBCredentials(kind: .anthropicVM, username: "vincent", password: nil).requiredSecurityType == nil)
     }
 
-    /// An SSH machine's secrets never reach an RFB handshake (routed to TerminalSessionModel in Task 9).
+    /// An SSH machine's secrets never reach an RFB handshake (they get a TerminalSessionModel; this is the second line of defence).
     @Test func anSSHMachineGetsNoRFBCredentials() {
         let credentials = RFBCredentials(kind: .ssh, username: "azureuser", password: "pw")
         #expect(credentials.username == nil && credentials.password == nil)

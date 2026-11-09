@@ -223,7 +223,7 @@ struct SessionTabCommands: Commands {
                 ForEach(1...9, id: \.self) { number in
                     Button(settings.t("menu_session_tab", number)) { SessionTabs.selectTab(at: number - 1) }
                         .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
-                        .disabled(sessions.sessions.count < number)
+                        .disabled(sessions.openSessionCount < number)
                 }
             }
         }

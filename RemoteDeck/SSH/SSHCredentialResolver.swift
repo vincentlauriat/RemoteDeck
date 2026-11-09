@@ -35,9 +35,10 @@ enum SSHCredentialFailure: Equatable, Sendable {
 /// `~/.ssh` folder. Never logs key material or passphrases, and keeps neither: the parsed key goes
 /// out in the result only.
 ///
-/// Cost: parsing an encrypted key runs bcrypt_pbkdf (OpenSSH's default 16 rounds), on the main
-/// actor, once per connect attempt (twice when a remembered passphrase is wrong and another is
-/// given). An unencrypted key, or an encrypted one without any passphrase, never reaches bcrypt.
+/// Cost: parsing an encrypted key runs bcrypt_pbkdf (OpenSSH's default 16 rounds), once per connect
+/// attempt (twice when a remembered passphrase is wrong and another is given): sessions use
+/// `resolveOffMain`, which runs it off the main actor. An unencrypted key, or an encrypted one
+/// without any passphrase, never reaches bcrypt.
 @MainActor
 struct SSHCredentialResolver {
     let passwords: any MachinePasswordStore
@@ -48,34 +49,72 @@ struct SSHCredentialResolver {
     /// remembered one, if any, is tried). `allowsInteraction` false for automatic attempts: no
     /// Keychain dialog, and a wrong passphrase fails instead of asking.
     func resolve(machine: SessionTarget, passphrase: String?, allowsInteraction: Bool) -> CredentialResolution {
+        switch prepare(machine: machine, passphrase: passphrase, allowsInteraction: allowsInteraction) {
+        case .done(let resolution): resolution
+        case .decrypt(let step): step.run()
+        }
+    }
+
+    /// `resolve`, with the one expensive step (bcrypt_pbkdf of an encrypted key, ~165 ms in Debug)
+    /// run off the main actor. The Keychain and `~/.ssh` reads, and the cheap check that a key is
+    /// encrypted, stay on the main actor: an unencrypted key still never touches the Keychain.
+    func resolveOffMain(machine: SessionTarget, passphrase: String?, allowsInteraction: Bool) async
+        -> CredentialResolution {
+        switch prepare(machine: machine, passphrase: passphrase, allowsInteraction: allowsInteraction) {
+        case .done(let resolution): resolution
+        case .decrypt(let step): await Task.detached(priority: .userInitiated) { step.run() }.value
+        }
+    }
+
+    /// An encrypted key and the passphrase to open it with: the bcrypt step, pure and Sendable.
+    struct DecryptStep: Sendable {
+        let text: String
+        let user: String
+        let passphrase: String
+        let allowsInteraction: Bool
+
+        nonisolated func run() -> CredentialResolution {
+            switch SSHCredentialResolver.parse(text, passphrase: passphrase) {
+            case .success(let key): .ready(.key(user: user, key: key))
+            case .failure(let error): SSHCredentialResolver.failure(error, allowsInteraction: allowsInteraction)
+            }
+        }
+    }
+
+    private enum Preparation {
+        case done(CredentialResolution)
+        case decrypt(DecryptStep)
+    }
+
+    private func prepare(machine: SessionTarget, passphrase: String?, allowsInteraction: Bool) -> Preparation {
         let user = machine.username?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         switch machine.sshAuth {
         case .password:
             guard let password = try? passwords.storedPassword(for: machine.machineID,
                                                                allowsInteraction: allowsInteraction)?.password,
                   !password.isEmpty
-            else { return .failed(.passwordMissing) }
-            return .ready(.password(user: user, password: password))
+            else { return .done(.failed(.passwordMissing)) }
+            return .done(.ready(.password(user: user, password: password)))
 
         case .keyInSSHFolder:
-            guard folder.isGranted else { return .needsFolderAccess }
+            guard folder.isGranted else { return .done(.needsFolderAccess) }
             let name = machine.sshKeyFileName ?? ""
             let text: String
             do {
                 text = try folder.readFile(name)
             } catch SSHFolderError.notGranted {
-                return .needsFolderAccess
+                return .done(.needsFolderAccess)
             } catch SSHFolderError.fileMissing, SSHFolderError.invalidPath {
-                return .failed(.keyFileMissing(name))
+                return .done(.failed(.keyFileMissing(name)))
             } catch {
-                return .failed(.keyUnreadable)
+                return .done(.failed(.keyUnreadable))
             }
             return key(text, user: user, passphrase: passphrase,
                        remembered: .sshLocalKeyPassphrase(machine.machineID), allowsInteraction: allowsInteraction)
 
         case .importedKey:
             guard let text = try? secrets.secret(.sshPrivateKey(machine.machineID), allowsInteraction: allowsInteraction)
-            else { return .failed(.keyUnreadable) }
+            else { return .done(.failed(.keyUnreadable)) }
             return key(text, user: user, passphrase: passphrase,
                        remembered: .sshKeyPassphrase(machine.machineID), allowsInteraction: allowsInteraction)
         }
@@ -84,31 +123,28 @@ struct SSHCredentialResolver {
     /// The key without passphrase first (cheap: an encrypted key refuses before bcrypt), then with the
     /// given passphrase, else the remembered one (`remembered`, read only when needed).
     private func key(_ text: String, user: String, passphrase given: String?, remembered: KeychainAccount,
-                     allowsInteraction: Bool) -> CredentialResolution {
+                     allowsInteraction: Bool) -> Preparation {
         var passphrase = given?.isEmpty == false ? given : nil
         if passphrase == nil {
-            switch parse(text, passphrase: nil) {
-            case .success(let key): return .ready(.key(user: user, key: key))
+            switch Self.parse(text, passphrase: nil) {
+            case .success(let key): return .done(.ready(.key(user: user, key: key)))
             case .failure(.passphraseRequired): break
-            case .failure(let error): return failure(error, allowsInteraction: allowsInteraction)
+            case .failure(let error): return .done(Self.failure(error, allowsInteraction: allowsInteraction))
             }
             // A read that fails (no item, needs a dialog) is no remembered passphrase.
             passphrase = try? secrets.secret(remembered, allowsInteraction: allowsInteraction)
-            guard passphrase?.isEmpty == false else {
-                return allowsInteraction ? .needsPassphrase : .failed(.passphraseUnavailable)
-            }
         }
-        switch parse(text, passphrase: passphrase) {
-        case .success(let key): return .ready(.key(user: user, key: key))
-        case .failure(let error): return failure(error, allowsInteraction: allowsInteraction)
+        guard let passphrase, !passphrase.isEmpty else {
+            return .done(allowsInteraction ? .needsPassphrase : .failed(.passphraseUnavailable))
         }
+        return .decrypt(DecryptStep(text: text, user: user, passphrase: passphrase, allowsInteraction: allowsInteraction))
     }
 
-    private func parse(_ text: String, passphrase: String?) -> Result<SSHPrivateKey, SSHKeyError> {
+    private nonisolated static func parse(_ text: String, passphrase: String?) -> Result<SSHPrivateKey, SSHKeyError> {
         Result { () throws(SSHKeyError) in try SSHPrivateKey.parse(openSSH: text, passphrase: passphrase) }
     }
 
-    private func failure(_ error: SSHKeyError, allowsInteraction: Bool) -> CredentialResolution {
+    private nonisolated static func failure(_ error: SSHKeyError, allowsInteraction: Bool) -> CredentialResolution {
         switch error {
         case .passphraseRequired: allowsInteraction ? .needsPassphrase : .failed(.passphraseUnavailable)
         case .wrongPassphrase: allowsInteraction ? .needsPassphrase : .failed(.keyUnreadable)

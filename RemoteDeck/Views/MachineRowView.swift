@@ -14,9 +14,8 @@ extension MachineKind {
 
     var titleKey: String { "kind_\(rawValue)" }
 
-    /// The kinds the Machine Editor offers. `.ssh` is left out until its sessions exist: SSH machines
-    /// are routed to TerminalSessionModel in Task 9 and edited from Task 10; until then one would
-    /// reach the RFB paths.
+    /// The kinds the Machine Editor offers. `.ssh` is left out until the editor edits SSH machines
+    /// (plan Task 10); their sessions already go to `TerminalSessionModel`.
     static var editorKinds: [MachineKind] { allCases.filter { $0 != .ssh } }
 }
 

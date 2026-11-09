@@ -43,6 +43,8 @@ struct SessionWindowView: View {
     let machineID: UUID
 
     @State private var session: SessionModel?
+    /// An SSH machine's terminal session (the terminal view comes with plan Task 9b).
+    @State private var terminal: TerminalSessionModel?
     @State private var missing = false
     /// Another window already shows this machine: this one closes and leaves the session alone.
     @State private var duplicate = false
@@ -54,6 +56,8 @@ struct SessionWindowView: View {
         Group {
             if let session {
                 content(session)
+            } else if let terminal {
+                TerminalPlaceholderView(terminal: terminal, machineID: machineID)
             } else if missing {
                 ContentUnavailableView(settings.t("session_machine_missing"), systemImage: "questionmark.circle")
             } else {
@@ -64,7 +68,18 @@ struct SessionWindowView: View {
         .onAppear {
             // SwiftUI may run this again for the same window (its tab shown again): it already holds
             // its session, and must not take itself for a duplicate.
-            guard session == nil, !duplicate else { return }
+            guard session == nil, terminal == nil, !duplicate else { return }
+            if let found = manager.terminal(for: machineID) {
+                if found.hasWindow {
+                    duplicate = true
+                    found.bringWindowForward?()
+                    dismissWindow()
+                    return
+                }
+                found.hasWindow = true
+                terminal = found
+                return
+            }
             guard let found = manager.session(for: machineID) else {
                 missing = true
                 return
@@ -320,5 +335,52 @@ struct SessionWindowView: View {
             }
             .help(settings.t("session_disconnect"))
         }
+    }
+}
+
+/// Stand-in for the terminal tab until the terminal view exists (plan Task 9b): the tab joins the
+/// Session Window and closes like a screen session (`willClose` → `SessionManager.close`), and shows
+/// the session's state.
+private struct TerminalPlaceholderView: View {
+    @Environment(AppSettings.self) private var settings
+    @Environment(SessionManager.self) private var manager
+    @Environment(\.dismissWindow) private var dismissWindow
+    let terminal: TerminalSessionModel
+    let machineID: UUID
+
+    var body: some View {
+        VStack(spacing: 12) {
+            switch terminal.phase {
+            case .connecting, .waiting:
+                ProgressView().controlSize(.large)
+                Text(settings.t(terminal.overlay == .reconnecting ? "session_reconnecting" : "session_connecting",
+                                terminal.target.name))
+            case .failed(let failure):
+                Text(failure.message(settings.t)).multilineTextAlignment(.center)
+                if failure.action != .close {
+                    Button(settings.t("session_retry")) { terminal.connect() }
+                }
+            case .ended:
+                Text(settings.t("terminal_shell_ended"))
+                Button(settings.t("session_reconnect")) { terminal.connect() }
+            case .idle, .connected, .closed:
+                Image(systemName: "terminal").font(.largeTitle)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            SessionWindowAccessor(onAttach: { [terminal] window in
+                terminal.bringWindowForward = { [weak window] in
+                    if let window { SessionTabs.select(window) }
+                }
+                SessionTabs.prepare(window)
+                Task { @MainActor in SessionTabs.adopt(window, order: terminal.openOrder) }
+            }, onClose: { [machineID, manager] window in
+                SessionTabs.forget(window)
+                manager.close(machineID)
+            })
+        }
+        .navigationTitle(terminal.target.name)
     }
 }

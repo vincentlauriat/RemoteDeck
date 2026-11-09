@@ -134,6 +134,8 @@ Terminal errors (banner, 32 pt at the top, last output stays visible and dimmed;
 | The user declines an unknown host key | Banner "Host key not trusted" with Retry (the tab stays open) | — | `hostKeyRejected` |
 | Changed host key | Changed-key banner (above) | — | `hostKeyRejected` |
 | Dropped after the shell was up | No banner at first: one automatic attempt (Interruptions below); then "Connection lost" | Reconnect | `dropped` |
+| The remote shell exits by itself (`exit`, logout) | No banner and no automatic attempt: "The remote shell ended", last output kept | Reconnect | `connected` (with its end) |
+| Key in ~/.ssh without the folder grant | "Access to ~/.ssh is needed to read this key" (the view first asks for the folder) | Grant access / Retry | `authFailed` |
 | The automatic attempt needs a passphrase that was not remembered, or the host key changed meanwhile | "Connection lost" / the changed-key banner; no prompt, no silent trust | Reconnect / Close | that attempt's own outcome |
 
 Interruptions follow the screen-session rules (above): a drop after the session was up gets one automatic attempt after 2 s, sleep/wake and network loss are handled the same way, and the 60 s re-arm rule applies. The remote shell's state is lost on reconnect: a separator line in the terminal marks where the previous shell ended. Forwards stop with the session and restart after an automatic reconnect. SSH keepalives go every 30 s; 4 missed end the connection.
