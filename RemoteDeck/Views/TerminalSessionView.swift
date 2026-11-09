@@ -106,6 +106,7 @@ struct TerminalSessionView: View {
         guard surface == nil else { return }
         let engine = (terminal.surface as? GhosttyTerminalSurface) ?? GhosttyTerminalSurface()
         engine.apply(appearance)
+        engine.accessibilityLabel = settings.t("terminal_accessibility_label")
         engine.onFontSizeStep = { [settings] step in settings.stepTerminalFontSize(step) }
         engine.onSelectTab = { index in _ = SessionTabs.selectTab(at: index) }
         terminal.separatorText = { [settings] in settings.t("terminal_reconnected_separator") }

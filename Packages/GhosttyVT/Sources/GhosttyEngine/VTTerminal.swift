@@ -450,6 +450,15 @@ public final class VTTerminal {
     /// The viewport rows of the last `update()`: every row, or only those that changed (all of
     /// them after a full change). Valid until the next `update()`.
     public func rows(onlyDirty: Bool) -> [VTRow] {
+        rows(onlyDirty: onlyDirty, including: nil)
+    }
+
+    /// Only the viewport rows whose y is in `ys` (the cells of the others are not read).
+    public func rows(at ys: Set<Int>) -> [VTRow] {
+        ys.isEmpty ? [] : rows(onlyDirty: false, including: ys)
+    }
+
+    private func rows(onlyDirty: Bool, including ys: Set<Int>?) -> [VTRow] {
         let state = handles.renderState
         let iterator = handles.rowIterator
         let cells = handles.rowCells
@@ -471,6 +480,7 @@ public final class VTTerminal {
                 index += 1
             }
             guard advanced else { break }
+            if let ys, !ys.contains(Int(y)) { continue }
             var rowCells = cells
             ghostty_render_state_row_get(iterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &rowCells)
             var range = GhosttyRenderStateRowSelection()

@@ -101,6 +101,24 @@ struct TerminalSurfaceTests {
         #expect(lines.first { $0.contains("Reconnected") }?.hasPrefix("── Reconnected ──") == true)
     }
 
+    /// A program that pushed Kitty keyboard flags and died must not leave them to the next shell:
+    /// after the reconnect separator, ⌃C is ^C and Esc is ESC again.
+    @Test func separatorResetsKittyKeyboardFlags() {
+        let (surface, _) = makeSurface()
+        surface.feed(Data("\u{1B}[>1u\u{1B}[>3u\u{1B}[?1004h".utf8))
+        let log = recording(surface)
+        surface.send([VTKeyEvent(key: .c, mods: .control, unshifted: "c")])
+        #expect(log.bytes != Data([0x03]))   // the flags are on: ⌃C is a CSI u sequence
+        surface.showSeparator("Reconnected")
+        #expect(!surface.terminal.mode(1004))
+        log.chunks = []
+        surface.send([VTKeyEvent(key: .c, mods: .control, unshifted: "c")])
+        #expect(log.bytes == Data([0x03]))
+        log.chunks = []
+        surface.send([VTKeyEvent(key: .escape)])
+        #expect(log.bytes == Data([0x1B]))
+    }
+
     // MARK: Resize
 
     @Test func gridMathFromViewSize() {
@@ -219,6 +237,78 @@ struct TerminalSurfaceTests {
         surface.send([VTKeyEvent(key: .q, text: "a", unshifted: "a")])
         #expect(surface.terminal.isViewportAtBottom)
         #expect(!surface.terminal.hasSelection)
+    }
+
+    /// A release whose press went to an app shortcut (⌘1, ⌘+) is not sent; a release whose press
+    /// reached the terminal is (Kitty "report events" makes releases visible).
+    @Test func orphanKeyReleasesAreDropped() throws {
+        let (surface, _) = makeSurface()
+        let view = try #require(surface.view as? TerminalView)
+        surface.feed(Data("\u{1B}[>3u".utf8))
+        let log = recording(surface)
+        let up = try #require(NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: .control, timestamp: 0,
+                                               windowNumber: 0, context: nil, characters: "\u{03}",
+                                               charactersIgnoringModifiers: "c", isARepeat: false, keyCode: 0x08))
+        view.keyUp(with: up)
+        #expect(log.chunks.isEmpty)
+        let down = try #require(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .control, timestamp: 0,
+                                                 windowNumber: 0, context: nil, characters: "\u{03}",
+                                                 charactersIgnoringModifiers: "c", isARepeat: false, keyCode: 0x08))
+        view.keyDown(with: down)
+        #expect(log.chunks.count == 1)
+        view.keyUp(with: up)
+        #expect(log.chunks.count == 2)   // the matching release
+        view.keyUp(with: up)
+        #expect(log.chunks.count == 2)   // not twice
+    }
+
+    /// Input-method composition: the marked text has real ranges, is drawn at the cursor, and the
+    /// commit sends the text and clears it.
+    @Test func markedTextIsShownAtTheCursorUntilCommitted() throws {
+        let (surface, _) = makeSurface()
+        let view = try #require(surface.view as? TerminalView)
+        view.setFrameSize(NSSize(width: 400, height: 200))
+        surface.apply(TerminalAppearance(isDark: true, fontSize: 13, optionAsMeta: false))
+        let log = recording(surface)
+        #expect(!view.hasMarkedText())
+        #expect(view.markedRange().location == NSNotFound)
+        view.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(view.hasMarkedText())
+        #expect(view.markedRange() == NSRange(location: 0, length: 1))
+        #expect(view.selectedRange() == NSRange(location: 1, length: 0))
+        #expect(log.chunks.isEmpty)   // nothing sent before the commit
+
+        let rep = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let scale = CGFloat(rep.pixelsWide) / view.bounds.width
+        let grid = surface.grid
+        // The second cell only: the first holds the (hollow, white) cursor; "か" is two cells wide.
+        let cell = (Int((TerminalGrid.padding + grid.cellWidth + 1) * scale)..<Int((TerminalGrid.padding + 2 * grid.cellWidth - 1) * scale),
+                    Int(TerminalGrid.padding * scale)..<Int((TerminalGrid.padding + grid.cellHeight) * scale))
+        let lit = cell.0.contains { x in cell.1.contains { y in
+            (rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)?.brightnessComponent ?? 0) > 0.8 } }
+        #expect(lit)   // the composing glyph, white on the dark background, beside the cursor
+
+        view.insertText("火", replacementRange: NSRange(location: NSNotFound, length: 0))
+        #expect(!view.hasMarkedText())
+        #expect(log.text == "火")
+    }
+
+    @Test func accessibilityLabelIsTheLocalizedOne() {
+        let (surface, _) = makeSurface()
+        surface.accessibilityLabel = "Terminal (fr)"
+        #expect(surface.view.accessibilityLabel() == "Terminal (fr)")
+        #expect(surface.view.accessibilityRole() == .textArea)
+    }
+
+    /// A cursor move alone rebuilds its old and new rows, not the whole screen.
+    @Test func aCursorMoveRebuildsOnlyTheCursorRows() {
+        let (surface, _) = makeSurface()
+        surface.feed(Data("one\r\ntwo\r\nthree".utf8))
+        let before = surface.rowsBuilt
+        surface.feed(Data("\u{1B}[1;1H".utf8))   // cursor from row 2 to row 0, no text change
+        #expect(surface.rowsBuilt - before <= 2)
+        #expect(surface.visibleText.hasPrefix("one\ntwo\nthree"))
     }
 
     // MARK: Copy, paste, replies, mouse

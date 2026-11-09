@@ -63,6 +63,10 @@ final class GhosttyTerminalSurface: TerminalSurface {
     /// ⌘+ / ⌘− in the terminal (+1 / −1): the view stores the size (`AppSettings.terminalFontSize`)
     /// and applies it back.
     var onFontSizeStep: (Int) -> Void = { _ in }
+    /// The view's accessibility label (localized by the SwiftUI view).
+    var accessibilityLabel: String = "Terminal" {
+        didSet { terminalView.setAccessibilityLabel(accessibilityLabel) }
+    }
     /// ⌘1…⌘9 in the terminal (tab index from 0).
     var onSelectTab: (Int) -> Void = { _ in }
 
@@ -92,6 +96,8 @@ final class GhosttyTerminalSurface: TerminalSurface {
     /// Bytes parsed since creation.
     private(set) var parsedBytes = 0
     private(set) var framesRun = 0
+    /// Row layouts rebuilt since creation (tests: a cursor move rebuilds two rows, not the screen).
+    private(set) var rowsBuilt = 0
     private var frameScheduled = false
     private var needsFullRefresh = true
     private var lastCursor: VTCursor?
@@ -128,7 +134,10 @@ final class GhosttyTerminalSurface: TerminalSurface {
         let label = " \(text) "
         let dashes = max(2, terminal.columns - label.count - 2)
         let line = "──" + label + String(repeating: "─", count: dashes)
+        // Also the Kitty keyboard flags (pop the whole stack, then set 0: a new shell must get ^C and
+        // Esc as legacy bytes) and focus reports (?1004).
         let reset = "\u{18}\u{1B}[0m\u{1B}[!p\u{1B}[?1049l\u{1B}[?1000l\u{1B}[?1002l\u{1B}[?1003l\u{1B}[?1006l\u{1B}[?2004l"
+            + "\u{1B}[?1004l\u{1B}[<99u\u{1B}[=0;1u"
         enqueue(Data((reset + "\r\n\u{1B}[2m" + line + "\u{1B}[0m\r\n").utf8))
     }
 
@@ -228,11 +237,18 @@ final class GhosttyTerminalSurface: TerminalSurface {
         let focused = terminalView.isFocused
         let cursorMoved = cursor != lastCursor || focused != lastFocused
         guard needsFullRefresh || dirty != .clean || cursorMoved else { return }
-        let full = needsFullRefresh || dirty == .full || cursorMoved
+        let full = needsFullRefresh || dirty == .full
         let style = TerminalFrameStyle(theme: theme, colors: terminal.colors, cursor: cursor, focused: focused)
         if rowLayouts.count != terminal.rows { rowLayouts = Array(repeating: .empty, count: terminal.rows) }
+        var rows = full ? terminal.rows(onlyDirty: false) : (dirty == .clean ? [] : terminal.rows(onlyDirty: true))
+        if !full, cursorMoved {
+            // A cursor move or focus change alone: its old and new rows, unless already dirty.
+            let cursorRows = Set([lastCursor?.y, cursor?.y].compactMap { $0 }).subtracting(rows.map(\.y))
+            rows += terminal.rows(at: cursorRows)
+        }
         var changed: [Int] = []
-        for row in terminal.rows(onlyDirty: !full) where row.y < rowLayouts.count {
+        rowsBuilt += rows.count
+        for row in rows where row.y < rowLayouts.count {
             rowLayouts[row.y] = builder.layout(row, columns: terminal.columns, style: style)
             changed.append(row.y)
         }

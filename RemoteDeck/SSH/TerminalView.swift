@@ -19,6 +19,11 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private var markedText = NSMutableAttributedString()
+    /// The selection inside the marked text, as the input method set it.
+    private var markedSelection = NSRange(location: 0, length: 0)
+    /// Keys whose press reached the terminal: only their releases are sent (a key taken by an app
+    /// shortcut, ⌘1 or ⌘+, has no press there, so its release is dropped).
+    private var keysDown: Set<UInt16> = []
     /// Text `insertText` received during the current `keyDown` (nil outside one).
     private var keyTextAccumulator: [String]?
     private var selectionAnchor: VTPoint?
@@ -102,6 +107,33 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
             guard rect.intersects(dirtyRect) else { continue }
             row.draw(in: context, at: rect.minY)
         }
+        drawMarkedText()
+    }
+
+    /// The input method's composing text (a dead key's accent, kana before conversion), underlined
+    /// at the cursor until it is committed.
+    private func drawMarkedText() {
+        guard markedText.length > 0, let surface else { return }
+        let grid = surface.grid
+        let cursor = surface.terminal.cursor
+        let origin = CGPoint(x: TerminalGrid.padding + CGFloat(cursor?.x ?? 0) * grid.cellWidth,
+                             y: TerminalGrid.padding + CGFloat(cursor?.y ?? 0) * grid.cellHeight)
+        let font = surface.builder.fonts.regular as NSFont
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font, .foregroundColor: surface.theme.foreground.nsColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ]
+        let text = NSAttributedString(string: markedText.string, attributes: attributes)
+        let width = max(grid.cellWidth, ceil(text.size().width))
+        surface.theme.background.nsColor.setFill()
+        NSRect(x: origin.x, y: origin.y, width: width, height: grid.cellHeight).fill()
+        text.draw(at: NSPoint(x: origin.x, y: origin.y + grid.ascent - font.ascender))
+    }
+
+    private func markedTextChanged() {
+        guard let surface else { return }
+        let y = surface.terminal.cursor?.y ?? 0
+        setNeedsDisplay(surface.grid.rowRect(y, width: bounds.width))
     }
 
     // MARK: Accessibility
@@ -148,6 +180,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     override func keyDown(with event: NSEvent) {
         guard let surface else { return }
+        keysDown.insert(event.keyCode)
         let optionAsMeta = surface.appearance.optionAsMeta
         let hadMarked = hasMarkedText()
         var composed: [String] = []
@@ -163,7 +196,7 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func keyUp(with event: NSEvent) {
-        guard let surface, !hasMarkedText() else { return }
+        guard keysDown.remove(event.keyCode) != nil, let surface, !hasMarkedText() else { return }
         var input = keyInput(event, composed: [], hadMarked: false, optionAsMeta: surface.appearance.optionAsMeta)
         input.isRelease = true
         surface.send(TerminalKeyTranslator.events(for: input))
@@ -196,7 +229,11 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
 
     func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
-        markedText = NSMutableAttributedString()
+        if markedText.length > 0 {
+            markedText = NSMutableAttributedString()
+            markedSelection = NSRange(location: 0, length: 0)
+            markedTextChanged()
+        }
         if keyTextAccumulator != nil {
             keyTextAccumulator?.append(text)
         } else {
@@ -210,10 +247,18 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         } else {
             markedText = NSMutableAttributedString(string: string as? String ?? "")
         }
+        markedSelection = selectedRange
+        markedTextChanged()
     }
 
-    func unmarkText() { markedText = NSMutableAttributedString() }
-    func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+    func unmarkText() {
+        markedText = NSMutableAttributedString()
+        markedSelection = NSRange(location: 0, length: 0)
+        markedTextChanged()
+    }
+
+    /// Inside the marked text, where the input method put it; an empty insertion point otherwise.
+    func selectedRange() -> NSRange { markedText.length > 0 ? markedSelection : NSRange(location: 0, length: 0) }
     func markedRange() -> NSRange {
         markedText.length > 0 ? NSRange(location: 0, length: markedText.length) : NSRange(location: NSNotFound, length: 0)
     }
