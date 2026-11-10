@@ -12,6 +12,7 @@ struct TerminalSessionView: View {
     @Environment(SessionManager.self) private var manager
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openSettings) private var openSettings
     let terminal: TerminalSessionModel
     let machineID: UUID
 
@@ -21,7 +22,8 @@ struct TerminalSessionView: View {
     @State private var isDropTargeted = false
 
     private var appearance: TerminalAppearance {
-        TerminalAppearance(isDark: colorScheme == .dark, fontSize: CGFloat(settings.terminalFontSize),
+        TerminalAppearance(theme: settings.terminalTheme(isDark: colorScheme == .dark),
+                           fontFamily: settings.terminalFontFamily, fontSize: CGFloat(settings.terminalFontSize),
                            optionAsMeta: settings.terminalOptionAsMeta)
     }
 
@@ -45,7 +47,7 @@ struct TerminalSessionView: View {
             if let overlay = terminal.overlay { connectingOverlay(overlay) }
             if isDropTargeted { dropHighlight }
         }
-        .background(Color(nsColor: TerminalTheme.forAppearance(isDark: colorScheme == .dark).background.nsColor))
+        .background(Color(nsColor: appearance.theme.background.nsColor))
         .background {
             // The tab joins the Session Window; only a real window close ends the session.
             SessionWindowAccessor(onAttach: { [terminal] window in
@@ -69,6 +71,15 @@ struct TerminalSessionView: View {
         .toolbar {
             ToolbarItemGroup {
                 if !terminal.target.portForwards.isEmpty { forwardsMenu }
+                // Settings › Terminal (font, theme, colours): the Settings Window opens on that tab,
+                // and every change shows at once in this terminal.
+                Button {
+                    settings.settingsTab = .terminal
+                    openSettings()
+                } label: {
+                    Label(settings.t("terminal_appearance"), systemImage: "textformat")
+                }
+                .help(settings.t("terminal_appearance_help"))
                 Button { dismissWindow() } label: {
                     Label(settings.t("session_disconnect"), systemImage: "xmark.circle")
                 }
