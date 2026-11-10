@@ -90,6 +90,11 @@ enum AppLocale {
     static var identifier: String = "en_US"
 }
 
+/// The tabs of the Settings Window (DesignBrief › Settings Window).
+enum SettingsTab: Hashable {
+    case general, terminal
+}
+
 // MARK: - Réglages observables
 
 @Observable
@@ -207,6 +212,10 @@ final class AppSettings {
         terminalFontFamily = ""
         terminalFontSize = Self.defaultTerminalFontSize
     }
+
+    /// The Settings Window's selected tab, for this launch only (a terminal tab's toolbar button
+    /// opens the Settings Window on Terminal).
+    var settingsTab: SettingsTab = .general
 
     /// One ⌘+ / ⌘− step.
     func stepTerminalFontSize(_ step: Int) {

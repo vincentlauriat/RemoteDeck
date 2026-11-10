@@ -10,7 +10,40 @@ struct SettingsView: View {
     var body: some View {
         @Bindable var settings = settings
 
-        Form {
+        TabView(selection: $settings.settingsTab) {
+            general
+                .tabItem { Label(settings.t("settings_tab_general"), systemImage: "gearshape") }
+                .tag(SettingsTab.general)
+            terminal
+                .tabItem { Label(settings.t("settings_terminal"), systemImage: "terminal") }
+                .tag(SettingsTab.terminal)
+        }
+        .sheet(isPresented: $showsNotices) { ThirdPartyNoticesView() }
+        .onAppear {
+            if editor == nil { editor = APIKeyEditorModel(settings: settings, checker: apiKeyChecker) }
+        }
+    }
+
+    /// Terminal (SSH machines, AppFlow › Settings Window › Terminal options): ⌥ as Meta, font, size,
+    /// theme and colours; applies to open terminals at once, kept per Mac (UserDefaults).
+    private var terminal: some View {
+        @Bindable var settings = settings
+        return Form {
+            Section {
+                Toggle(settings.t("settings_option_as_meta"), isOn: $settings.terminalOptionAsMeta)
+                Text(settings.t("settings_option_as_meta_help"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Section { TerminalAppearanceSettings() }
+        }
+        .formStyle(.grouped)
+        .frame(width: 480, height: 680)
+    }
+
+    private var general: some View {
+        @Bindable var settings = settings
+        return Form {
             Section(settings.t("settings_appearance")) {
                 Picker(settings.t("settings_appearance"), selection: $settings.appearanceRaw) {
                     ForEach(AppearanceMode.allCases) { mode in
@@ -61,16 +94,6 @@ struct SettingsView: View {
                 NotificationPermissionNotice(showsAuthorized: true)
             }
 
-            // Terminal (SSH machines, AppFlow › Settings Window › Terminal options): ⌥ as Meta, font,
-            // size, theme and colours; applies to open terminals at once, kept per Mac (UserDefaults).
-            Section(settings.t("settings_terminal")) {
-                Toggle(settings.t("settings_option_as_meta"), isOn: $settings.terminalOptionAsMeta)
-                Text(settings.t("settings_option_as_meta_help"))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                TerminalAppearanceSettings()
-            }
-
             Section(settings.t("settings_about")) {
                 Text(settings.t("settings_about_text"))
                     .font(.callout)
@@ -79,13 +102,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .sheet(isPresented: $showsNotices) { ThirdPartyNoticesView() }
-        .onAppear {
-            if editor == nil { editor = APIKeyEditorModel(settings: settings, checker: apiKeyChecker) }
-        }
-        #if os(macOS)
-        .frame(width: 480, height: 680)
-        #endif
+        .frame(width: 480, height: 600)
     }
 }
 

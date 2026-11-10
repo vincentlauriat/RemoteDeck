@@ -12,6 +12,7 @@ struct TerminalSessionView: View {
     @Environment(SessionManager.self) private var manager
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openSettings) private var openSettings
     let terminal: TerminalSessionModel
     let machineID: UUID
 
@@ -70,6 +71,15 @@ struct TerminalSessionView: View {
         .toolbar {
             ToolbarItemGroup {
                 if !terminal.target.portForwards.isEmpty { forwardsMenu }
+                // Settings › Terminal (font, theme, colours): the Settings Window opens on that tab,
+                // and every change shows at once in this terminal.
+                Button {
+                    settings.settingsTab = .terminal
+                    openSettings()
+                } label: {
+                    Label(settings.t("terminal_appearance"), systemImage: "textformat")
+                }
+                .help(settings.t("terminal_appearance_help"))
                 Button { dismissWindow() } label: {
                     Label(settings.t("session_disconnect"), systemImage: "xmark.circle")
                 }
