@@ -2,6 +2,7 @@ import SwiftUI
 import Observation
 import ClaudeKit
 import RemoteDeckCore
+import GhosttyEngine
 
 // MARK: - Clé API
 
@@ -105,6 +106,9 @@ final class AppSettings {
         static let historyRetentionDays = "historyRetentionDays"
         static let terminalOptionAsMeta = "terminalOptionAsMeta"
         static let terminalFontSize = "terminalFontSize"
+        static let terminalTheme = "terminalTheme"
+        static let terminalCustomTheme = "terminalCustomTheme"
+        static let terminalFontFamily = "terminalFontFamily"
     }
 
     /// The Claude Assistant's model (`ClaudeAPI.defaultModel`, Claude Opus 5.5).
@@ -155,6 +159,55 @@ final class AppSettings {
     static let defaultTerminalFontSize: Double = 13
     static let terminalFontSizeRange: ClosedRange<Double> = 8...36
 
+    /// Settings › Terminal › Theme (`TerminalThemeChoice` raw value): automatic by default (Ghostty's
+    /// dark theme, Tomorrow in light mode). An unknown stored value reads as automatic.
+    var terminalThemeRaw: String {
+        didSet { defaults.set(terminalThemeRaw, forKey: Key.terminalTheme) }
+    }
+    var terminalThemeChoice: TerminalThemeChoice {
+        TerminalThemeChoice(rawValue: terminalThemeRaw) ?? .automatic
+    }
+    /// The custom theme's colours (JSON, "#RRGGBB" strings), kept when another theme is picked so
+    /// coming back to "Custom" finds them; `nil` until a colour was first edited.
+    var terminalCustomTheme: TerminalTheme? {
+        didSet {
+            if let terminalCustomTheme, let data = try? JSONEncoder().encode(terminalCustomTheme) {
+                defaults.set(data, forKey: Key.terminalCustomTheme)
+            } else {
+                defaults.removeObject(forKey: Key.terminalCustomTheme)
+            }
+        }
+    }
+    /// Settings › Terminal › Font: an installed monospaced family, or "" for the bundled JetBrains Mono.
+    var terminalFontFamily: String {
+        didSet { defaults.set(terminalFontFamily, forKey: Key.terminalFontFamily) }
+    }
+
+    /// The terminal's colours for a light or dark window: the chosen theme (custom without stored
+    /// colours, as after a damaged value, reads as automatic).
+    func terminalTheme(isDark: Bool) -> TerminalTheme {
+        if terminalThemeChoice == .custom, let terminalCustomTheme { return terminalCustomTheme }
+        return terminalThemeChoice.theme(isDark: isDark) ?? .forAppearance(isDark: isDark)
+    }
+
+    /// One colour edited in Settings › Terminal: the theme shown now (`isDark`: the appearance it is
+    /// shown in) becomes the custom theme with that colour changed.
+    func setTerminalColor(_ slot: TerminalTheme.Slot, to color: VTColor, isDark: Bool) {
+        let base = terminalTheme(isDark: isDark)
+        guard base.color(slot) != color || terminalThemeChoice != .custom else { return }
+        terminalCustomTheme = base.setting(slot, to: color)
+        terminalThemeRaw = TerminalThemeChoice.custom.rawValue
+    }
+
+    /// Settings › Terminal › "Restore Defaults": automatic theme, JetBrains Mono 13 pt (the custom
+    /// colours are forgotten; ⌥ as Meta is left as it is).
+    func resetTerminalAppearance() {
+        terminalThemeRaw = TerminalThemeChoice.automatic.rawValue
+        terminalCustomTheme = nil
+        terminalFontFamily = ""
+        terminalFontSize = Self.defaultTerminalFontSize
+    }
+
     /// One ⌘+ / ⌘− step.
     func stepTerminalFontSize(_ step: Int) {
         let next = (terminalFontSize + Double(step)).rounded()
@@ -186,6 +239,10 @@ final class AppSettings {
         terminalOptionAsMeta = defaults.object(forKey: Key.terminalOptionAsMeta) as? Bool ?? false
         let storedFontSize = defaults.object(forKey: Key.terminalFontSize) as? Double ?? Self.defaultTerminalFontSize
         terminalFontSize = min(max(storedFontSize, Self.terminalFontSizeRange.lowerBound), Self.terminalFontSizeRange.upperBound)
+        terminalThemeRaw = defaults.string(forKey: Key.terminalTheme) ?? TerminalThemeChoice.automatic.rawValue
+        terminalCustomTheme = (defaults.data(forKey: Key.terminalCustomTheme))
+            .flatMap { try? JSONDecoder().decode(TerminalTheme.self, from: $0) }
+        terminalFontFamily = defaults.string(forKey: Key.terminalFontFamily) ?? ""
         do {
             anthropicAPIKey = try apiKeys.readKey() ?? ""
         } catch {

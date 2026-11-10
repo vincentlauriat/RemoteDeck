@@ -383,6 +383,38 @@ struct TerminalSurfaceTests {
         #expect(cells[1].foreground == VTTerminal.builtInPalette[196])
     }
 
+    @Test func chosenThemeAndFontApply() {
+        let (surface, _) = makeSurface()
+        let before = surface.grid
+        surface.apply(TerminalAppearance(theme: .solarizedDark, fontFamily: "Menlo", fontSize: 13, optionAsMeta: false))
+        #expect(surface.theme == .solarizedDark)
+        #expect(surface.terminal.colors.background == VTColor(hex: 0x002B36))
+        #expect(CTFontCopyFamilyName(surface.builder.fonts.regular) as String == "Menlo")
+        #expect(!surface.builder.fonts.isBundledFont)
+        #expect(surface.grid != before)   // Menlo's cell is not JetBrains Mono's
+        surface.feed(Data("\u{1B}[31mR".utf8))
+        surface.terminal.update()
+        #expect(surface.terminal.rows(onlyDirty: false)[0].cells[0].foreground == VTColor(hex: 0xDC322F))
+        // Back to the bundled font ("" and "JetBrains Mono" both mean it).
+        surface.apply(TerminalAppearance(theme: .solarizedDark, fontFamily: "", fontSize: 13, optionAsMeta: false))
+        #expect(surface.builder.fonts.isBundledFont)
+        #expect(surface.grid == before)
+    }
+
+    @Test func missingFontFamilyFallsBackToTheBundledFont() {
+        let fonts = TerminalFonts(size: 13, family: "No Such Font Family 7f3a")
+        #expect(fonts.isBundledFont)
+        #expect(CTFontCopyFamilyName(fonts.regular) as String == "JetBrains Mono")
+        #expect(TerminalFonts(size: 13, family: "JetBrains Mono").requestedFamily == nil)
+    }
+
+    @Test func monospacedFamiliesListInstalledFixedPitchFonts() {
+        let families = TerminalFonts.monospacedFamilies()
+        #expect(families.contains("Menlo"))
+        #expect(!families.contains("Helvetica"))
+        #expect(!families.contains(TerminalFonts.familyName))
+    }
+
     @Test func bundledFontIsJetBrainsMono() {
         let fonts = TerminalFonts(size: 13)
         #expect(fonts.isBundledFont)
@@ -424,5 +456,92 @@ struct TerminalSettingsTests {
         #expect(reopened.terminalFontSize == AppSettings.terminalFontSizeRange.upperBound)
         for _ in 0..<60 { reopened.stepTerminalFontSize(-1) }
         #expect(reopened.terminalFontSize == AppSettings.terminalFontSizeRange.lowerBound)
+    }
+
+    @Test func themeFontAndCustomColoursPersist() throws {
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = AppSettings(defaults: defaults, apiKeys: InMemoryAPIKeyStore())
+        #expect(settings.terminalThemeChoice == .automatic)
+        #expect(settings.terminalTheme(isDark: true) == .dark)
+        #expect(settings.terminalTheme(isDark: false) == .light)
+        #expect(settings.terminalFontFamily == "")
+        #expect(settings.terminalCustomTheme == nil)
+
+        settings.terminalThemeRaw = TerminalThemeChoice.dracula.rawValue
+        settings.terminalFontFamily = "Menlo"
+        var reopened = AppSettings(defaults: defaults, apiKeys: InMemoryAPIKeyStore())
+        #expect(reopened.terminalThemeChoice == .dracula)
+        #expect(reopened.terminalTheme(isDark: false) == .dracula)   // a fixed theme ignores light/dark
+        #expect(reopened.terminalFontFamily == "Menlo")
+
+        // Editing one colour turns the theme shown into the custom theme, every colour spelled out.
+        reopened.setTerminalColor(.ansi(1), to: VTColor(hex: 0x123456), isDark: true)
+        #expect(reopened.terminalThemeChoice == .custom)
+        let custom = try #require(reopened.terminalCustomTheme)
+        #expect(custom.background == TerminalTheme.dracula.background)
+        #expect(custom.ansi?[1] == VTColor(hex: 0x123456))
+        #expect(custom.ansi?[2] == TerminalTheme.dracula.ansi?[2])
+
+        reopened = AppSettings(defaults: defaults, apiKeys: InMemoryAPIKeyStore())
+        #expect(reopened.terminalThemeChoice == .custom)
+        #expect(reopened.terminalTheme(isDark: true) == custom)
+        // Picking a built-in theme keeps the custom colours for later.
+        reopened.terminalThemeRaw = TerminalThemeChoice.tomorrowNight.rawValue
+        #expect(reopened.terminalTheme(isDark: true) == .tomorrowNight)
+        #expect(reopened.terminalCustomTheme == custom)
+
+        reopened.terminalFontSize = 20
+        reopened.resetTerminalAppearance()
+        let reset = AppSettings(defaults: defaults, apiKeys: InMemoryAPIKeyStore())
+        #expect(reset.terminalThemeChoice == .automatic)
+        #expect(reset.terminalCustomTheme == nil)
+        #expect(reset.terminalFontFamily == "")
+        #expect(reset.terminalFontSize == AppSettings.defaultTerminalFontSize)
+    }
+
+    @Test func editingTheAutomaticThemeStartsFromTheShownAppearance() throws {
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = AppSettings(defaults: defaults, apiKeys: InMemoryAPIKeyStore())
+        settings.setTerminalColor(.foreground, to: VTColor(hex: 0x00FF00), isDark: false)
+        let custom = try #require(settings.terminalCustomTheme)
+        #expect(custom.background == TerminalTheme.light.background)
+        #expect(custom.foreground == VTColor(hex: 0x00FF00))
+        // Ghostty's dark theme has no palette of its own: the custom copy spells out the built-in one.
+        settings.terminalThemeRaw = TerminalThemeChoice.ghosttyDark.rawValue
+        settings.setTerminalColor(.cursor, to: VTColor(hex: 0xFF0000), isDark: true)
+        let dark = try #require(settings.terminalCustomTheme)
+        #expect(dark.ansi == Array(VTTerminal.builtInPalette.prefix(16)))
+        #expect(dark.cursor == VTColor(hex: 0xFF0000))
+        #expect(dark.selectionBackground == TerminalTheme.dark.foreground)
+    }
+
+    @Test func damagedStoredThemeReadsAsAutomatic() {
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("custom", forKey: AppSettings.Key.terminalTheme)
+        defaults.set(Data("{\"foreground\":\"#zz\"}".utf8), forKey: AppSettings.Key.terminalCustomTheme)
+        let settings = AppSettings(defaults: defaults, apiKeys: InMemoryAPIKeyStore())
+        #expect(settings.terminalCustomTheme == nil)
+        #expect(settings.terminalTheme(isDark: true) == .dark)
+        defaults.set("neon", forKey: AppSettings.Key.terminalTheme)
+        #expect(AppSettings(defaults: defaults, apiKeys: InMemoryAPIKeyStore()).terminalThemeChoice == .automatic)
+    }
+
+    @Test func themeCodableRoundTripsAsHexStrings() throws {
+        for theme in [TerminalTheme.dark, .light, .solarizedLight, .dracula, TerminalTheme.dark.filled] {
+            let data = try JSONEncoder().encode(theme)
+            #expect(try JSONDecoder().decode(TerminalTheme.self, from: data) == theme)
+        }
+        let json = String(decoding: try JSONEncoder().encode(TerminalTheme.light), as: UTF8.self)
+        #expect(json.contains("\"#4D4D4C\""))
+        #expect(VTColor(hexString: "c82829") == VTColor(hex: 0xC82829))
+        #expect(VTColor(hexString: "#12345") == nil)
+    }
+
+    @Test func builtInThemesHaveTitlesInBothLanguages() {
+        for choice in TerminalThemeChoice.allCases {
+            for lang in ["fr", "en"] {
+                #expect(Strings.table[lang]?[choice.titleKey] != nil, "\(choice) \(lang)")
+            }
+        }
     }
 }

@@ -61,19 +61,14 @@ struct SettingsView: View {
                 NotificationPermissionNotice(showsAuthorized: true)
             }
 
-            // Terminal (SSH machines, AppFlow › Settings Window › Terminal options): applies to open
-            // terminals at once.
+            // Terminal (SSH machines, AppFlow › Settings Window › Terminal options): ⌥ as Meta, font,
+            // size, theme and colours; applies to open terminals at once, kept per Mac (UserDefaults).
             Section(settings.t("settings_terminal")) {
                 Toggle(settings.t("settings_option_as_meta"), isOn: $settings.terminalOptionAsMeta)
                 Text(settings.t("settings_option_as_meta_help"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Stepper(value: $settings.terminalFontSize, in: AppSettings.terminalFontSizeRange, step: 1) {
-                    Text(settings.t("settings_terminal_font_size", Int(settings.terminalFontSize)))
-                }
-                Text(settings.t("settings_terminal_font_size_help"))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                TerminalAppearanceSettings()
             }
 
             Section(settings.t("settings_about")) {
@@ -89,7 +84,7 @@ struct SettingsView: View {
             if editor == nil { editor = APIKeyEditorModel(settings: settings, checker: apiKeyChecker) }
         }
         #if os(macOS)
-        .frame(width: 460, height: 600)
+        .frame(width: 480, height: 680)
         #endif
     }
 }

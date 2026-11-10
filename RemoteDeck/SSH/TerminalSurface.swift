@@ -1,12 +1,27 @@
 import AppKit
 import GhosttyEngine
 
-/// How the terminal looks: light or dark (the window's effective appearance), the font size
-/// (`AppSettings.terminalFontSize`, ⌘+ / ⌘−) and ⌥ as Meta (Settings › Terminal).
+/// How the terminal looks: the colours (`AppSettings.terminalTheme(isDark:)`: the theme chosen in
+/// Settings › Terminal, the automatic one following the window's light or dark appearance), the font
+/// family and size (`AppSettings.terminalFontSize`, ⌘+ / ⌘−) and ⌥ as Meta (Settings › Terminal).
 struct TerminalAppearance: Equatable {
-    var isDark: Bool
+    var theme: TerminalTheme
+    /// `nil`: the bundled JetBrains Mono.
+    var fontFamily: String?
     var fontSize: CGFloat
     var optionAsMeta: Bool
+
+    init(theme: TerminalTheme, fontFamily: String? = nil, fontSize: CGFloat, optionAsMeta: Bool) {
+        self.theme = theme
+        self.fontFamily = fontFamily
+        self.fontSize = fontSize
+        self.optionAsMeta = optionAsMeta
+    }
+
+    /// The automatic theme for a light or dark window, with the bundled font.
+    init(isDark: Bool, fontSize: CGFloat, optionAsMeta: Bool) {
+        self.init(theme: .forAppearance(isDark: isDark), fontSize: fontSize, optionAsMeta: optionAsMeta)
+    }
 }
 
 /// The terminal engine behind a terminal tab, as `TerminalSessionModel` sees it (TRD › Architecture ›
@@ -149,11 +164,13 @@ final class GhosttyTerminalSurface: TerminalSurface {
     func apply(_ appearance: TerminalAppearance) {
         let previous = self.appearance
         self.appearance = appearance
-        if appearance.fontSize != previous.fontSize || appearance.fontSize != builder.fonts.size {
-            builder.setFonts(TerminalFonts(size: appearance.fontSize))
+        let family = TerminalFonts.normalizedFamily(appearance.fontFamily)
+        if appearance.fontSize != previous.fontSize || appearance.fontSize != builder.fonts.size
+            || family != builder.fonts.requestedFamily {
+            builder.setFonts(TerminalFonts(size: appearance.fontSize, family: family))
             layoutGrid()
         }
-        if appearance.isDark != previous.isDark || theme != TerminalTheme.forAppearance(isDark: appearance.isDark) {
+        if theme != appearance.theme {
             applyTheme()
         }
         needsFullRefresh = true
@@ -161,7 +178,7 @@ final class GhosttyTerminalSurface: TerminalSurface {
     }
 
     private func applyTheme() {
-        theme = TerminalTheme.forAppearance(isDark: appearance.isDark)
+        theme = appearance.theme
         terminal.setDefaultColors(foreground: theme.foreground, background: theme.background, cursor: theme.cursor)
         terminal.setPalette(overriding: theme.ansi)
         terminalView.themeChanged()

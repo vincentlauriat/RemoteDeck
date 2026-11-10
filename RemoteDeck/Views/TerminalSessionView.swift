@@ -21,7 +21,8 @@ struct TerminalSessionView: View {
     @State private var isDropTargeted = false
 
     private var appearance: TerminalAppearance {
-        TerminalAppearance(isDark: colorScheme == .dark, fontSize: CGFloat(settings.terminalFontSize),
+        TerminalAppearance(theme: settings.terminalTheme(isDark: colorScheme == .dark),
+                           fontFamily: settings.terminalFontFamily, fontSize: CGFloat(settings.terminalFontSize),
                            optionAsMeta: settings.terminalOptionAsMeta)
     }
 
@@ -45,7 +46,7 @@ struct TerminalSessionView: View {
             if let overlay = terminal.overlay { connectingOverlay(overlay) }
             if isDropTargeted { dropHighlight }
         }
-        .background(Color(nsColor: TerminalTheme.forAppearance(isDark: colorScheme == .dark).background.nsColor))
+        .background(Color(nsColor: appearance.theme.background.nsColor))
         .background {
             // The tab joins the Session Window; only a real window close ends the session.
             SessionWindowAccessor(onAttach: { [terminal] window in

@@ -42,7 +42,7 @@ SF Pro (system font) only; SF Mono for hosts, ports and logs.
 - Body / forms: 13 pt regular.
 - Overlay message ("Connecting…"): 15 pt medium, white on 60 % black.
 - Monospaced values: SF Mono 12 pt.
-- Terminal text (post-1.0): Ghostty's default font and size, JetBrains Mono 13 pt (bundled, SIL OFL 1.1; the system monospaced font if it cannot be loaded), not SF Mono; ⌘+ / ⌘− change the size (no ⌘0 reset: ⌘0 stays the Library Window; Settings › Terminal has a "Text size" stepper). Colours: dark = Ghostty's defaults (#282C34 / #FFFFFF, its built-in palette, selection by swapping foreground and background); light = Ghostty's bundled "Tomorrow" theme (#FFFFFF / #4D4D4C, selection #D6D6D6). Cursor: a block, hollow when the terminal is not focused.
+- Terminal text (post-1.0): Ghostty's default font and size, JetBrains Mono 13 pt (bundled, SIL OFL 1.1; the system monospaced font if it cannot be loaded), not SF Mono; ⌘+ / ⌘− change the size (no ⌘0 reset: ⌘0 stays the Library Window; Settings › Terminal has a "Text size" stepper). Colours: dark = Ghostty's defaults (#282C34 / #FFFFFF, its built-in palette, selection by swapping foreground and background); light = Ghostty's bundled "Tomorrow" theme (#FFFFFF / #4D4D4C, selection #D6D6D6). Cursor: a block, hollow when the terminal is not focused. Settings › Terminal can replace both (a theme for both appearances, an installed monospaced font) or edit every colour: the defaults above are the "Automatic" theme.
 
 ## Components
 
