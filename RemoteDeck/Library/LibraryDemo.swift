@@ -268,8 +268,52 @@ enum LibraryDemo {
 
     /// `assistant`: one "Mac mini" session with the Claude Assistant Panel open, an in-memory demo key
     /// and scripted API answers (`ScriptedTransport`): no request leaves the Mac, no token is spent.
-    static var scriptsAssistant: Bool { mode == "assistant" }
+    /// Also `assistant-apple`: the same session and panel, on the scripted Apple engine.
+    static var scriptsAssistant: Bool { mode == "assistant" || scriptsAppleAssistant }
     static let assistantKey = "sk-ant-demo-not-a-real-key"
+
+    // MARK: Apple provider (`-LibraryDemo assistant-apple`)
+
+    /// `assistant-apple`: the Assistant Panel on the real `AppleEngine` with a scripted model and a
+    /// scripted OCR (one label click, one typed command, one answer): never FoundationModels, never
+    /// Vision, and the stored provider is not changed.
+    static var scriptsAppleAssistant: Bool { mode == "assistant-apple" }
+    static let appleDemoLabel = "Terminal"
+
+    @MainActor
+    static func appleEngine() -> AppleEngine {
+        AppleEngine(provider: .appleOnDevice, generator: AppleScript(), locator: AppleLocator(),
+                    unavailability: { nil })
+    }
+
+    /// The step follows the summary's length: click "Terminal", type `uptime⏎`, then answer.
+    struct AppleScript: AppleStepGenerating {
+        func generate(_ request: AppleStepRequest) async throws(AppleGenerationError) -> AppleStep {
+            do {
+                try await Task.sleep(for: .milliseconds(900))
+            } catch {
+                throw .cancelled
+            }
+            switch request.summary.count {
+            case 0:
+                return AppleStep(kind: .click, label: LibraryDemo.appleDemoLabel,
+                                 reason: "Opening Terminal to run the command.")
+            case 1:
+                return AppleStep(kind: .typeText, text: "uptime\n", reason: "Typing the command.")
+            default:
+                return AppleStep(kind: .answer, text: "Done. (Demo: scripted Apple steps, the model was not used.)")
+            }
+        }
+    }
+
+    /// One text, "Terminal", a little left of the screenshot's centre.
+    struct AppleLocator: TextLocator {
+        func locate(in image: EncodedImage) async -> [LocatedText] {
+            let width = Double(image.width), height = Double(image.height)
+            return [LocatedText(text: LibraryDemo.appleDemoLabel,
+                                rect: CGRect(x: width * 0.4, y: height * 0.45, width: 80, height: 20))]
+        }
+    }
 
     static func assistantClient() -> MessagesClient {
         MessagesClient(transport: ScriptedTransport(), retry: RetryPolicy(maxRetries: 0))

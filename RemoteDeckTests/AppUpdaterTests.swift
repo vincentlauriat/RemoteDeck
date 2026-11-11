@@ -14,7 +14,7 @@ struct AppUpdaterTests {
                                       demoMode: nil, framebufferDebugMode: nil) == .off)
         #expect(UpdaterLaunch.resolve(isRunningTests: false, isDebugBuild: false,
                                       demoMode: nil, framebufferDebugMode: "stream") == .off)
-        for mode in ["list", "session", "assistant", "onboarding", "watch", "public", "resilience"] {
+        for mode in ["list", "session", "assistant", "assistant-apple", "onboarding", "watch", "public", "resilience"] {
             #expect(UpdaterLaunch.resolve(isRunningTests: false, isDebugBuild: false,
                                           demoMode: mode, framebufferDebugMode: nil) == .off)
         }

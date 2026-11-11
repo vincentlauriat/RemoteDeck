@@ -9,6 +9,8 @@ enum AssistantCopy {
         switch failure {
         case .noAPIKey: return t("assistant_no_key")
         case .disconnected: return t("assistant_disconnected")
+        case .appleUnavailable(let reason): return t(appleStatusKey(reason))
+        case .appleGeneration(let message): return with("assistant_error_apple", message)
         case .api(let error):
             switch error {
             case .authentication: return t("assistant_error_auth")
@@ -28,6 +30,17 @@ enum AssistantCopy {
         }
     }
 
+    /// Settings › Assistant and the panel's blocked state.
+    static func appleStatusKey(_ reason: AppleModelUnavailability?) -> String {
+        switch reason {
+        case nil: "apple_status_ready"
+        case .deviceNotEligible?: "apple_status_device_not_eligible"
+        case .appleIntelligenceOff?: "apple_status_intelligence_off"
+        case .modelNotReady?: "apple_status_model_not_ready"
+        case .requiresNewerOS?: "apple_status_requires_newer_os"
+        }
+    }
+
     static func point(_ location: PointerLocation) -> String { "(\(location.x), \(location.y))" }
 
     /// DesignBrief: "Click at (412, 230)" — remote pixels.
@@ -35,7 +48,22 @@ enum AssistantCopy {
         func with(_ key: String, _ value: String) -> String { t(key).replacingOccurrences(of: "%@", with: value) }
         func at(_ index: Int) -> String { item.targets.indices.contains(index) ? point(item.targets[index]) : t("action_at_cursor") }
         func modifiers(_ text: String) -> String { text.isEmpty ? "" : " " + with("action_with", text) }
-        guard let action = item.action else { return item.name }
+        guard let action = item.action else {
+            // An Apple label that was not found: the label, never a point.
+            if let label = item.label { return with("action_label", DisplayText.serverString(label)) }
+            return item.name
+        }
+        let described = describeAction(action, item, t)
+        // Apple: the visible text the point was resolved from (OCR), shown before Confirm.
+        guard let label = item.label, !item.targets.isEmpty else { return described }
+        return described + " " + with("action_on_label", DisplayText.serverString(label))
+    }
+
+    private static func describeAction(_ action: ComputerAction, _ item: AssistantModel.ActionItem,
+                                       _ t: (String) -> String) -> String {
+        func with(_ key: String, _ value: String) -> String { t(key).replacingOccurrences(of: "%@", with: value) }
+        func at(_ index: Int) -> String { item.targets.indices.contains(index) ? point(item.targets[index]) : t("action_at_cursor") }
+        func modifiers(_ text: String) -> String { text.isEmpty ? "" : " " + with("action_with", text) }
         switch action {
         case .screenshot: return t("action_screenshot")
         case .zoom: return t("action_zoom")
@@ -100,28 +128,42 @@ struct AssistantPanelView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            if model.hasAPIKey {
+            if model.isReady {
                 transcript
                 Divider()
                 promptArea
             } else {
-                noKey
+                notReady
             }
         }
-        .onAppear { promptFocused = model.hasAPIKey }
+        .onAppear {
+            model.syncProvider()
+            promptFocused = model.isReady
+        }
+        // Settings › Assistant: a new provider applies between conversations.
+        .onChange(of: settings.assistantProvider) { model.syncProvider() }
     }
 
     private var header: some View {
         HStack(spacing: 8) {
-            Label(settings.t("assistant_title"), systemImage: "sparkles")
+            Label(settings.t(model.provider == .claude ? "assistant_title" : "assistant_title_apple"),
+                  systemImage: model.provider == .claude ? "sparkles" : "laptopcomputer")
                 .font(.headline)
                 .foregroundStyle(.purple)
             Spacer()
-            Text(settings.t("assistant_tokens", model.usage.total.formatted()))
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
-                .help(settings.t("assistant_tokens_help") + "\n" + usageDetail)
+            if model.provider == .claude {
+                Text(settings.t("assistant_tokens", model.usage.total.formatted()))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .help(settings.t("assistant_tokens_help") + "\n" + usageDetail)
+            } else {
+                // Apple reports no tokens: none are shown or counted.
+                Text(settings.t("assistant_on_device"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .help(settings.t("assistant_on_device_help"))
+            }
             Button { model.clear() } label: {
                 Image(systemName: "square.and.pencil")
             }
@@ -141,12 +183,13 @@ struct AssistantPanelView: View {
             .joined(separator: " · ")
     }
 
-    /// AppFlow › Empty and blocked states: "No Anthropic API key".
-    private var noKey: some View {
+    /// AppFlow › Empty and blocked states: "No Anthropic API key", or the Apple model unavailable.
+    private var notReady: some View {
         VStack(spacing: 12) {
             Spacer()
-            Image(systemName: "key").font(.largeTitle).foregroundStyle(.secondary)
-            Text(settings.t("assistant_no_key"))
+            Image(systemName: model.provider == .claude ? "key" : "laptopcomputer")
+                .font(.largeTitle).foregroundStyle(.secondary)
+            Text(AssistantCopy.message(model.engine.notReadyReason ?? .noAPIKey, settings.t))
                 .multilineTextAlignment(.center)
             Button(settings.t("assistant_open_settings")) { openSettings() }
             Spacer()
@@ -273,7 +316,7 @@ struct AssistantPanelView: View {
         case .idle, .done:
             EmptyView()
         case .sending:
-            activity("assistant_looking")
+            activity(model.provider == .claude ? "assistant_looking" : "assistant_looking_apple")
         case .confirming:
             activity("assistant_waiting")
         case .running:
@@ -309,7 +352,7 @@ struct AssistantPanelView: View {
                 Label(AssistantCopy.message(failure, settings.t), systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.red)
-                if failure != .disconnected, failure != .noAPIKey {
+                if !failure.isPermanent {
                     Button(settings.t("assistant_retry")) { model.retry() }
                         .controlSize(.small)
                 }

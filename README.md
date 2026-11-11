@@ -41,6 +41,7 @@ It is a native SwiftUI + AppKit app with its own RFB/VNC protocol library (Apple
 | 📋 **Shared Clipboard** | Text both ways, Extended Clipboard (UTF-8) when the server supports it; off for a session over the Internet until you turn it on |
 | ☁️ **iCloud Sync** | The same Machine Library on all your Macs; passwords through iCloud Keychain |
 | ✨ **Claude Assistant** | Ask Claude about the remote screen or give it a task, with your own API key; every action waits for your Confirm |
+| 🍏 **Apple on-device assistant** | The same panel on Apple's on-device model (macOS 27, Settings › Assistant): no key, nothing leaves the Mac; it clicks only on text visible on the screen, each action confirmed |
 | 🔔 **Status Notifications** | A notification when a watched machine goes offline or comes back |
 | 📊 **Session History** | Local log of sessions with a 30-day summary and CSV export; a Menu Bar Extra for quick connect |
 | 🔁 **Session resilience** | One automatic reconnect after a drop, a clean stop before sleep and a reconnect after wake |

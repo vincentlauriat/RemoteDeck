@@ -114,6 +114,7 @@ final class AppSettings {
         static let terminalTheme = "terminalTheme"
         static let terminalCustomTheme = "terminalCustomTheme"
         static let terminalFontFamily = "terminalFontFamily"
+        static let assistantProvider = "assistantProvider"
     }
 
     /// The Claude Assistant's model (`ClaudeAPI.defaultModel`, Claude Opus 5.5).
@@ -145,6 +146,20 @@ final class AppSettings {
     /// The Claude Assistant's model: the one constant (`ClaudeAPI.defaultModel`), never read from
     /// UserDefaults, so a stale or unknown stored value cannot send another model the toolset.
     var claudeModel: String { Self.defaultClaudeModel }
+    /// Settings › Assistant › Provider (`AssistantProvider` raw value): Claude by default. Applies to
+    /// the next new conversation (a new session or the panel's New conversation).
+    var assistantProviderRaw: String {
+        didSet { defaults.set(assistantProviderRaw, forKey: Key.assistantProvider) }
+    }
+    /// An unknown stored value, or Private Cloud Compute (declared, not offered yet), reads as Claude.
+    var assistantProvider: AssistantProvider {
+        get {
+            guard let provider = AssistantProvider(rawValue: assistantProviderRaw),
+                  AssistantProvider.selectable.contains(provider) else { return .claude }
+            return provider
+        }
+        set { assistantProviderRaw = newValue.rawValue }
+    }
     var onboardingCompleted: Bool {
         didSet { defaults.set(onboardingCompleted, forKey: Key.onboardingCompleted) }
     }
@@ -243,6 +258,7 @@ final class AppSettings {
         notificationsEnabled = defaults.object(forKey: Key.notificationsEnabled) as? Bool ?? true
         defaultSharedClipboard = defaults.object(forKey: Key.defaultSharedClipboard) as? Bool ?? true
         onboardingCompleted = defaults.object(forKey: Key.onboardingCompleted) as? Bool ?? false
+        assistantProviderRaw = defaults.string(forKey: Key.assistantProvider) ?? AssistantProvider.claude.rawValue
         historyRetentionDays = defaults.object(forKey: Key.historyRetentionDays) as? Int
             ?? Self.defaultHistoryRetentionDays
         terminalOptionAsMeta = defaults.object(forKey: Key.terminalOptionAsMeta) as? Bool ?? false

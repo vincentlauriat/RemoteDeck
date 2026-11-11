@@ -56,6 +56,22 @@ struct AppSettingsTests {
         #expect(reloaded.appearance == .dark)
     }
 
+    /// Settings › Assistant › Provider (BackendSchema › AppSettings): Claude by default, persisted;
+    /// Private Cloud Compute (declared, not offered) and unknown values read as Claude.
+    @Test func assistantProviderDefaultsToClaudeAndPersists() {
+        defer { cleanUp() }
+        let settings = AppSettings(defaults: defaults, apiKeys: keychain)
+        #expect(settings.assistantProvider == .claude)
+        settings.assistantProvider = .appleOnDevice
+        #expect(defaults.string(forKey: "assistantProvider") == "appleOnDevice")
+        #expect(AppSettings(defaults: defaults, apiKeys: keychain).assistantProvider == .appleOnDevice)
+
+        defaults.set("applePrivateCloud", forKey: "assistantProvider")
+        #expect(AppSettings(defaults: defaults, apiKeys: keychain).assistantProvider == .claude)
+        defaults.set("gpt", forKey: "assistantProvider")
+        #expect(AppSettings(defaults: defaults, apiKeys: keychain).assistantProvider == .claude)
+    }
+
     @Test func doesNotWriteToStandardDefaults() {
         defer { cleanUp() }
         let settings = AppSettings(defaults: defaults, apiKeys: keychain)

@@ -118,6 +118,7 @@ Lifecycle (T3.5, `SessionModel`): one record per attempt (Connect, Retry, Reconn
 | `notificationsEnabled` | Bool | true (Settings › Notifications › Status notifications; off: nothing is posted, probes and dots go on) |
 | `defaultSharedClipboard` | Bool | true |
 | `claudeModel` | — (not stored) | `claude-opus-5-5`, the constant `ClaudeAPI.defaultModel` (the toolset `computer_toolset_20260801` is the only computer use tool on Opus 5.5). A value left in UserDefaults is ignored. No picker: Settings › Claude shows it |
+| `assistantProvider` | String | `claude` (post-1.0: Settings › Assistant › Provider; `appleOnDevice` = Apple's on-device Foundation Model; `applePrivateCloud` is declared but not offered, and it or an unknown value reads as `claude`; applies to the next Assistant Panel conversation; per Mac, never synced. Apple steps add nothing to `SessionRecord.assistantTokens`) |
 | `onboardingCompleted` | Bool | false |
 | `historyRetentionDays` | Int | 365 |
 | `terminalOptionAsMeta` | Bool | false (post-1.0: Settings › Terminal › "Use ⌥ as Meta"; off as in Ghostty so AZERTY ⌥ characters keep working) |

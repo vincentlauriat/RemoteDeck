@@ -33,16 +33,29 @@ enum AssistantFailure: Equatable, Sendable {
     case noAPIKey
     case api(AnthropicError)
     case disconnected
+    /// The Apple model cannot answer on this Mac (Settings › Assistant shows the same reason).
+    case appleUnavailable(AppleModelUnavailability)
+    /// The Apple model failed a step (the error's description).
+    case appleGeneration(String)
+
+    /// Retry cannot help: the panel shows no Retry button.
+    var isPermanent: Bool {
+        switch self {
+        case .disconnected, .noAPIKey, .appleUnavailable: true
+        case .api, .appleGeneration: false
+        }
+    }
 }
 
 /// The Claude Assistant of one session (AppFlow › Claude Assistant Panel, PRD acceptance criterion 8):
 /// on demand only, every action that reaches the remote confirmed first.
 ///
-/// Ask → (screenshot of the framebuffer + prompt) → Messages API → for each member `tool_use`, in
-/// order: read-only ones (screenshot, zoom, cursor_position, wait) run at once; any other is shown as
-/// a proposal and runs only on Confirm. Skip answers it with an error result and the rest of that
-/// turn with the documented "Not executed" text, then Claude answers. Stop cancels the request and
-/// the loop; results owed by then go out at the start of the next Ask (`Conversation.pendingResults`).
+/// Ask → (screenshot of the framebuffer + prompt) → the engine (Claude's Messages API, or Apple's
+/// on-device model, `AssistantEngine`) → for each proposed action, in order: read-only ones
+/// (screenshot, zoom, cursor_position, wait) run at once; any other is shown as a proposal and runs
+/// only on Confirm. Skip answers it with an error result and the rest of that turn with the
+/// documented "Not executed" text, then the model answers. Stop cancels the request and the loop;
+/// results owed by then go out at the start of the next Ask (`AssistantEngine.deferOutcomes`).
 @Observable
 @MainActor
 final class AssistantModel {
@@ -97,6 +110,8 @@ final class AssistantModel {
         /// The target in remote pixels (for the description and the highlight).
         var targets: [PointerLocation]
         var status: Status
+        /// The visible text an Apple click or scroll aims at (its point is in `targets`).
+        var label: String? = nil
     }
 
     enum Content: Equatable {
@@ -153,11 +168,12 @@ final class AssistantModel {
     private(set) var stepsWithoutAction = 0
 
     @ObservationIgnored weak var port: (any AssistantSessionPort)?
-    @ObservationIgnored private let client: MessagesClient
-    @ObservationIgnored private let apiKey: @MainActor () -> String
-    @ObservationIgnored private let model: String
+    /// Changes only between conversations (`syncProvider`).
+    private(set) var engine: any AssistantEngine
+    /// The provider chosen in Settings, and how to build its engine (nil: the engine is fixed).
+    @ObservationIgnored private let providerChoice: (@MainActor () -> AssistantProvider)?
+    @ObservationIgnored private let makeEngine: (@MainActor (AssistantProvider) -> any AssistantEngine)?
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
-    @ObservationIgnored private var conversation: Conversation?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var decision: CheckedContinuation<Decision, Never>?
     /// What a running plan still has to release if it is interrupted.
@@ -175,65 +191,98 @@ final class AssistantModel {
     /// The user confirmed an action in the turn being run.
     @ObservationIgnored private var turnConfirmedAnAction = false
 
-    init(port: (any AssistantSessionPort)?, client: MessagesClient, apiKey: @escaping @MainActor () -> String,
-         model: String = ClaudeAPI.defaultModel, armDelay: Duration = AssistantModel.defaultArmDelay,
+    init(port: (any AssistantSessionPort)?, engine: any AssistantEngine,
+         armDelay: Duration = AssistantModel.defaultArmDelay,
          sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.port = port
-        self.client = client
-        self.apiKey = apiKey
-        self.model = model
+        self.engine = engine
+        providerChoice = nil
+        makeEngine = nil
         self.armDelay = armDelay
         self.sleep = sleep
     }
 
-    var hasAPIKey: Bool { !apiKey().isEmpty }
+    /// The app's: the engine of the provider chosen in Settings, rebuilt when the choice changed and
+    /// no conversation is open (a new session, New conversation, or the panel shown again).
+    init(port: (any AssistantSessionPort)?, provider: @escaping @MainActor () -> AssistantProvider,
+         armDelay: Duration = AssistantModel.defaultArmDelay,
+         makeEngine: @escaping @MainActor (AssistantProvider) -> any AssistantEngine) {
+        self.port = port
+        engine = makeEngine(provider())
+        providerChoice = provider
+        self.makeEngine = makeEngine
+        self.armDelay = armDelay
+        sleep = { try await Task.sleep(for: $0) }
+    }
+
+    /// Takes the provider chosen in Settings, between conversations only.
+    func syncProvider() {
+        guard let providerChoice, let makeEngine, !phase.isBusy, !engine.hasConversation else { return }
+        let chosen = providerChoice()
+        guard chosen != engine.provider else { return }
+        engine = makeEngine(chosen)
+        if case .failed = phase { phase = .idle }
+    }
+
+    /// The Claude provider (`ClaudeEngine`).
+    convenience init(port: (any AssistantSessionPort)?, client: MessagesClient, apiKey: @escaping @MainActor () -> String,
+                     model: String = ClaudeAPI.defaultModel, armDelay: Duration = AssistantModel.defaultArmDelay,
+                     sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.init(port: port, engine: ClaudeEngine(client: client, apiKey: apiKey, model: model),
+                  armDelay: armDelay, sleep: sleep)
+    }
+
+    var provider: AssistantProvider { engine.provider }
+
+    /// The engine can answer: Claude has a key, the Apple model is available.
+    var isReady: Bool { engine.isReady }
+
+    /// Claude's name for `isReady` (a key is set).
+    var hasAPIKey: Bool { isReady }
 
     var sessionConnected: Bool { port?.assistantCanAct == true }
 
     var trimmedPrompt: String { prompt.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var canAsk: Bool {
-        !phase.isBusy && hasAPIKey && !trimmedPrompt.isEmpty && trimmedPrompt.count <= Self.maxPromptLength
+        !phase.isBusy && isReady && !trimmedPrompt.isEmpty && trimmedPrompt.count <= Self.maxPromptLength
             && port?.assistantCanAct == true
     }
 
     /// The request body that would be sent now (tests).
-    var currentRequestBody: Data? { conversation?.requestBody() }
+    var currentRequestBody: Data? { (engine as? ClaudeEngine)?.currentRequestBody }
 
     // MARK: Ask, Retry, Stop
 
     func ask() {
+        syncProvider()
         let text = trimmedPrompt
         guard canAsk else { return }
         prompt = ""
         stepsWithoutAction = 0   // the user is here: a new count
         append(.prompt(text))
-        if conversation == nil, let port {
-            conversation = Conversation(configuration: RequestConfiguration(model: model, desktop: port.assistantDesktop))
-        }
+        let desktop = port?.assistantDesktop ?? .x11
         start { [weak self] in
             guard let self else { return }
-            var content: [JSONValue] = []
-            if let image = await self.screenshot() { content.append(ContentBlock.image(image)) }
-            content.append(ContentBlock.text(text))
-            self.conversation?.appendUser(content)
+            let image = await self.screenshot()
+            self.engine.begin(prompt: text, screenshot: image, desktop: desktop)
             await self.loop()
         }
     }
 
     /// After an error: sends the same request again (the history did not change).
     func retry() {
-        guard case .failed(let failure) = phase, failure != .disconnected, conversation?.endsWithUser == true,
-              hasAPIKey else { return }
+        guard case .failed(let failure) = phase, failure != .disconnected, engine.canResend,
+              isReady else { return }
         start { [weak self] in await self?.loop() }
     }
 
     /// Continue after a pause: a new count, then the turn's results go out with the next request.
     func continueAfterPause() {
-        guard phase == .paused, conversation != nil, hasAPIKey else { return }
+        guard phase == .paused, engine.hasConversation, isReady else { return }
         stepsWithoutAction = 0
         start { [weak self] in
-            self?.conversation?.appendUser([])   // the deferred results, alone
+            self?.engine.deliver([])   // the deferred results, alone
             await self?.loop()
         }
     }
@@ -255,10 +304,11 @@ final class AssistantModel {
     /// A new conversation (the token counter keeps the session's total).
     func clear() {
         guard !phase.isBusy else { return }
-        conversation = nil
+        engine.reset()
         entries = []
         mapping = nil
         phase = .idle
+        syncProvider()
     }
 
     /// Confirm of the proposal `id`: ignored for any other (stale) id, before the proposal is armed,
@@ -338,111 +388,106 @@ final class AssistantModel {
 
     /// Error results for the turn's calls that will not run, owed to the next user message: without
     /// them the conversation would hold an unanswered `tool_use` and every later request would fail.
-    private func owe(_ response: MessagesResponse, _ text: String) {
-        let ids = response.toolUses.map(\.id)
+    private func owe(_ turn: AssistantTurn, _ text: String) {
+        let ids = turn.actions.map(\.id)
         guard !ids.isEmpty else { return }
         for id in ids { setStatus(.notExecuted, for: id) }
-        conversation?.deferResults(ids.map { ContentBlock.toolResult(id: $0, text: text, isError: true) })
+        engine.deferOutcomes(ids.map { ActionOutcome(id: $0, text: text, isError: true) })
     }
 
     // MARK: Loop
 
     private func loop() async {
-        while !Task.isCancelled, let conversation {
+        while !Task.isCancelled, engine.hasConversation {
             setPhase(.sending)
-            let key = apiKey()
-            guard !key.isEmpty else {
-                setPhase(.failed(.noAPIKey))
-                return
-            }
-            let response: MessagesResponse
+            let turn: AssistantTurn
             do {
-                response = try await client.send(body: conversation.requestBody(), apiKey: key)
+                turn = try await engine.nextTurn { [weak self] in
+                    await self?.port?.assistantSettle()
+                    return await self?.screenshot()
+                }
             } catch {
-                if error != .cancelled, !Task.isCancelled { setPhase(.failed(.api(error))) }
+                switch error {
+                case .notReady(let failure): setPhase(.failed(failure))
+                case .failed(let failure): if !Task.isCancelled { setPhase(.failed(failure)) }
+                case .cancelled: break
+                }
                 return
             }
-            // Billed whatever happens next.
-            usage += response.usage
-            port?.assistantAddTokens(response.usage.total)
-            port?.assistantSave()
-            // Every path appends the turn unchanged; any call in it that will not run is answered.
-            self.conversation?.appendAssistant(response)
+            // Billed whatever happens next (Claude only: Apple reports no tokens).
+            if let usage = turn.usage {
+                self.usage += usage
+                port?.assistantAddTokens(usage.total)
+                port?.assistantSave()
+            }
             guard !Task.isCancelled else {
-                owe(response, ToolResultText.stopped)
+                owe(turn, ToolResultText.stopped)
                 return
             }
 
-            switch response.stopReason {
-            case .toolUse:
-                show(response, actions: true)
+            show(turn)
+            switch turn.stop {
+            case .actions:
                 turnConfirmedAnAction = false
-                let results = await run(response.toolUses)
+                let results = await run(turn.actions)
                 if Task.isCancelled {
-                    self.conversation?.deferResults(results)
+                    engine.deferOutcomes(results)
                     return
                 }
                 stepsWithoutAction = turnConfirmedAnAction ? 0 : stepsWithoutAction + 1
                 if stepsWithoutAction >= Self.maxStepsWithoutAction {
                     // Not sent yet: Continue sends them alone, a Stop leaves them for the next Ask.
-                    self.conversation?.deferResults(results)
+                    engine.deferOutcomes(results)
                     setPhase(.paused)
                     return
                 }
-                self.conversation?.appendUser(results)
-            case .refusal:
-                show(response, actions: true)
-                owe(response, ToolResultText.notExecuted)
-                setPhase(.refused(category: response.refusal?.category, explanation: response.refusal?.explanation))
+                engine.deliver(results)
+            case .refused(let category, let explanation):
+                owe(turn, ToolResultText.notExecuted)
+                setPhase(.refused(category: category, explanation: explanation))
                 return
-            case .maxTokens, .contextWindowExceeded, .pauseTurn:
-                // `pause_turn` comes from server tools (none here). Its documented continuation would end
-                // the request with an assistant message, a prefill Opus 5.5 rejects: treated as cut off.
-                show(response, actions: true)
-                owe(response, ToolResultText.cutOff)
+            case .cutOff:
+                owe(turn, ToolResultText.cutOff)
                 setPhase(.cutOff)
                 return
-            case .endTurn, .stopSequence, .other:
-                show(response, actions: true)
-                owe(response, ToolResultText.notExecuted)
+            case .done:
+                owe(turn, ToolResultText.notExecuted)
                 setPhase(.done)
                 return
             }
         }
     }
 
-    /// Adds the response's text, progress updates and proposed actions to the transcript.
-    private func show(_ response: MessagesResponse, actions: Bool) {
-        for block in response.blocks {
+    /// Adds the turn's text, progress updates and proposed actions to the transcript.
+    private func show(_ turn: AssistantTurn) {
+        for block in turn.blocks {
             switch block {
-            case .text(let text) where !text.isEmpty:
+            case .answer(let text):
                 append(.answer(text))
-            case .thinking(let text) where !text.isEmpty:
+            case .progress(let text):
                 append(.progress(text))
-            case .toolUse(let id, let name, _, let input) where actions:
-                let action = try? ComputerAction(name: name, input: input)
-                let targets = (action?.points ?? []).compactMap { remotePoint($0) }
-                append(.action(ActionItem(toolUseID: id, name: name, action: action, targets: targets, status: .queued)))
-            default:
-                break
+            case .action(let use):
+                let targets = (use.action?.points ?? []).compactMap { remotePoint($0) }
+                append(.action(ActionItem(toolUseID: use.id, name: use.name, action: use.action, targets: targets,
+                                          status: .queued, label: use.label)))
             }
         }
     }
 
-    /// Runs the turn's member calls in order and returns one result per call. After a skip or a
-    /// failure the rest are not run (computer use docs, "Batch actions"). On Stop, the calls not run
-    /// yet get the "stopped" result.
-    private func run(_ uses: [(id: String, name: String, toolsetName: String?, input: JSONValue)]) async -> [JSONValue] {
-        var results: [JSONValue] = []
+    /// Runs the turn's actions in order and returns one result per action. After a skip or a
+    /// failure the rest are not run (computer use docs, "Batch actions"). On Stop, the actions not
+    /// run yet get the "stopped" result.
+    private func run(_ uses: [TurnAction]) async -> [ActionOutcome] {
+        var results: [ActionOutcome] = []
         var halted = false
         for use in uses {
             if Task.isCancelled {
-                results.append(ContentBlock.toolResult(id: use.id, text: ToolResultText.stopped, isError: true))
+                results.append(ActionOutcome(id: use.id, text: ToolResultText.stopped, isError: true))
                 setStatus(.cancelled, for: use.id)
                 continue
             }
             if halted {
-                results.append(ContentBlock.toolResult(id: use.id, text: ToolResultText.notExecuted, isError: true))
+                results.append(ActionOutcome(id: use.id, text: ToolResultText.notExecuted, isError: true))
                 setStatus(.notExecuted, for: use.id)
                 continue
             }
@@ -453,24 +498,18 @@ final class AssistantModel {
         return results
     }
 
-    private func runOne(_ use: (id: String, name: String, toolsetName: String?, input: JSONValue)) async
-        -> (result: JSONValue, halts: Bool) {
-        func failure(_ text: String) -> (JSONValue, Bool) {
+    private func runOne(_ use: TurnAction) async -> (result: ActionOutcome, halts: Bool) {
+        func failure(_ text: String) -> (ActionOutcome, Bool) {
             setStatus(.failed(text), for: use.id)
-            return (ContentBlock.toolResult(id: use.id, text: text, isError: true), true)
+            return (ActionOutcome(id: use.id, text: text, isError: true), true)
         }
-        guard use.toolsetName == ClaudeAPI.toolsetName else {
-            return failure("Error: \(use.name) is not available in this environment.")
-        }
-        let action: ComputerAction
-        do {
-            action = try ComputerAction(name: use.name, input: use.input)
-        } catch {
-            return failure(error.resultText)
+        if let parseError = use.parseError { return failure(parseError) }
+        guard let action = use.action else {
+            return failure(ComputerAction.ParseError.unsupported(use.name).resultText)
         }
         guard let port, port.assistantCanAct else {
             setStatus(.cancelled, for: use.id)
-            return (ContentBlock.toolResult(id: use.id, text: ToolResultText.disconnected, isError: true), true)
+            return (ActionOutcome(id: use.id, text: ToolResultText.disconnected, isError: true), true)
         }
 
         if action.isReadOnly {
@@ -522,13 +561,13 @@ final class AssistantModel {
             port.assistantSave()
             setStatus(.cancelled, for: use.id)
             let text = finalPhase == .failed(.disconnected) ? ToolResultText.disconnected : ToolResultText.stopped
-            return (ContentBlock.toolResult(id: use.id, text: text, isError: true), true)
+            return (ActionOutcome(id: use.id, text: text, isError: true), true)
         case .skip:
             row?.decisionValue = .rejected
             port.assistantSave()
             setStatus(.skipped, for: use.id)
             setPhase(.sending)
-            return (ContentBlock.toolResult(id: use.id, text: ToolResultText.skipped, isError: true), true)
+            return (ActionOutcome(id: use.id, text: ToolResultText.skipped, isError: true), true)
         case .confirm:
             row?.decisionValue = .confirmed
             port.assistantSave()
@@ -536,19 +575,19 @@ final class AssistantModel {
         }
         guard port.assistantCanAct else {
             setStatus(.cancelled, for: use.id)
-            return (ContentBlock.toolResult(id: use.id, text: ToolResultText.disconnected, isError: true), true)
+            return (ActionOutcome(id: use.id, text: ToolResultText.disconnected, isError: true), true)
         }
         setPhase(.running)
         setStatus(.running, for: use.id)
         let completed = await execute(plan)
         guard completed else {
             setStatus(.cancelled, for: use.id)
-            return (ContentBlock.toolResult(id: use.id, text: ToolResultText.stopped, isError: true), true)
+            return (ActionOutcome(id: use.id, text: ToolResultText.stopped, isError: true), true)
         }
         pointer = plan.pointer ?? pointer
         setStatus(.done, for: use.id)
         setPhase(.sending)
-        return (ContentBlock.toolResult(id: use.id, text: ToolResultText.ok), false)
+        return (ActionOutcome(id: use.id, text: ToolResultText.ok), false)
     }
 
     /// Sends the plan's batches with its pauses. `false` when interrupted: what it held is released
@@ -576,46 +615,46 @@ final class AssistantModel {
         return !Task.isCancelled
     }
 
-    private func runReadOnly(_ action: ComputerAction, id: String) async -> JSONValue {
+    private func runReadOnly(_ action: ComputerAction, id: String) async -> ActionOutcome {
         switch action {
         case .screenshot:
             await port?.assistantSettle()
             guard let image = await screenshot() else {
                 setStatus(.failed(ToolResultText.noFramebuffer), for: id)
-                return ContentBlock.toolResult(id: id, text: ToolResultText.noFramebuffer, isError: true)
+                return ActionOutcome(id: id, text: ToolResultText.noFramebuffer, isError: true)
             }
-            return ContentBlock.toolResult(id: id, content: [ContentBlock.image(image)])
+            return ActionOutcome(id: id, image: image)
         case .zoom(let x0, let y0, let x1, let y1):
             await port?.assistantSettle()
             guard let framebuffer = await port?.assistantSnapshot() else {
                 setStatus(.failed(ToolResultText.noFramebuffer), for: id)
-                return ContentBlock.toolResult(id: id, text: ToolResultText.noFramebuffer, isError: true)
+                return ActionOutcome(id: id, text: ToolResultText.noFramebuffer, isError: true)
             }
             let mapping = currentMapping(for: framebuffer)
             guard let rect = mapping.remoteRect(x0: x0, y0: y0, x1: x1, y1: y1),
                   let image = await Self.encode(framebuffer, region: rect) else {
                 let text = "Error: region [\(x0), \(y0), \(x1), \(y1)] is not inside the \(mapping.imageWidth)x\(mapping.imageHeight) screenshot."
                 setStatus(.failed(text), for: id)
-                return ContentBlock.toolResult(id: id, text: text, isError: true)
+                return ActionOutcome(id: id, text: text, isError: true)
             }
-            return ContentBlock.toolResult(id: id, content: [ContentBlock.image(image)])
+            return ActionOutcome(id: id, image: image)
         case .cursorPosition:
             guard let pointer else {
                 let text = "Error: the cursor position is not known yet."
                 setStatus(.failed(text), for: id)
-                return ContentBlock.toolResult(id: id, text: text, isError: true)
+                return ActionOutcome(id: id, text: text, isError: true)
             }
             let point = currentMapping().imagePoint(pointer)
-            return ContentBlock.toolResult(id: id, text: "X=\(point.x), Y=\(point.y)")
+            return ActionOutcome(id: id, text: "X=\(point.x), Y=\(point.y)")
         case .wait(let seconds):
             do {
                 try await sleep(.milliseconds(Int(seconds * 1000)))
             } catch {
-                return ContentBlock.toolResult(id: id, text: ToolResultText.stopped, isError: true)
+                return ActionOutcome(id: id, text: ToolResultText.stopped, isError: true)
             }
-            return ContentBlock.toolResult(id: id, text: ToolResultText.ok)
+            return ActionOutcome(id: id, text: ToolResultText.ok)
         default:
-            return ContentBlock.toolResult(id: id, text: ToolResultText.ok)
+            return ActionOutcome(id: id, text: ToolResultText.ok)
         }
     }
 
