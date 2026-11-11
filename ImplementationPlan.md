@@ -180,6 +180,18 @@ Design: `docs/superpowers/specs/2026-11-08-ssh-terminal-design.md`. Detailed pla
 
 **Checkpoint:** from the Library, Connect on `raspcorse` opens a terminal tab, a forward opens the Pi's web UI, an upload lands byte for byte, and Vincent no longer opens Ghostty for it.
 
+## Step 8 — Apple Foundation Models as an assistant provider (post-1.0)
+
+Design: `docs/superpowers/specs/2026-11-11-apple-foundation-models-design.md` (approved 2026-11-11, "1 et prévoir PCC").
+
+| Task | Owner or agent | Inputs | Deliverable | Done criterion | Depends on |
+|---|---|---|---|---|---|
+| T8.1 Apple on-device provider | executor + test-engineer | Design, TRD › Claude Assistant › Providers | `AssistantEngine` seam (`ClaudeEngine`, `AppleEngine`), `LabelMatcher` + `VisionTextLocator`, `AppleStepMapper`, `AppleFoundationModels.swift` (`@available(macOS 27, *)`, weak-linked), `AppleModelStatus`, Settings › Assistant provider picker (`AppSettings.assistantProvider`), panel "On device" state, `-LibraryDemo assistant-apple` | `AssistantModelTests` unchanged and green through `ClaudeEngine`; `ClaudeEngineTests`, `AppleEngineTests`, `LabelMatcherTests`, `AppleStepMapperTests`, `AssistantProviderSwitchTests`, `StringsTests`, `AppSettingsTests` green; `FoundationModels` is `LC_LOAD_WEAK_DYLIB` | T4.4 |
+| T8.2 Live check on real remote screens | Vincent | Signed Debug build, Settings › Assistant › Apple (on device) | Label-click accuracy on a macOS login window, a Finder desktop and a Linux desktop over VNC | Keep or narrow the action set from the measured hits | T8.1 |
+| T8.3 Private Cloud Compute (follow-up) | Vincent, then executor | developer.apple.com/private-cloud-compute | The managed entitlement requested and granted; then the entitlement, `PrivateCloudComputeLanguageModel` availability, a picker row (`AssistantProvider.applePrivateCloud`), quota display and the 32k context budget | A PCC step answers in the signed app | T8.1, Apple's grant |
+
+**T8 status.** T8.1 built and tested on fakes (the hosted tests and every demo mode never touch `SystemLanguageModel`); T8.2 and T8.3 open.
+
 ## Traceability
 
 | Feature | Priority | Screens (AppFlow) | Entities (BackendSchema, or "—" if none stored) | Tasks |
@@ -192,6 +204,7 @@ Design: `docs/superpowers/specs/2026-11-08-ssh-terminal-design.md`. Detailed pla
 | Session Tabs | P1 | Session Window | — | T4.2 |
 | iCloud Sync | P1 | Settings Window, Onboarding Sheet | Machine, MachineGroup, KeychainCredential, AppSettings | T4.3 |
 | Claude Assistant | P1 | Claude Assistant Panel, Settings Window | AssistantAction, KeychainCredential, SessionRecord, AppSettings | T4.4 |
+| Apple on-device assistant | P2, post-1.0 | Claude Assistant Panel, Settings Window | AssistantAction, AppSettings | T8.1, T8.2, T8.3 |
 | Status Notifications | P1 | Library Window, Settings Window | Machine, AppSettings | T4.5 |
 | Session History | P1 | Session History View, Menu Bar Extra | SessionRecord | T4.6 |
 | SSH Machines & Terminal | P1, post-1.0 | Library Window, Machine Editor (SSH), Session Window (terminal tab), Host Key Sheet, Passphrase Sheet, File Transfer Sheet, SSH Config Import Sheet, Settings Window, Menu Bar Extra | Machine (V3: `sshAuthMethod`, `sshKeyFileName`, `portForwardsData`), PortForward, KeychainCredential (`sshKey.`, `sshPassphrase.`, `sshLocalPassphrase.`), SessionRecord (`hostKeyRejected`), AppSettings (`terminalOptionAsMeta`, `terminalFontSize`, `terminalFontFamily`, `terminalTheme`, `terminalCustomTheme`, `sshFolderBookmark`, `trustedHostKeys`) | T7.1 … T7.14 |

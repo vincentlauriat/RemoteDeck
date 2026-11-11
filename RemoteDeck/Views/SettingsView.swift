@@ -4,6 +4,7 @@ struct SettingsView: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LibrarySync.self) private var sync
     let apiKeyChecker: any APIKeyChecking
+    let appleStatus: AppleModelStatus
     @State private var editor: APIKeyEditorModel?
     @State private var showsNotices = false
 
@@ -78,12 +79,38 @@ struct SettingsView: View {
 
             // Clé API Anthropic (Keychain, compte `anthropic.apiKey`) : un brouillon, enregistré seulement
             // par « Enregistrer » après le préfixe et la requête de test (APIKeyEditorModel).
-            Section(settings.t("settings_claude")) {
-                if let editor {
-                    APIKeySection(editor: editor)
+            // Settings › Assistant: the provider of the Assistant Panel. The key rows only for Claude;
+            // Apple shows whether its on-device model can answer on this Mac.
+            Section(settings.t("settings_assistant")) {
+                Picker(settings.t("settings_assistant_provider"), selection: $settings.assistantProvider) {
+                    ForEach(AssistantProvider.selectable, id: \.self) { provider in
+                        Text(settings.t(Self.titleKey(provider)))
+                            .tag(provider)
+                            .selectionDisabled(provider.isApple && !appleStatus.isSupportedOS)
+                    }
                 }
-                LabeledContent(settings.t("settings_model"), value: settings.claudeModel)
+                if settings.assistantProvider == .claude {
+                    if let editor {
+                        APIKeySection(editor: editor)
+                    }
+                    LabeledContent(settings.t("settings_model"), value: settings.claudeModel)
+                } else {
+                    Label(settings.t(AssistantCopy.appleStatusKey(appleStatus.unavailability)),
+                          systemImage: appleStatus.isAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(appleStatus.isAvailable ? Color.green : .orange)
+                }
+                Text(settings.t(settings.assistantProvider == .claude ? "settings_assistant_claude_help"
+                                                                        : "settings_assistant_apple_help"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !appleStatus.isSupportedOS {
+                    Text(settings.t("apple_status_requires_newer_os"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .onAppear { appleStatus.refresh() }
 
             // Status Notifications (T4.5, AppFlow › Settings Window › Toggle notifications).
             Section(settings.t("settings_notifications")) {
@@ -103,6 +130,14 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 480, height: 600)
+    }
+
+    static func titleKey(_ provider: AssistantProvider) -> String {
+        switch provider {
+        case .claude: "provider_claude"
+        case .appleOnDevice: "provider_apple_on_device"
+        case .applePrivateCloud: "provider_apple_private_cloud"
+        }
     }
 }
 

@@ -28,6 +28,8 @@ struct RemoteDeckApp: App {
     private let sshTester: any SSHTester
     private let makeDiscovery: @MainActor () -> DiscoveryService
     private let apiKeyChecker: any APIKeyChecking
+    /// The Apple model's availability (Settings › Assistant); fixed under XCTest and the demo.
+    private let appleStatus: AppleModelStatus
     /// Sparkle (T6.3): started only in a Release build outside XCTest and the debug modes.
     private let updater: AppUpdater
     /// Help (⌘?) and What's New… (AppFlow › Help and What's New): fetched from GitHub only when their
@@ -71,6 +73,13 @@ struct RemoteDeckApp: App {
         // The hosted tests and the demo never read or write the user's API key.
         var apiKeys: any APIKeyStore = inMemory ? InMemoryAPIKeyStore() : KeychainAPIKeyStore()
         var claudeClient = MessagesClient()
+        // Apple (on device): the hosted tests and every demo mode never touch the real model, only a
+        // fixed "available" answer; the real one is read in a normal launch.
+        let appleStatus = AppleModelStatus(checker: inMemory ? FixedAppleModelChecker(reason: nil)
+                                                             : SystemAppleModelChecker() as any AppleModelChecking)
+        var makeAppleEngine: @MainActor @Sendable () -> any AssistantEngine = { AppleAssistant.makeEngine(status: appleStatus) }
+        if inMemory { makeAppleEngine = { AppleAssistant.inertEngine() } }
+        var forcedProvider: AssistantProvider?
         var notificationAuthorizer: any NotificationAuthorizing = UserNotificationAuthorizer()
         let passwords = LibraryStore.passwordStore(isInMemory: isInMemory)
         // "Connect anyway" over the Internet (T5.3 H1): the user's defaults, except under the hosted
@@ -114,6 +123,11 @@ struct RemoteDeckApp: App {
                 apiKeys = InMemoryAPIKeyStore(key: LibraryDemo.assistantKey)
                 claudeClient = LibraryDemo.assistantClient()   // scripted answers: never the API
             }
+            if LibraryDemo.scriptsAppleAssistant {
+                // Scripted steps and OCR: never the model; the stored provider is left as it is.
+                makeAppleEngine = { LibraryDemo.appleEngine() }
+                forcedProvider = .appleOnDevice
+            }
         }
         #endif
         var settingsDefaults = UserDefaults.standard
@@ -128,6 +142,7 @@ struct RemoteDeckApp: App {
             _ = try? HistoryRetention.purge(container.mainContext, now: .now, historyDays: settings.historyRetentionDays)
         }
         apiKeyChecker = claudeClient
+        self.appleStatus = appleStatus
         self.tester = tester
         self.sshTester = sshTester
         self.makeDiscovery = makeDiscovery
@@ -147,8 +162,14 @@ struct RemoteDeckApp: App {
         let sessions = SessionManager(context: container.mainContext, passwords: passwords,
                                       tester: tester, makeConnection: makeConnection,
                                       pasteboard: pasteboard,
-                                      makeAssistant: { [claudeClient] session in
-            AssistantModel(port: session, client: claudeClient, apiKey: { settings.anthropicAPIKey })
+                                      makeAssistant: { [claudeClient, makeAppleEngine, forcedProvider] session in
+            // The provider read when a conversation starts (Settings › Assistant).
+            AssistantModel(port: session, provider: { forcedProvider ?? settings.assistantProvider }) { provider in
+                switch provider {
+                case .claude: ClaudeEngine(client: claudeClient, apiKey: { settings.anthropicAPIKey })
+                case .appleOnDevice, .applePrivateCloud: makeAppleEngine()
+                }
+            }
         }, path: sessionPath, workspaceCenter: powerCenter, publicConsents: publicConsents,
                                       ssh: ssh, makeSSHConnection: makeSSHConnection, sshTester: sshTester)
         _sessions = State(initialValue: sessions)
@@ -324,7 +345,7 @@ struct RemoteDeckApp: App {
 
         // Réglages via la scène native macOS (⌘,).
         Settings {
-            SettingsView(apiKeyChecker: apiKeyChecker)
+            SettingsView(apiKeyChecker: apiKeyChecker, appleStatus: appleStatus)
                 .environment(settings)
                 .environment(notificationPermission)
                 .environment(sync)
