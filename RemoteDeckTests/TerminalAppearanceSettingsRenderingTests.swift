@@ -40,17 +40,20 @@ struct TerminalAppearanceSettingsRenderingTests {
         return rep
     }
 
-    /// Whether some pixel of the bitmap has this colour (within 2 per channel). The raw samples are
-    /// read: the bitmap is drawn in sRGB, but `colorAt` tags it calibrated RGB, so converting it to
-    /// sRGB would shift every colour.
+    /// Whether some pixel of the bitmap has this sRGB colour (within 2 per channel). The bitmap is in
+    /// the screen's colour space (Display P3 on most Macs), so the expected colour is first converted
+    /// into it, then compared with the raw samples: grays are equal in both spaces, saturated colours
+    /// are not (sRGB #3A1F5D is #36205A in P3).
     private func contains(_ rep: NSBitmapImageRep, _ color: VTColor) -> Bool {
-        guard rep.bitsPerSample == 8, rep.samplesPerPixel >= 3 else { return false }
+        guard rep.bitsPerSample == 8, rep.samplesPerPixel >= 3,
+              let expected = color.nsColor.usingColorSpace(rep.colorSpace) else { return false }
+        func channel(_ value: CGFloat) -> Int { Int((min(max(value, 0), 1) * 255).rounded()) }
+        let (r, g, b) = (channel(expected.redComponent), channel(expected.greenComponent), channel(expected.blueComponent))
         var pixel = [Int](repeating: 0, count: rep.samplesPerPixel)
         for y in stride(from: 0, to: rep.pixelsHigh, by: 3) {
             for x in stride(from: 0, to: rep.pixelsWide, by: 3) {
                 rep.getPixel(&pixel, atX: x, y: y)
-                if abs(pixel[0] - Int(color.r)) <= 2, abs(pixel[1] - Int(color.g)) <= 2,
-                   abs(pixel[2] - Int(color.b)) <= 2 { return true }
+                if abs(pixel[0] - r) <= 2, abs(pixel[1] - g) <= 2, abs(pixel[2] - b) <= 2 { return true }
             }
         }
         return false
