@@ -6,7 +6,7 @@ import GhosttyVt
 /// the cells it reads after each `update()`.
 ///
 /// Not thread-safe (libghostty-vt is not reentrant): use one instance from one isolation domain, the
-/// main actor in the app. Callbacks (`onReply`) run synchronously inside `write`.
+/// main actor in the app. Callbacks (`onReply`, `onClipboardWrite`) run synchronously inside `write`.
 public final class VTTerminal {
     /// Ghostty 1.4.0's `scrollback-limit-bytes` (`ghostty +show-config --default`).
     public static let defaultScrollbackBytes = 50_000_000
@@ -14,6 +14,17 @@ public final class VTTerminal {
     /// Bytes the terminal answers with (device attributes, status reports, mode 2048 size
     /// reports…), to write to the channel like typed input.
     public var onReply: ([UInt8]) -> Void = { _ in }
+
+    /// Largest OSC 52 payload (decoded bytes) handed to `onClipboardWrite`; the same bound as the
+    /// screen clipboard (TRD › Clipboard › Bounds).
+    public static let maxClipboardWriteBytes = 1 << 20
+
+    /// A program wrote the clipboard with OSC 52: the decoded plain text, for the standard clipboard
+    /// only. Return true when it was written, false to refuse. Never called for reads (`ESC ] 52 ; c ; ?`
+    /// is not answered: no read callback is installed), for other destinations, non-text content, empty
+    /// or invalid UTF-8 text, or text over `maxClipboardWriteBytes`. Without a handler every write is
+    /// refused.
+    public var onClipboardWrite: ((String) -> Bool)?
 
     public private(set) var columns: Int
     public private(set) var rows: Int
@@ -33,6 +44,7 @@ public final class VTTerminal {
         var mouseEvent: GhosttyMouseEvent?
         var formatter: GhosttyFormatter?
         var onReply: ([UInt8]) -> Void = { _ in }
+        var onClipboardWrite: (String) -> Bool = { _ in false }
 
         deinit {
             ghostty_formatter_free(formatter)
@@ -82,7 +94,8 @@ public final class VTTerminal {
             var string = GhosttyString(ptr: buffer.baseAddress, len: buffer.count)
             ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &string)
         }
-        // No clipboard callbacks are installed: OSC 52 reads and writes are ignored.
+        // OSC 52 writes only (Vincent, 2026-11-11, as Ghostty does); no read callback is installed, so
+        // reads (`?`) are never answered and the remote cannot read the Mac pasteboard.
 
         ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_USERDATA, Unmanaged.passUnretained(h).toOpaque())
         let reply: GhosttyTerminalWritePtyFn = { _, userdata, data, length in
@@ -92,6 +105,20 @@ public final class VTTerminal {
         }
         ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_WRITE_PTY, unsafeBitCast(reply, to: UnsafeRawPointer.self))
         h.onReply = { [weak self] bytes in self?.onReply(bytes) }
+        let clipboardWrite: GhosttyTerminalClipboardWriteFn = { _, userdata, request in
+            guard let userdata, let request else { return }
+            let handles = Unmanaged<Handles>.fromOpaque(userdata).takeUnretainedValue()
+            var result = GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED
+            if let text = VTTerminal.clipboardText(of: request.pointee) {
+                result = handles.onClipboardWrite(text) ? GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS
+                                                        : GHOSTTY_CLIPBOARD_WRITE_RESULT_DENIED
+            }
+            var reply = GhosttyClipboardWriteReply(size: MemoryLayout<GhosttyClipboardWriteReply>.size,
+                                                   result: result, remember: false)
+            request.pointee.reply?(request, &reply)
+        }
+        ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, unsafeBitCast(clipboardWrite, to: UnsafeRawPointer.self))
+        h.onClipboardWrite = { [weak self] text in self?.onClipboardWrite?(text) ?? false }
 
         // Copy text the way Ghostty copies it: wrapped lines joined, trailing blanks trimmed.
         var yes = true
@@ -100,6 +127,22 @@ public final class VTTerminal {
     }
 
     private var term: GhosttyTerminal? { handles.terminal }
+
+    /// The text of a clipboard write the app may honour: standard clipboard (macOS has no selection or
+    /// primary pasteboard; Ghostty's macOS app keeps those apart from the general one, so they are
+    /// refused here), one `text/plain` representation of valid, non-empty UTF-8 within the bound.
+    /// Never logged.
+    private static func clipboardText(of write: GhosttyClipboardWrite) -> String? {
+        guard write.location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD, let contents = write.contents else { return nil }
+        for content in UnsafeBufferPointer(start: contents, count: write.contents_len) {
+            guard let mime = content.mime.ptr, let data = content.data.ptr else { continue }
+            let type = String(decoding: UnsafeBufferPointer(start: mime, count: content.mime.len), as: UTF8.self)
+            guard type == "text/plain" || type.hasPrefix("text/plain;") else { continue }
+            guard content.data.len > 0, content.data.len <= maxClipboardWriteBytes else { return nil }
+            return String(bytes: UnsafeBufferPointer(start: data, count: content.data.len), encoding: .utf8)
+        }
+        return nil
+    }
 
     // MARK: Bytes in
 

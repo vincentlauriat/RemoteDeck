@@ -169,6 +169,55 @@ struct VTTerminalTests {
         #expect(String(decoding: replies.joined(), as: UTF8.self).hasPrefix("\u{1B}[?"))
     }
 
+    // MARK: OSC 52
+
+    private func osc52(_ target: String, _ payload: String) -> String { "\u{1B}]52;\(target);\(payload)\u{07}" }
+
+    @Test func osc52WriteGivesTheDecodedText() {
+        let vt = VTTerminal(columns: 20, rows: 3)
+        var written: [String] = []
+        var replies: [[UInt8]] = []
+        vt.onReply = { replies.append($0) }
+        vt.onClipboardWrite = { written.append($0); return true }
+        vt.write(osc52("c", Data("héllo\nworld".utf8).base64EncodedString()))
+        #expect(written == ["héllo\nworld"])
+        #expect(replies.isEmpty)
+    }
+
+    @Test func osc52IsRefusedWithoutAHandlerOrWhenTheHandlerRefuses() {
+        let vt = VTTerminal(columns: 20, rows: 3)
+        vt.write(osc52("c", "aGk="))   // no handler: must not crash
+        var asked = 0
+        vt.onClipboardWrite = { _ in asked += 1; return false }
+        vt.write(osc52("c", "aGk="))
+        #expect(asked == 1)
+    }
+
+    @Test func osc52QueryIsNeverAnswered() {
+        let vt = VTTerminal(columns: 20, rows: 3)
+        var written: [String] = []
+        var replies: [[UInt8]] = []
+        vt.onReply = { replies.append($0) }
+        vt.onClipboardWrite = { written.append($0); return true }
+        vt.write(osc52("c", "?"))
+        #expect(written.isEmpty)
+        #expect(replies.isEmpty)   // no OSC 52 reply carrying the pasteboard
+    }
+
+    @Test func osc52OversizedOrInvalidTextIsDropped() {
+        let vt = VTTerminal(columns: 20, rows: 3)
+        var written: [String] = []
+        vt.onClipboardWrite = { written.append($0); return true }
+        vt.write(osc52("c", Data([0xFF, 0xFE, 0x41]).base64EncodedString()))   // not UTF-8
+        vt.write(osc52("c", ""))   // empty
+        let big = Data(repeating: 0x61, count: VTTerminal.maxClipboardWriteBytes + 1).base64EncodedString()
+        vt.write(osc52("c", big))
+        #expect(written.isEmpty)
+        let ok = Data(repeating: 0x61, count: 1000).base64EncodedString()
+        vt.write(osc52("c", ok))
+        #expect(written.count == 1 && written[0].utf8.count == 1000)
+    }
+
     @Test func mouseIsReportedInSGRWhenTracked() {
         let vt = VTTerminal(columns: 20, rows: 5)
         let geometry = VTMouseGeometry(width: 200, height: 100, cellWidth: 10, cellHeight: 20, paddingX: 0, paddingY: 0)
