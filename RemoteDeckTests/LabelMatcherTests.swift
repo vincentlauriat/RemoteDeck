@@ -37,6 +37,29 @@ struct LabelMatcherTests {
         #expect(LabelMatcher.match("save", in: texts) == .ambiguous(2))
     }
 
+    /// A partial match needs whole tokens: a label inside another word never matches.
+    @Test func labelInsideAWordIsNotFound() {
+        #expect(LabelMatcher.match("OK", in: [text("Bookmarks")]) == .notFound)
+    }
+
+    @Test func labelAsWholeTokensMatches() {
+        let texts = [text("Click OK", x: 100)]
+        #expect(LabelMatcher.match("OK", in: texts) == .found(ScreenPoint(x: 120, y: 10), texts[0]))
+    }
+
+    @Test func onlyTheWholeWordCandidateMatches() {
+        let texts = [text("Save As…", x: 0), text("Autosave", x: 100)]
+        #expect(LabelMatcher.match("save", in: texts) == .found(ScreenPoint(x: 20, y: 10), texts[0]))
+    }
+
+    @Test func multiWordLabelPrefersTheExactText() {
+        let texts = [text("Time Machine", x: 0), text("Machine", x: 100)]
+        #expect(LabelMatcher.match("Time Machine", in: texts) == .found(ScreenPoint(x: 20, y: 10), texts[0]))
+        #expect(LabelMatcher.match("time machine", in: [text("Open Time Machine settings")])
+                == .found(ScreenPoint(x: 20, y: 10), text("Open Time Machine settings")))
+        #expect(LabelMatcher.match("Time Machine", in: [text("Machine Time")]) == .notFound)
+    }
+
     @Test func missingOrEmptyLabelIsNotFound() {
         let texts = [text("Finder")]
         #expect(LabelMatcher.match("Trash", in: texts) == .notFound)
@@ -83,12 +106,12 @@ struct AppleStepMapperTests {
         }
     }
 
-    /// A containing match: the row names the text that is highlighted ("Bookmarks"), not the model's
+    /// A partial match: the row names the text that is highlighted ("Click OK"), not the model's
     /// word ("OK"); the model's label stays in the payload.
     @Test func rowShowsTheMatchedTextNotTheModelsWord() throws {
-        let texts = [LocatedText(text: "Bookmarks", rect: CGRect(x: 0, y: 0, width: 80, height: 20))]
+        let texts = [LocatedText(text: "Click OK", rect: CGRect(x: 0, y: 0, width: 80, height: 20))]
         let use = try #require(action(map(AppleStep(kind: .click, label: "OK"), texts: texts)))
-        #expect(use.label == "Bookmarks")
+        #expect(use.label == "Click OK")
         #expect(use.input["label"] == "OK")
         #expect(use.action == .click(.left, count: 1, at: ScreenPoint(x: 40, y: 10), modifiers: ""))
     }

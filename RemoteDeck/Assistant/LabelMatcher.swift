@@ -35,8 +35,23 @@ enum LabelMatcher {
         return trimmed.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
-    /// An exact match first (one, or `.ambiguous` when there are several), then a unique text
-    /// containing the label; several → `.ambiguous`, none → `.notFound`.
+    /// Whole words of a normalised text: split on white space, punctuation and symbols.
+    static func tokens(_ normalized: String) -> [Substring] {
+        let separators = CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters).union(.symbols)
+        return normalized.split { $0.unicodeScalars.allSatisfy(separators.contains) }
+    }
+
+    /// `label`'s tokens appear in `text`'s tokens as a contiguous run of whole tokens ("OK" is in
+    /// "Click OK", never in "Bookmarks").
+    static func containsTokens(_ label: [Substring], in text: [Substring]) -> Bool {
+        guard !label.isEmpty, label.count <= text.count else { return false }
+        return (0...(text.count - label.count)).contains { start in
+            text[start..<(start + label.count)].elementsEqual(label)
+        }
+    }
+
+    /// An exact match first (one, or `.ambiguous` when there are several), then a unique text holding
+    /// the label as whole tokens; several → `.ambiguous`, none → `.notFound`.
     static func match(_ label: String, in texts: [LocatedText]) -> LabelMatch {
         let wanted = normalize(label)
         guard !wanted.isEmpty else { return .notFound }
@@ -44,7 +59,8 @@ enum LabelMatcher {
         let exact = candidates.filter { $0.0 == wanted }.map(\.1)
         if exact.count > 1 { return .ambiguous(exact.count) }
         if let only = exact.first { return .found(centre(of: only.rect), only) }
-        let containing = candidates.filter { $0.0.contains(wanted) }.map(\.1)
+        let wantedTokens = tokens(wanted)
+        let containing = candidates.filter { containsTokens(wantedTokens, in: tokens($0.0)) }.map(\.1)
         if containing.count > 1 { return .ambiguous(containing.count) }
         if let only = containing.first { return .found(centre(of: only.rect), only) }
         return .notFound
