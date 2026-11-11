@@ -326,6 +326,22 @@ struct TerminalSurfaceTests {
         #expect(copied == ["hello"])
     }
 
+    @Test func osc52WriteReachesThePasteboardOnlyInTheKeyWindow() throws {
+        let (surface, _) = makeSurface()
+        let view = try #require(surface.view as? TerminalView)
+        var copied: [String] = []
+        view.writePasteboard = { copied.append($0) }
+        let sequence = "\u{1B}]52;c;\(Data("héllo".utf8).base64EncodedString())\u{07}"
+        view.isActiveForClipboard = { false }
+        surface.feed(Data(sequence.utf8))
+        #expect(copied.isEmpty)   // not the key window: refused
+        view.isActiveForClipboard = { true }
+        surface.feed(Data(sequence.utf8))
+        #expect(copied == ["héllo"])
+        surface.feed(Data("\u{1B}]52;c;?\u{07}".utf8))   // a read: nothing written
+        #expect(copied == ["héllo"])
+    }
+
     @Test func pasteIsBracketedWhenTheProgramAskedForIt() throws {
         let (surface, _) = makeSurface()
         let view = try #require(surface.view as? TerminalView)

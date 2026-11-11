@@ -163,8 +163,10 @@ UI in his browser through a tunnel.
   default). ⌥ is not Alt by default, as in Ghostty (keeps AZERTY ⌥ characters); a setting "Use ⌥
   as Meta" **(Claude's call)**.
   Font size adjustable with ⌘+/⌘− **(Claude's call)**.
-- Clipboard: local copy/paste only; OSC 52 (remote writing the Mac pasteboard) off **(Claude's
-  call)**, in line with the clipboard caution of T5.3.
+- Clipboard: local copy/paste, plus OSC 52 **writes** (remote writing the Mac pasteboard) as Ghostty
+  does **(Vincent's call, 2026-11-11, reversing Claude's earlier "off")**: needed because programs that
+  track the mouse (Claude Code, tmux mouse on, vim) copy through OSC 52. Only while the tab's window is
+  key, plain text only, at most 1 MiB, standard clipboard only; OSC 52 reads stay unanswered (T5.3).
 - Keyboard capture: the terminal takes the keys a terminal needs; RemoteDeck's app shortcuts
   (⌘1…⌘9, ⌘W, ⌘Y…) keep working. The screen-session system-shortcut tap does not apply.
 

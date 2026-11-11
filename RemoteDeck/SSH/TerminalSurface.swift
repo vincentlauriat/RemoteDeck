@@ -61,7 +61,8 @@ protocol TerminalSurface: AnyObject {
 /// - Input: keys through libghostty-vt's key encoder (cursor-key mode, Kitty flags…), mouse through
 ///   its mouse encoder while the program tracks the mouse, pastes bracketed when the program asked
 ///   (mode 2004); the terminal's own replies (device attributes, status reports) go to `onInput` too.
-///   OSC 52 is ignored (no clipboard callback is installed).
+///   OSC 52 writes (a program that tracks the mouse copies this way) go to the view's pasteboard only
+///   while its window is key, else they are refused; reads are never answered.
 @MainActor
 final class GhosttyTerminalSurface: TerminalSurface {
     static let sliceSize = 64 * 1024
@@ -134,6 +135,7 @@ final class GhosttyTerminalSurface: TerminalSurface {
         terminalView = TerminalView(frame: .zero)
         terminalView.surface = self
         terminal.onReply = { [weak self] bytes in self?.onInput(Data(bytes)) }
+        terminal.onClipboardWrite = { [weak self] text in self?.terminalView.remoteCopy(text) ?? false }
         applyTheme()
         refresh()
     }

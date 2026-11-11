@@ -18,6 +18,10 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
+    /// Whether this terminal's tab is the one the user is looking at: its window is key. Replaced in
+    /// tests (a hosted test's window is never key).
+    lazy var isActiveForClipboard: () -> Bool = { [weak self] in self?.window?.isKeyWindow == true }
+
     private var markedText = NSMutableAttributedString()
     /// The selection inside the marked text, as the input method set it.
     private var markedSelection = NSRange(location: 0, length: 0)
@@ -251,6 +255,13 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
     @objc func copy(_ sender: Any?) {
         guard let text = surface?.selectionText, !text.isEmpty else { return }
         writePasteboard(text)
+    }
+
+    /// A remote OSC 52 write: honoured only while this tab's window is key. Returns whether it was written.
+    func remoteCopy(_ text: String) -> Bool {
+        guard isActiveForClipboard() else { return false }
+        writePasteboard(text)
+        return true
     }
 
     @objc func paste(_ sender: Any?) {
