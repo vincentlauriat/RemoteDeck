@@ -79,7 +79,12 @@ struct RemoteDeckApp: App {
                                                              : SystemAppleModelChecker() as any AppleModelChecking)
         var makeAppleEngine: @MainActor @Sendable () -> any AssistantEngine = { AppleAssistant.makeEngine(status: appleStatus) }
         if inMemory { makeAppleEngine = { AppleAssistant.inertEngine() } }
-        var forcedProvider: AssistantProvider?
+        // `-LibraryDemo assistant-apple` shows the Apple provider without changing the stored setting.
+        #if DEBUG
+        let forcedProvider: AssistantProvider? = LibraryDemo.scriptsAppleAssistant ? .appleOnDevice : nil
+        #else
+        let forcedProvider: AssistantProvider? = nil
+        #endif
         var notificationAuthorizer: any NotificationAuthorizing = UserNotificationAuthorizer()
         let passwords = LibraryStore.passwordStore(isInMemory: isInMemory)
         // "Connect anyway" over the Internet (T5.3 H1): the user's defaults, except under the hosted
@@ -126,7 +131,6 @@ struct RemoteDeckApp: App {
             if LibraryDemo.scriptsAppleAssistant {
                 // Scripted steps and OCR: never the model; the stored provider is left as it is.
                 makeAppleEngine = { LibraryDemo.appleEngine() }
-                forcedProvider = .appleOnDevice
             }
         }
         #endif

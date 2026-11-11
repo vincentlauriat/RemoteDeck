@@ -74,7 +74,10 @@ enum AppleStepMapper {
     /// or ambiguous, becomes an action that did not parse (answered with the error, never run).
     static func map(_ step: AppleStep, id: String, texts: [LocatedText], width: Int, height: Int) -> Mapped {
         let label = step.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        func action(_ name: String, _ input: [String: JSONValue], label: String? = nil, error: String? = nil) -> Mapped {
+        /// `label`: the model's, kept in the payload; `shown`: what the row shows (the OCR'd text the
+        /// point comes from, so the row never names something other than what is highlighted).
+        func action(_ name: String, _ input: [String: JSONValue], label: String? = nil, shown: String? = nil,
+                    error: String? = nil) -> Mapped {
             var recorded = input
             if let label { recorded["label"] = .string(label) }
             let value = JSONValue.object(input)
@@ -88,14 +91,14 @@ enum AppleStepMapper {
                 }
             }
             return .action(TurnAction(id: id, name: name, action: parsed, parseError: parseError,
-                                      input: .object(recorded), label: label))
+                                      input: .object(recorded), label: shown ?? label))
         }
         func point(_ name: String, extra: [String: JSONValue] = [:]) -> Mapped {
             switch LabelMatcher.match(label, in: texts) {
-            case .found(let at, _):
+            case .found(let at, let located):
                 var input = extra
                 input["coordinate"] = [.int(at.x), .int(at.y)]
-                return action(name, input, label: label)
+                return action(name, input, label: label, shown: located.text)
             case .notFound:
                 return action(name, extra, label: label,
                               error: "Error: the label \"\(label)\" was not found on the screen.")
@@ -200,7 +203,8 @@ final class AppleEngine: AssistantEngine {
         pendingScreenshot = nil
         let image: EncodedImage? = if let taken { taken } else { await screenshot() }
         guard !Task.isCancelled else { throw .cancelled }
-        guard let image else { throw .failed(.appleGeneration(ToolResultText.noFramebuffer)) }
+        // No framebuffer: the session is not (or no longer) showing the remote screen.
+        guard let image else { throw .failed(.disconnected) }
 
         let step: AppleStep
         do {

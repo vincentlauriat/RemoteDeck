@@ -114,6 +114,14 @@ struct FoundationModelsStepGenerator<Model: LanguageModel>: AppleStepGenerating 
             case .guardrailViolation, .refusal: throw .refused(error.localizedDescription)
             default: throw .failed(error.localizedDescription)
             }
+        } catch let error as LanguageModelSession.GenerationError {
+            // The pre-27 error type, deprecated in macOS 27 (the deprecation warnings stay in this file):
+            // a model may still throw it.
+            switch error {
+            case .exceededContextWindowSize: throw .contextExceeded
+            case .guardrailViolation, .refusal: throw .refused(error.localizedDescription)
+            default: throw .failed(error.localizedDescription)
+            }
         } catch is CancellationError {
             throw .cancelled
         } catch {

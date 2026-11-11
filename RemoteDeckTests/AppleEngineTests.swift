@@ -77,7 +77,7 @@ struct AppleEngineTests {
         #expect(port.sent.isEmpty, "an action ran without confirmation")
         // The 1024 × 768 framebuffer is sent as is: the OCR point is the remote point.
         #expect(model.highlight == [PointerLocation(x: 130, y: 210)])
-        #expect(items(model).first?.label == "finder")
+        #expect(items(model).first?.label == "Finder")   // the highlighted text, as OCR read it
         #expect(model.entries.contains { $0.content == .progress("Opening Finder.") })
 
         await confirmWhenArmed(model)

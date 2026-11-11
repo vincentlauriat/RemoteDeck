@@ -78,9 +78,19 @@ struct AppleStepMapperTests {
             let use = try #require(action(map(AppleStep(kind: kind, label: "finder"))))
             #expect(use.action == expected)
             #expect(use.parseError == nil)
-            #expect(use.label == "finder")
+            #expect(use.label == "Finder")   // the OCR text the point comes from
             #expect(use.id == "apple-1")
         }
+    }
+
+    /// A containing match: the row names the text that is highlighted ("Bookmarks"), not the model's
+    /// word ("OK"); the model's label stays in the payload.
+    @Test func rowShowsTheMatchedTextNotTheModelsWord() throws {
+        let texts = [LocatedText(text: "Bookmarks", rect: CGRect(x: 0, y: 0, width: 80, height: 20))]
+        let use = try #require(action(map(AppleStep(kind: .click, label: "OK"), texts: texts)))
+        #expect(use.label == "Bookmarks")
+        #expect(use.input["label"] == "OK")
+        #expect(use.action == .click(.left, count: 1, at: ScreenPoint(x: 40, y: 10), modifiers: ""))
     }
 
     @Test func unresolvedLabelsBecomeErrorsWithoutAnAction() throws {
