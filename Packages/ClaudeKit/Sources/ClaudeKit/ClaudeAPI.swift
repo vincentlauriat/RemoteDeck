@@ -68,13 +68,18 @@ public struct RequestConfiguration: Sendable, Equatable {
     public var maxTokens: Int
     public var effort: String
     public var system: String
+    /// The `tools` array: the computer toolset for the screen assistant, custom client tools for the
+    /// terminal assistant.
+    public var tools: [JSONValue]
 
     public init(model: String = ClaudeAPI.defaultModel, maxTokens: Int = ClaudeAPI.maxTokens,
-                effort: String = ClaudeAPI.effort, system: String) {
+                effort: String = ClaudeAPI.effort, system: String,
+                tools: [JSONValue] = [ClaudeAPI.computerToolset]) {
         self.model = model
         self.maxTokens = maxTokens
         self.effort = effort
         self.system = system
+        self.tools = tools
     }
 
     public init(model: String = ClaudeAPI.defaultModel, desktop: RemoteDesktopKind) {
