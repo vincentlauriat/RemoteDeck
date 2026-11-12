@@ -35,6 +35,7 @@ final class SessionManager {
     @ObservationIgnored private let makeDisplay: @MainActor () -> SessionDisplayModel?
     @ObservationIgnored private let pasteboard: any ClipboardPasteboard
     @ObservationIgnored private let makeAssistant: @MainActor (SessionModel) -> AssistantModel?
+    @ObservationIgnored private let makeTerminalAssistant: @MainActor (TerminalSessionModel) -> TerminalAssistantModel?
     @ObservationIgnored private let resilience: SessionResilience
     @ObservationIgnored private let reconnectClock: any ReachabilityClock
     /// "Connect anyway" confirmations (T5.3 H1); in memory unless the app passes the UserDefaults one.
@@ -64,8 +65,10 @@ final class SessionManager {
          publicConsents: any PublicAddressConsents = InMemoryPublicAddressConsents(),
          ssh: SSHServices = .inMemory(),
          makeSSHConnection: @escaping @MainActor (SessionTarget) -> any SSHSessionConnection = SessionManager.sshConnection,
-         sshTester: any SSHTester = DisabledSSHTester()) {
+         sshTester: any SSHTester = DisabledSSHTester(),
+         makeTerminalAssistant: @escaping @MainActor (TerminalSessionModel) -> TerminalAssistantModel? = { _ in nil }) {
         self.sshTester = sshTester
+        self.makeTerminalAssistant = makeTerminalAssistant
         self.publicConsents = publicConsents
         self.ssh = ssh
         self.makeSSHConnection = makeSSHConnection
@@ -205,6 +208,7 @@ final class SessionManager {
         terminal.isNetworkAvailable = { [weak self] in self?.isNetworkAvailable ?? true }
         openCount += 1
         terminal.openOrder = openCount
+        terminal.terminalAssistant = makeTerminalAssistant(terminal)
         terminals[machineID] = terminal
         terminal.connect()
         return terminal

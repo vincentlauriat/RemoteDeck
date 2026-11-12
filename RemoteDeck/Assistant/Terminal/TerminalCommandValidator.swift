@@ -34,6 +34,25 @@ enum TerminalCommandValidator {
         scalar.value < 0x20 || (0x7F...0x9F).contains(scalar.value)
     }
 
+    /// A reading aid only (the panel's "Destructive" badge), never a security check: Confirm is the
+    /// boundary. Patterns that delete, format, overwrite a disk or stop the machine.
+    static func looksDestructive(_ command: String) -> Bool {
+        let text = " " + command.lowercased() + " "
+        let words = text.split(whereSeparator: { $0.isWhitespace || $0 == ";" || $0 == "&" || $0 == "|" }).map(String.init)
+        func program(_ name: String) -> Bool {
+            // A program in command position, also after sudo.
+            for (index, word) in words.enumerated() where word == name || word.hasPrefix(name + ".") {
+                if index == 0 || ["sudo", "doas", "exec", "nohup"].contains(words[index - 1]) { return true }
+            }
+            return false
+        }
+        if program("rm"), words.contains(where: { $0.hasPrefix("-") && $0.contains("r") && $0.contains("f") }) { return true }
+        if program("mkfs") || program("shutdown") || program("reboot") || program("halt") || program("poweroff")
+            || program("wipefs") { return true }
+        if program("dd"), words.contains(where: { $0.hasPrefix("of=") }) { return true }
+        return text.contains("> /dev/sd") || text.contains(">/dev/sd") || text.contains("> /dev/nvme")
+    }
+
     static func validate(_ command: String, snapshot: TerminalSnapshot?, connected: Bool) -> CommandRefusal? {
         guard connected else { return .notConnected }
         guard !command.isEmpty else { return .empty }

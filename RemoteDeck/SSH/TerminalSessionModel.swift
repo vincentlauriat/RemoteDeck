@@ -314,6 +314,9 @@ final class TerminalSessionModel {
     /// The output settling's clock (tests: a fake).
     @ObservationIgnored var assistantClock: any ReachabilityClock = ContinuousReachabilityClock()
     @ObservationIgnored private var settler: OutputSettler?
+    /// The tab's Terminal Assistant (`SessionManager.makeTerminalAssistant`); ends before every
+    /// teardown, starts over on a new shell.
+    var terminalAssistant: TerminalAssistantModel?
 
     private enum ShellInput: Sendable {
         case data(Data)
@@ -638,7 +641,10 @@ final class TerminalSessionModel {
         record?.connectMillis = Int(((clock.uptime() - startUptime) * 1000).rounded())
         fetchMachine()?.lastConnectedAt = clock.now()
         save()
-        if hadShell { surface?.showSeparator(separatorText()) }
+        if hadShell {
+            surface?.showSeparator(separatorText())
+            terminalAssistant?.shellReconnected()
+        }
         hadShell = true
         coalescer = TerminalOutputCoalescer()
         let (stream, continuation) = AsyncStream.makeStream(of: ShellInput.self)
@@ -938,6 +944,7 @@ final class TerminalSessionModel {
         let wasConnecting = phase == .connecting
         let wasRunning = wasConnecting || phase == .connected
         generation += 1
+        terminalAssistant?.sessionEnded()
         cancelPendingReconnect()
         cancelPathLoss()
         dismissPrompts()
@@ -1026,6 +1033,7 @@ final class TerminalSessionModel {
     /// channel) and then the connection. A forward still starting is stopped by its own task, which
     /// finds the attempt gone.
     private func beginTearDown() -> (@MainActor () async -> Void, TerminalOutputCoalescer?) {
+        terminalAssistant?.sessionEnded()
         settler?.sessionEnded()
         let task = self.task
         let opening = self.opening
