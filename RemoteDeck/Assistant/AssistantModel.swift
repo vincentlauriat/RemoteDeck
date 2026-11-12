@@ -132,10 +132,10 @@ final class AssistantModel {
     static let maxPromptLength = 2000
     /// Confirm (button or ⌘Return) is accepted only this long after a proposal is shown, so a held
     /// ⌘Return or a double click cannot confirm the next proposal unseen.
-    static let defaultArmDelay: Duration = .milliseconds(400)
+    static let defaultArmDelay: Duration = AssistantDecisionGate.defaultArmDelay
     /// Consecutive API turns without a confirmed action (screenshots, zooms, waits, cursor positions,
     /// skips, errors) before the loop pauses (T5.3 M3): a task cannot run up tokens unattended.
-    static let maxStepsWithoutAction = 8
+    static let maxStepsWithoutAction = AssistantDecisionGate.maxStepsWithoutAction
     /// A `type` text longer than this (Unicode scalars, as `ComputerAction.maxTypeLength`) or on several lines (a single trailing line end
     /// aside) is shown in a block the user must open before Confirm arms (T5.3 M2).
     nonisolated static let typeRevealThreshold = 80
@@ -156,16 +156,18 @@ final class AssistantModel {
     /// Remote pixels of the action waiting for confirmation (drawn on the framebuffer).
     private(set) var highlight: [PointerLocation] = []
     /// The `tool_use` id of the proposal waiting for Confirm or Skip.
-    private(set) var awaitingID: String?
+    var awaitingID: String? { gate.pendingID }
     /// Confirm is accepted (`defaultArmDelay` after the proposal appeared, or after its text was
     /// opened when it had to be).
-    private(set) var confirmArmed = false
+    var confirmArmed: Bool { gate.isArmed }
     /// The awaiting proposal is a `type` whose text must be opened first (`typeTextNeedsReveal`).
     private(set) var awaitingNeedsReveal = false
     /// The awaiting proposal's full text was opened.
     private(set) var awaitingRevealed = false
     /// API turns in a row that confirmed no action (`maxStepsWithoutAction`).
-    private(set) var stepsWithoutAction = 0
+    var stepsWithoutAction: Int { gate.stepsWithoutAction }
+    /// The confirmation rules shared with the terminal assistant (observable: the panel reads them).
+    private let gate: AssistantDecisionGate
 
     @ObservationIgnored weak var port: (any AssistantSessionPort)?
     /// Changes only between conversations (`syncProvider`).
@@ -175,7 +177,6 @@ final class AssistantModel {
     @ObservationIgnored private let makeEngine: (@MainActor (AssistantProvider) -> any AssistantEngine)?
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private var task: Task<Void, Never>?
-    @ObservationIgnored private var decision: CheckedContinuation<Decision, Never>?
     /// What a running plan still has to release if it is interrupted.
     @ObservationIgnored private var pendingRelease: [ClientMessage]?
     /// The last screenshot sent: Claude's coordinates are in its pixel space.
@@ -183,7 +184,6 @@ final class AssistantModel {
     /// Where the assistant left the pointer (remote pixels).
     @ObservationIgnored private var pointer: PointerLocation?
     @ObservationIgnored private var nextEntryID = 0
-    @ObservationIgnored private let armDelay: Duration
     /// The loop task's generation: a late end of a stopped task changes nothing.
     @ObservationIgnored private var generation = 0
     /// Where a `stopping` phase ends.
@@ -198,7 +198,7 @@ final class AssistantModel {
         self.engine = engine
         providerChoice = nil
         makeEngine = nil
-        self.armDelay = armDelay
+        gate = AssistantDecisionGate(armDelay: armDelay)
         self.sleep = sleep
     }
 
@@ -211,7 +211,7 @@ final class AssistantModel {
         engine = makeEngine(provider())
         providerChoice = provider
         self.makeEngine = makeEngine
-        self.armDelay = armDelay
+        gate = AssistantDecisionGate(armDelay: armDelay)
         sleep = { try await Task.sleep(for: $0) }
     }
 
@@ -259,7 +259,7 @@ final class AssistantModel {
         let text = trimmedPrompt
         guard canAsk else { return }
         prompt = ""
-        stepsWithoutAction = 0   // the user is here: a new count
+        gate.resetSteps()   // the user is here: a new count
         append(.prompt(text))
         let desktop = port?.assistantDesktop ?? .x11
         start { [weak self] in
@@ -280,7 +280,7 @@ final class AssistantModel {
     /// Continue after a pause: a new count, then the turn's results go out with the next request.
     func continueAfterPause() {
         guard phase == .paused, engine.hasConversation, isReady else { return }
-        stepsWithoutAction = 0
+        gate.resetSteps()
         start { [weak self] in
             self?.engine.deliver([])   // the deferred results, alone
             await self?.loop()
@@ -327,24 +327,17 @@ final class AssistantModel {
     func reveal(_ id: String) {
         guard id == awaitingID, awaitingNeedsReveal, !awaitingRevealed else { return }
         awaitingRevealed = true
-        arm(id)
-    }
-
-    private func arm(_ id: String) {
-        Task { [weak self, armDelay] in
-            try? await Task.sleep(for: armDelay)
-            if let self, self.awaitingID == id { self.confirmArmed = true }
-        }
+        gate.arm(id)
     }
 
     private func resolve(_ value: Decision) {
-        awaitingID = nil
-        confirmArmed = false
         awaitingNeedsReveal = false
         awaitingRevealed = false
-        guard let decision else { return }
-        self.decision = nil
-        decision.resume(returning: value)
+        switch value {
+        case .confirm: gate.confirm(id: awaitingID ?? "")
+        case .skip: gate.skip(id: awaitingID ?? "")
+        case .stop: gate.stopAll()
+        }
     }
 
     private func interrupt(as final: Phase) {
@@ -434,8 +427,8 @@ final class AssistantModel {
                     engine.deferOutcomes(results)
                     return
                 }
-                stepsWithoutAction = turnConfirmedAnAction ? 0 : stepsWithoutAction + 1
-                if stepsWithoutAction >= Self.maxStepsWithoutAction {
+                gate.recordTurn(confirmedAction: turnConfirmedAnAction)
+                if gate.shouldPause {
                     // Not sent yet: Continue sends them alone, a Stop leaves them for the next Ask.
                     engine.deferOutcomes(results)
                     setPhase(.paused)
@@ -538,37 +531,28 @@ final class AssistantModel {
         highlight = targets(of: use.id)
         setPhase(.confirming)
         port.assistantReleaseKeyboard()
-        let decision: Decision = await withCheckedContinuation { continuation in
-            if Task.isCancelled {
-                continuation.resume(returning: .stop)
-                return
-            }
-            self.decision = continuation
-            self.awaitingID = use.id
-            self.confirmArmed = false
-            self.awaitingRevealed = false
-            if case .type(let text) = action, Self.typeTextNeedsReveal(text) {
-                self.awaitingNeedsReveal = true   // armed by `reveal`
-            } else {
-                self.awaitingNeedsReveal = false
-                self.arm(use.id)
-            }
+        var needsReveal = false
+        if case .type(let text) = action, Self.typeTextNeedsReveal(text) { needsReveal = true }   // armed by `reveal`
+        if !Task.isCancelled {
+            awaitingRevealed = false
+            awaitingNeedsReveal = needsReveal
         }
+        let decision = await gate.decide(id: use.id, armsNow: !needsReveal)
         highlight = []
         switch decision {
-        case .stop:
+        case .stopped:
             row?.decisionValue = .cancelled
             port.assistantSave()
             setStatus(.cancelled, for: use.id)
             let text = finalPhase == .failed(.disconnected) ? ToolResultText.disconnected : ToolResultText.stopped
             return (ActionOutcome(id: use.id, text: text, isError: true), true)
-        case .skip:
+        case .skipped:
             row?.decisionValue = .rejected
             port.assistantSave()
             setStatus(.skipped, for: use.id)
             setPhase(.sending)
             return (ActionOutcome(id: use.id, text: ToolResultText.skipped, isError: true), true)
-        case .confirm:
+        case .confirmed:
             row?.decisionValue = .confirmed
             port.assistantSave()
             turnConfirmedAnAction = true
