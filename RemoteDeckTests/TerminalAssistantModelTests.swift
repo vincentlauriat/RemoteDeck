@@ -336,6 +336,7 @@ struct TerminalAssistantModelTests {
         waiting.sessionEnded()
         #expect(await waitUntil { waiting.phase == .failed(.disconnected) })
         #expect(waitPort.typed == ["make"])   // typed before, nothing after
+        #expect(waiting.item("t2")?.status == .cancelled)   // Review Focus 2: the row ends cancelled
     }
 
     @Test func snapshotIsReReadAfterConfirm() async {

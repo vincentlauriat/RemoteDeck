@@ -440,6 +440,13 @@ final class TerminalAssistantModel {
         }
         port.assistantIsSending = false
         let wait = await port.assistantWaitForOutput(cap: OutputSettler.actionCap)
+        // The shell went away (or Stop) while the output settled: typed, but the row ends cancelled.
+        if wait == .sessionEnded || Task.isCancelled {
+            setStatus(.cancelled, for: use.id)
+            let text = finalPhase == .failed(.disconnected) || wait == .sessionEnded
+                ? ToolResultText.disconnected : ToolResultText.stopped
+            return (TerminalActionOutcome(id: use.id, text: text, isError: true), true, false)
+        }
         let after = await port.assistantSnapshot()?.bounded()
         setStatus(.done, for: use.id)
         return settled(wait, id: use.id, snapshot: after)
