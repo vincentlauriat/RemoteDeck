@@ -339,6 +339,66 @@ public final class VTTerminal {
         format() ?? ""
     }
 
+    // MARK: Text by rows (terminal assistant)
+
+    /// The cursor in the active area (not the viewport), whether or not it is visible.
+    public var activeCursor: (x: Int, y: Int) {
+        var x: UInt16 = 0
+        var y: UInt16 = 0
+        ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_CURSOR_X, &x)
+        ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_CURSOR_Y, &y)
+        return (Int(x), Int(y))
+    }
+
+    /// Rows of scrollback above the active area (none on the alternate screen).
+    public var scrollbackRowCount: Int {
+        var count = 0
+        ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &count)
+        return count
+    }
+
+    /// The active area's rows as plain text, one string per row (wrapped rows are not joined, wide
+    /// characters appear once), trailing blanks trimmed; always `rows` strings. Independent of where
+    /// the viewport is scrolled.
+    public func activeRowTexts() -> [String] {
+        var lines = rowTexts(tag: GHOSTTY_POINT_TAG_ACTIVE, from: 0, to: rows - 1)
+        if lines.count < rows { lines += Array(repeating: "", count: rows - lines.count) }
+        return Array(lines.prefix(rows))
+    }
+
+    /// The newest `count` scrollback rows (oldest first), one string per row as `activeRowTexts`.
+    public func scrollbackRowTexts(last count: Int) -> [String] {
+        let history = scrollbackRowCount
+        guard count > 0, history > 0 else { return [] }
+        return rowTexts(tag: GHOSTTY_POINT_TAG_HISTORY, from: max(0, history - count), to: history - 1)
+    }
+
+    private func rowTexts(tag: GhosttyPointTag, from first: Int, to last: Int) -> [String] {
+        guard last >= first else { return [] }
+        func ref(x: Int, y: Int) -> GhosttyGridRef? {
+            var point = GhosttyPoint()
+            point.tag = tag
+            point.value.coordinate = GhosttyPointCoordinate(x: UInt16(clamping: x), y: UInt32(clamping: y))
+            var ref = GhosttyGridRef()
+            guard ghostty_terminal_grid_ref(term, point, &ref) == GHOSTTY_SUCCESS else { return nil }
+            return ref
+        }
+        guard let start = ref(x: 0, y: first), let end = ref(x: columns - 1, y: last) else { return [] }
+        var selection = GhosttySelection(start: start, end: end, rectangle: false)
+        var no = false
+        var yes = true
+        ghostty_formatter_set(handles.formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &no)
+        ghostty_formatter_set(handles.formatter, GHOSTTY_FORMATTER_OPT_SELECTION, &selection)
+        defer {
+            ghostty_formatter_set(handles.formatter, GHOSTTY_FORMATTER_OPT_SELECTION, nil)
+            ghostty_formatter_set(handles.formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &yes)
+        }
+        guard let text = format() else { return [] }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map {
+            String($0.reversed().drop(while: { $0 == " " }).reversed())
+        }
+    }
+
     private func format() -> String? {
         var pointer: UnsafeMutablePointer<UInt8>?
         var length = 0

@@ -291,6 +291,18 @@ final class GhosttyTerminalSurface: TerminalSurface {
     /// The visible text, one line per row (accessibility).
     var visibleText: String { rowLayouts.map(\.text).joined(separator: "\n") }
 
+    /// The terminal assistant's text view of the tab: the active area (wherever the viewport is
+    /// scrolled) and the newest scrollback rows, from what is parsed so far (`pendingBytes` may
+    /// still wait).
+    func snapshot() -> TerminalSnapshot? {
+        let cursor = terminal.activeCursor
+        return TerminalSnapshot(screen: terminal.activeRowTexts(),
+                                scrollback: terminal.scrollbackRowTexts(last: TerminalSnapshot.maxScrollbackLines),
+                                cursorRow: cursor.y, cursorColumn: cursor.x,
+                                isAlternateScreen: terminal.isAlternateScreen, title: terminal.title,
+                                columns: terminal.columns, rows: terminal.rows)
+    }
+
     // MARK: Input
 
     /// Encodes key events and sends their bytes. Typing scrolls back to the bottom and clears the
