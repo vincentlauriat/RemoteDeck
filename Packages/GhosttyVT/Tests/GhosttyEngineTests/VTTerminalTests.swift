@@ -329,4 +329,13 @@ struct VTTerminalTests {
         vt.scroll(by: -5)
         #expect(vt.activeRowTexts() == ["line 8", "line 9", "line 10"])
     }
+
+    @Test func commandEndMarksReportTheExitCode() {
+        let vt = VTTerminal(columns: 20, rows: 3)
+        var ends: [Int?] = []
+        vt.onCommandEnd = { ends.append($0) }
+        vt.write("\u{1B}]133;A\u{07}$ \u{1B}]133;B\u{07}ls\r\n\u{1B}]133;C\u{07}a b\r\n\u{1B}]133;D;2\u{07}")
+        vt.write("\u{1B}]133;A\u{07}$ \u{1B}]133;D\u{07}")
+        #expect(ends == [2, nil])
+    }
 }

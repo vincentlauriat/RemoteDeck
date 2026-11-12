@@ -26,6 +26,10 @@ public final class VTTerminal {
     /// refused.
     public var onClipboardWrite: ((String) -> Bool)?
 
+    /// A command ended, as the remote shell reported with OSC 133 `D` (shell integration marks it
+    /// already emits; nothing is installed on the remote): its exit code when given.
+    public var onCommandEnd: ((Int?) -> Void)?
+
     public private(set) var columns: Int
     public private(set) var rows: Int
 
@@ -45,6 +49,7 @@ public final class VTTerminal {
         var formatter: GhosttyFormatter?
         var onReply: ([UInt8]) -> Void = { _ in }
         var onClipboardWrite: (String) -> Bool = { _ in false }
+        var onCommandEnd: (Int?) -> Void = { _ in }
 
         deinit {
             ghostty_formatter_free(formatter)
@@ -119,6 +124,13 @@ public final class VTTerminal {
         }
         ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, unsafeBitCast(clipboardWrite, to: UnsafeRawPointer.self))
         h.onClipboardWrite = { [weak self] text in self?.onClipboardWrite?(text) ?? false }
+        let semanticPrompt: GhosttyTerminalSemanticPromptFn = { _, userdata, event in
+            guard let userdata, let event, event.pointee.kind == GHOSTTY_SEMANTIC_PROMPT_COMMAND_END else { return }
+            let handles = Unmanaged<Handles>.fromOpaque(userdata).takeUnretainedValue()
+            handles.onCommandEnd(event.pointee.has_exit_code ? Int(event.pointee.exit_code) : nil)
+        }
+        ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, unsafeBitCast(semanticPrompt, to: UnsafeRawPointer.self))
+        h.onCommandEnd = { [weak self] code in self?.onCommandEnd?(code) }
 
         // Copy text the way Ghostty copies it: wrapped lines joined, trailing blanks trimmed.
         var yes = true

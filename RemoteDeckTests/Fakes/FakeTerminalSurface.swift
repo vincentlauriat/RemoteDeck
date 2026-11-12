@@ -15,6 +15,12 @@ final class FakeTerminalSurface: TerminalSurface {
     private(set) var fed = Data()
     private(set) var separators: [String] = []
     private(set) var appearances: [TerminalAppearance] = []
+    var onCommandEnd: (Int?) -> Void = { _ in }
+    /// What `snapshot()` returns (terminal assistant).
+    var snapshotValue: TerminalSnapshot? = TerminalSnapshot(screen: ["pi@raspberrypi:~ $"], cursorRow: 0, cursorColumn: 19)
+    var pendingBytes = 0
+    /// DECCKM as the engine would report it.
+    var cursorKeysApplication = false
 
     var fedText: String { String(decoding: fed, as: UTF8.self) }
 
@@ -28,4 +34,7 @@ final class FakeTerminalSurface: TerminalSurface {
     func apply(_ appearance: TerminalAppearance) { appearances.append(appearance) }
 
     func type(_ text: String) { onInput(Data(text.utf8)) }
+
+    func snapshot() -> TerminalSnapshot? { snapshotValue }
+    func encode(_ key: TerminalNamedKey) -> Data { key.bytes(cursorKeysApplication: cursorKeysApplication) }
 }

@@ -45,6 +45,16 @@ protocol TerminalSurface: AnyObject {
     func feed(_ data: Data)
     func showSeparator(_ text: String)
     func apply(_ appearance: TerminalAppearance)
+
+    // Terminal assistant
+    /// OSC 133 `D` from the remote shell (its exit code when given).
+    var onCommandEnd: (Int?) -> Void { get set }
+    /// Bytes fed and not parsed yet: a snapshot taken now would miss them.
+    var pendingBytes: Int { get }
+    /// The tab as text (`TerminalSnapshot`).
+    func snapshot() -> TerminalSnapshot?
+    /// The bytes of a named key for the terminal's current modes.
+    func encode(_ key: TerminalNamedKey) -> Data
 }
 
 /// The engine adapter (TRD › Architecture › SSH › Terminal engine): libghostty-vt (`VTTerminal`)
@@ -90,6 +100,7 @@ final class GhosttyTerminalSurface: TerminalSurface {
     var acceptsFileDrop: () -> Bool = { false }
     var onDropTargeted: (Bool) -> Void = { _ in }
     var onDropFiles: ([URL]) -> Void = { _ in }
+    var onCommandEnd: (Int?) -> Void = { _ in }
 
     /// One display frame.
     static let frameInterval = 1.0 / 60
@@ -136,6 +147,7 @@ final class GhosttyTerminalSurface: TerminalSurface {
         terminalView.surface = self
         terminal.onReply = { [weak self] bytes in self?.onInput(Data(bytes)) }
         terminal.onClipboardWrite = { [weak self] text in self?.terminalView.remoteCopy(text) ?? false }
+        terminal.onCommandEnd = { [weak self] code in self?.onCommandEnd(code) }
         applyTheme()
         refresh()
     }
@@ -301,6 +313,11 @@ final class GhosttyTerminalSurface: TerminalSurface {
                                 cursorRow: cursor.y, cursorColumn: cursor.x,
                                 isAlternateScreen: terminal.isAlternateScreen, title: terminal.title,
                                 columns: terminal.columns, rows: terminal.rows)
+    }
+
+    /// Legacy encodings, arrows after cursor-key mode (DECCKM, DEC mode 1).
+    func encode(_ key: TerminalNamedKey) -> Data {
+        key.bytes(cursorKeysApplication: terminal.mode(1))
     }
 
     // MARK: Input
