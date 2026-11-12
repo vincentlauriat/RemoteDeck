@@ -106,9 +106,11 @@ Lifecycle (T3.5, `SessionModel`): one record per attempt (Connect, Retry, Reconn
 | id | UUID | yes | `UUID()` | |
 | session | SessionRecord | yes | — | Relationship, delete rule `.cascade` from SessionRecord |
 | createdAt | Date | yes | now | |
-| kind | String (`click`, `doubleClick`, `tripleClick`, `rightClick`, `middleClick`, `drag`, `mouseMove`, `scroll`, `type`, `key`, `holdKey`, `wait`, `screenshot`, `zoom`, `cursorPosition`) | yes | — | One per computer use toolset member the assistant runs (T4.4 added the cases after `screenshot`; stored as the raw String, so no migration) |
+| kind | String (`click`, `doubleClick`, `tripleClick`, `rightClick`, `middleClick`, `drag`, `mouseMove`, `scroll`, `type`, `key`, `holdKey`, `wait`, `screenshot`, `zoom`, `cursorPosition`, `command`, `keys`) | yes | — | One per computer use toolset member the assistant runs (T4.4 added the cases after `screenshot`; stored as the raw String, so no migration) |
 | payload | String (JSON) | yes | `"{}"` | `{"input": <the member's input as Claude sent it, screenshot pixels>, "remote": [[x, y], …]}` (remote pixels, when the action has a target). Key combos are in `input`; typed text never is (it may be a password): a `type` stores only `{"input": {"length": <characters>}}` |
 | decision | String (`pending`, `confirmed`, `rejected`, `cancelled`, `automatic`) | yes | `pending` | `pending` while the proposal waits; Confirm → `confirmed`, Skip → `rejected`, Stop or disconnect → `cancelled`; `automatic`: a read-only action (screenshot, zoom, cursor position, wait) that ran without asking |
+
+Terminal tabs (terminal assistant): `command` = one line typed then Return, payload `{"length": N, "program": "<first word that is not an environment assignment>"}`, never the command text; `keys` = named keys, payload `{"keys": ["ctrl_c", …]}`; `wait` (`wait_for_output`) payload `{"seconds": N}`, decision `automatic`. Raw strings: no migration.
 
 ### AppSettings (UserDefaults)
 

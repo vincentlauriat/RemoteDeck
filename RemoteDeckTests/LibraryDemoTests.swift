@@ -119,4 +119,44 @@ struct LibraryDemoTests {
         model.endFileTransfer()
         await model.close()
     }
+
+    /// `-LibraryDemo ssh-assistant`: the Raspberry's scripted shell (already trusted) with the
+    /// terminal assistant on a scripted engine: never `TerminalClaudeEngine`, `TerminalAppleEngine`,
+    /// the Messages API or FoundationModels.
+    @Test func sshAssistantDemoUsesScriptedEngineOnly() async throws {
+        let context = try makeTestContext()
+        let machine = LibraryDemo.sshMachine()
+        context.insert(machine)
+        try context.save()
+        let services = LibraryDemo.sshServices(trustsDemoHost: true)
+        #expect(services.trustedHostKeys.decision(for: LibraryDemo.sshHostKey, host: "raspberrypi.local", port: 22)
+            == .trusted)
+        let model = TerminalSessionModel(
+            machine: machine, context: context, resolver: services.resolver(passwords: InMemoryPasswordStore()),
+            trust: services.trustedHostKeys, secrets: services.secrets, urlOpener: FakeURLOpener(),
+            makeConnection: { _ in LibraryDemo.SSHDemoConnection(scriptsAssistant: true) })
+        let surface = FakeTerminalSurface()
+        surface.snapshotValue = TerminalSnapshot(screen: ["pi@raspberrypi:~ $"], cursorRow: 0, cursorColumn: 19)
+        model.attach(surface)
+        let engine = LibraryDemo.terminalAssistantEngine()
+        #expect(!(engine is TerminalClaudeEngine) && !(engine is TerminalAppleEngine))
+        #expect(engine.isReady)
+        let assistant = TerminalAssistantModel(port: model, provider: { .claude }, makeEngine: { _ in engine },
+                                               gate: AssistantDecisionGate(armDelay: .zero))
+        model.terminalAssistant = assistant
+        model.connect()
+        #expect(model.hostKeyPrompt == nil)
+        #expect(await waitUntil { model.phase == .connected })
+        // The canned `df -h` is on the screen before the question.
+        #expect(await waitUntil { surface.fedText.contains("/dev/root") })
+        assistant.ask(LibraryDemo.terminalDemoQuestion)
+        #expect(await waitUntil(timeout: .seconds(5)) { assistant.awaitingID != nil && assistant.confirmArmed })
+        let id = try #require(assistant.awaitingID)
+        #expect(assistant.item(id)?.action == .runCommand("du -sh /var/log/*"))
+        assistant.confirm(id: id)
+        #expect(await waitUntil(timeout: .seconds(10)) { assistant.phase == .finished })
+        #expect(surface.fedText.contains("/var/log/journal"))
+        #expect(assistant.entries.contains { if case .answer(let text) = $0.content { text.contains("Demo") } else { false } })
+        await model.close()
+    }
 }

@@ -183,8 +183,15 @@ struct RemoteDeckApp: App {
         }, path: sessionPath, workspaceCenter: powerCenter, publicConsents: publicConsents,
                                       ssh: ssh, makeSSHConnection: makeSSHConnection, sshTester: sshTester,
                                       makeTerminalAssistant: { [claudeClient, makeAppleTerminalEngine, forcedProvider] terminal in
+            #if DEBUG
+            // `-LibraryDemo ssh-assistant`: a scripted engine, never a request or the Apple model.
+            if LibraryDemo.scriptsTerminalAssistant {
+                return TerminalAssistantModel(port: terminal, provider: { .claude },
+                                              makeEngine: { _ in LibraryDemo.terminalAssistantEngine() })
+            }
+            #endif
             // Terminal tabs (SSH): the same provider setting, read between conversations.
-            TerminalAssistantModel(port: terminal, provider: { forcedProvider ?? settings.assistantProvider }) { provider in
+            return TerminalAssistantModel(port: terminal, provider: { forcedProvider ?? settings.assistantProvider }) { provider in
                 switch provider {
                 case .claude: TerminalClaudeEngine(client: claudeClient, apiKey: { settings.anthropicAPIKey })
                 case .appleOnDevice, .applePrivateCloud: makeAppleTerminalEngine()

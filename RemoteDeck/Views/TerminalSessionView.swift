@@ -108,8 +108,25 @@ struct TerminalSessionView: View {
             download: { [terminal] in terminal.beginDownload() }
         ))
         .onAppear(perform: attachSurface)
+        .onAppear {
+            #if DEBUG
+            if LibraryDemo.scriptsTerminalAssistant { showsAssistant = true }
+            #endif
+        }
         .onChange(of: appearance) { _, new in surface?.apply(new) }
-        .onChange(of: terminal.phase) { _, phase in focusIfConnected(phase) }
+        .onChange(of: terminal.phase) { _, phase in
+            focusIfConnected(phase)
+            #if DEBUG
+            // `ssh-assistant`: the demo question, once the shell is up.
+            if LibraryDemo.scriptsTerminalAssistant, phase == .connected, let assistant = terminal.terminalAssistant,
+               assistant.entries.isEmpty {
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    assistant.ask(LibraryDemo.terminalDemoQuestion)
+                }
+            }
+            #endif
+        }
         .sheet(item: $editorRequest) { request in
             MachineEditorView(model: request.model) { _ in terminal.connect() }
         }
