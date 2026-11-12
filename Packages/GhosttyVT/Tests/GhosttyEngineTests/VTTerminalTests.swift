@@ -305,4 +305,37 @@ struct VTTerminalTests {
         #expect(cells[0].foreground == red)
         #expect(cells[1].foreground == VTTerminal.builtInPalette[196])
     }
+
+    // MARK: Text by rows (terminal assistant)
+
+    @Test func activeRowsAreOnePerRowWithBlanksKept() {
+        let vt = VTTerminal(columns: 10, rows: 4)
+        vt.write("\r\n\u{65E5}\u{672C}\u{8A9E}  \r\n0123456789AB")
+        // Row 0 blank, row 1 wide characters once each, row 2 wrapped (not joined), row 3 the wrap.
+        #expect(vt.activeRowTexts() == ["", "\u{65E5}\u{672C}\u{8A9E}", "0123456789", "AB"])
+        #expect(vt.activeCursor.x == 2)
+        #expect(vt.activeCursor.y == 3)
+        #expect(vt.scrollbackRowTexts(last: 10) == [])
+    }
+
+    @Test func scrollbackRowsAreTheNewestAboveTheScreen() {
+        let vt = VTTerminal(columns: 20, rows: 3)
+        vt.write((1...10).map { "line \($0)" }.joined(separator: "\r\n"))
+        #expect(vt.scrollbackRowCount == 7)
+        #expect(vt.activeRowTexts() == ["line 8", "line 9", "line 10"])
+        #expect(vt.scrollbackRowTexts(last: 3) == ["line 5", "line 6", "line 7"])
+        #expect(vt.scrollbackRowTexts(last: 100).count == 7)
+        // Scrolling the viewport back changes nothing.
+        vt.scroll(by: -5)
+        #expect(vt.activeRowTexts() == ["line 8", "line 9", "line 10"])
+    }
+
+    @Test func commandEndMarksReportTheExitCode() {
+        let vt = VTTerminal(columns: 20, rows: 3)
+        var ends: [Int?] = []
+        vt.onCommandEnd = { ends.append($0) }
+        vt.write("\u{1B}]133;A\u{07}$ \u{1B}]133;B\u{07}ls\r\n\u{1B}]133;C\u{07}a b\r\n\u{1B}]133;D;2\u{07}")
+        vt.write("\u{1B}]133;A\u{07}$ \u{1B}]133;D\u{07}")
+        #expect(ends == [2, nil])
+    }
 }

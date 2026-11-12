@@ -10,9 +10,11 @@ import ImageIO
 // (`AppleAssistant.makeEngine`).
 
 /// The real availability of the on-device model.
+/// Terminals (text only) are checked in `TerminalAppleFoundationModels.swift` (macOS 26).
 struct SystemAppleModelChecker: AppleModelChecking {
-    func unavailability() -> AppleModelUnavailability? {
-        guard #available(macOS 27, *) else { return .requiresNewerOS }
+    func unavailability(for use: AppleModelUse) -> AppleModelUnavailability? {
+        if use == .terminals { return SystemTerminalModelCheck.unavailability() }
+        guard #available(macOS 27, *) else { return .requiresNewerOS(major: AppleModelUse.screens.minimumMacOS) }
         let model = SystemLanguageModel.default
         switch model.availability {
         case .available:

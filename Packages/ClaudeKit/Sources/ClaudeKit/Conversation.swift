@@ -86,7 +86,7 @@ public struct Conversation: Sendable {
         body += field("output_config", ["effort": .string(configuration.effort)]) + Data(",".utf8)
         body += field("system", .string(configuration.system)) + Data(",".utf8)
         body += field("thinking", ClaudeAPI.thinking) + Data(",".utf8)
-        body += field("tools", [ClaudeAPI.computerToolset])
+        body += field("tools", .array(configuration.tools))
         body += Data("}".utf8)
         return body
     }
@@ -114,6 +114,17 @@ public enum ContentBlock {
             "tool_use_id": .string(id),
             "toolset_name": .string(ClaudeAPI.toolsetName),
             "content": .array(content),
+        ]
+        if isError { result["is_error"] = true }
+        return .object(result)
+    }
+
+    /// A custom client tool's result (terminal assistant): no `toolset_name`, text content only.
+    public static func plainToolResult(id: String, text: String, isError: Bool = false) -> JSONValue {
+        var result: [String: JSONValue] = [
+            "type": "tool_result",
+            "tool_use_id": .string(id),
+            "content": [Self.text(text)],
         ]
         if isError { result["is_error"] = true }
         return .object(result)

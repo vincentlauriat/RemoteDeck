@@ -191,6 +191,8 @@ actor FakeSSHSessionConnection: SSHSessionConnection {
 final class FakeShell: SSHShellChannel {
     private struct State {
         var written = Data()
+        /// Each `write` call, in order (one chunk each).
+        var writes: [Data] = []
         var resizes: [[Int]] = []
     }
 
@@ -206,7 +208,10 @@ final class FakeShell: SSHShellChannel {
     }
 
     func write(_ data: Data) async throws(SSHError) {
-        state.withLock { $0.written.append(data) }
+        state.withLock {
+            $0.written.append(data)
+            $0.writes.append(data)
+        }
     }
 
     func resize(columns: Int, rows: Int) async {
@@ -214,6 +219,7 @@ final class FakeShell: SSHShellChannel {
     }
 
     var written: Data { state.withLock { $0.written } }
+    var writes: [Data] { state.withLock { $0.writes } }
     var resizes: [[Int]] { state.withLock { $0.resizes } }
 
     func emit(_ data: Data) { continuation.yield(data) }

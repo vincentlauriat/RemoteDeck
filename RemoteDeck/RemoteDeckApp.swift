@@ -79,6 +79,12 @@ struct RemoteDeckApp: App {
                                                              : SystemAppleModelChecker() as any AppleModelChecking)
         var makeAppleEngine: @MainActor @Sendable () -> any AssistantEngine = { AppleAssistant.makeEngine(status: appleStatus) }
         if inMemory { makeAppleEngine = { AppleAssistant.inertEngine() } }
+        // The terminal assistant's Apple provider: the same rule (never the real model under the hosted
+        // tests or in a demo mode).
+        var makeAppleTerminalEngine: @MainActor @Sendable () -> any TerminalAssistantEngine = {
+            AppleAssistant.makeTerminalEngine(status: appleStatus)
+        }
+        if inMemory { makeAppleTerminalEngine = { AppleAssistant.inertTerminalEngine() } }
         // `-LibraryDemo assistant-apple` shows the Apple provider without changing the stored setting.
         #if DEBUG
         let forcedProvider: AssistantProvider? = LibraryDemo.scriptsAppleAssistant ? .appleOnDevice : nil
@@ -175,7 +181,23 @@ struct RemoteDeckApp: App {
                 }
             }
         }, path: sessionPath, workspaceCenter: powerCenter, publicConsents: publicConsents,
-                                      ssh: ssh, makeSSHConnection: makeSSHConnection, sshTester: sshTester)
+                                      ssh: ssh, makeSSHConnection: makeSSHConnection, sshTester: sshTester,
+                                      makeTerminalAssistant: { [claudeClient, makeAppleTerminalEngine, forcedProvider] terminal in
+            #if DEBUG
+            // `-LibraryDemo ssh-assistant`: a scripted engine, never a request or the Apple model.
+            if LibraryDemo.scriptsTerminalAssistant {
+                return TerminalAssistantModel(port: terminal, provider: { .claude },
+                                              makeEngine: { _ in LibraryDemo.terminalAssistantEngine() })
+            }
+            #endif
+            // Terminal tabs (SSH): the same provider setting, read between conversations.
+            return TerminalAssistantModel(port: terminal, provider: { forcedProvider ?? settings.assistantProvider }) { provider in
+                switch provider {
+                case .claude: TerminalClaudeEngine(client: claudeClient, apiKey: { settings.anthropicAPIKey })
+                case .appleOnDevice, .applePrivateCloud: makeAppleTerminalEngine()
+                }
+            }
+        })
         _sessions = State(initialValue: sessions)
 
         // Status Notifications (T4.5). The hosted tests never probe, post or read the notification

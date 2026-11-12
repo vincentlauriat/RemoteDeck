@@ -1,4 +1,5 @@
 #if DEBUG
+import ClaudeKit
 import Foundation
 import RemoteDeckCore
 import SSHKit
@@ -12,7 +13,14 @@ import SSHKit
 /// the services are in memory (`sshServices`) and every SSH connection of every demo mode is
 /// `SSHDemoConnection`.
 extension LibraryDemo {
-    static var showsSSH: Bool { mode == "ssh" }
+    static var showsSSH: Bool { mode == "ssh" || scriptsTerminalAssistant }
+    /// `-LibraryDemo ssh-assistant`: the "Raspberry" connected at launch (its key already trusted),
+    /// a canned `df -h` on the screen, and the Terminal Assistant Panel open on a scripted engine
+    /// (`TerminalDemoEngine`): it explains the output, proposes `du -sh /var/log/*`, Confirm types it
+    /// and the scripted shell prints a canned answer. Never the Messages API or FoundationModels.
+    static var scriptsTerminalAssistant: Bool { mode == "ssh-assistant" }
+    static let terminalDemoQuestion = "Why is the disk almost full?"
+    static let terminalDemoCommand = "du -sh /var/log/*"
     static let sshMachineName = "Raspberry"
     /// The local port of the second forward: the demo's "already in use".
     static let busyLocalPort: UInt16 = 9000
@@ -35,14 +43,15 @@ extension LibraryDemo {
     /// A `~/.ssh` granted in memory, holding the demo key and a `config` to import from; trusted
     /// host keys and SSH secrets in memory too.
     @MainActor
-    static func sshServices() -> SSHServices {
+    static func sshServices(trustsDemoHost: Bool = scriptsTerminalAssistant) -> SSHServices {
         let folder = InMemorySSHFolderAccess(files: [
             "id_ed25519": LibraryDemoKey.privateKey,
             "id_ed25519.pub": LibraryDemoKey.publicKey + "\n",
             "config": sampleSSHConfig,
         ])
-        return SSHServices(folder: folder, trustedHostKeys: InMemoryTrustedHostKeys(folder: folder),
-                           secrets: InMemorySSHSecretStore())
+        let trust = InMemoryTrustedHostKeys(folder: folder)
+        if trustsDemoHost { trust.trust(sshHostKey, host: "raspberrypi.local", port: 22) }
+        return SSHServices(folder: folder, trustedHostKeys: trust, secrets: InMemorySSHSecretStore())
     }
 
     static let sampleSSHConfig = """
@@ -67,6 +76,12 @@ extension LibraryDemo {
     /// parsed the demo key); a shell, forwards and SFTP all fake.
     final class SSHDemoConnection: SSHSessionConnection {
         private let ends = AsyncStream.makeStream(of: SSHError?.self, bufferingPolicy: .bufferingNewest(1))
+        /// The shell answers `df -h` and `du -sh /var/log/*` (`ssh-assistant`).
+        private let scriptsAssistant: Bool
+
+        init(scriptsAssistant: Bool = LibraryDemo.scriptsTerminalAssistant) {
+            self.scriptsAssistant = scriptsAssistant
+        }
 
         var closed: AsyncStream<SSHError?> { ends.stream }
 
@@ -90,7 +105,7 @@ extension LibraryDemo {
         }
 
         func openShell(term: String, columns: Int, rows: Int) async throws(SSHError) -> any SSHShellChannel {
-            SSHDemoShell()
+            SSHDemoShell(scriptsAssistant: scriptsAssistant)
         }
 
         func startLocalForward(localPort: UInt16, remoteHost: String, remotePort: UInt16) async throws(SSHError)
@@ -129,6 +144,7 @@ extension LibraryDemo {
         nonisolated let output: AsyncThrowingStream<Data, any Error>
         private let continuation: AsyncThrowingStream<Data, any Error>.Continuation
         private var line = ""
+        private let scriptsAssistant: Bool
 
         static let prompt = "\u{1B}[1;32mpi@raspberrypi\u{1B}[0m:\u{1B}[1;34m~ $\u{1B}[0m "
 
@@ -146,10 +162,31 @@ extension LibraryDemo {
 
         """
 
-        init() {
+        init(scriptsAssistant: Bool = false) {
+            self.scriptsAssistant = scriptsAssistant
             (output, continuation) = AsyncThrowingStream.makeStream(of: Data.self)
-            continuation.yield(Data((Self.banner + Self.prompt).utf8))
+            var start = Self.banner + Self.prompt
+            if scriptsAssistant { start += "df -h\r\n" + Self.dfOutput + Self.prompt }
+            continuation.yield(Data(start.utf8))
         }
+
+        static let dfOutput = """
+        Filesystem      Size  Used Avail Use% Mounted on\r
+        /dev/root        29G   27G  1.4G  95% /\r
+        devtmpfs        1.8G     0  1.8G   0% /dev\r
+        tmpfs           1.9G     0  1.9G   0% /dev/shm\r
+        /dev/mmcblk0p1  510M   64M  447M  13% /boot/firmware\r
+
+        """
+
+        static let duOutput = """
+        4.0K\t/var/log/alternatives.log\r
+        2.1G\t/var/log/journal\r
+        312M\t/var/log/nginx\r
+        48M\t/var/log/syslog\r
+        1.2M\t/var/log/auth.log\r
+
+        """
 
         func write(_ data: Data) async throws(SSHError) {
             var reply = ""
@@ -164,7 +201,11 @@ extension LibraryDemo {
                         return
                     }
                     reply += "\r\n"
-                    if !command.isEmpty {
+                    if scriptsAssistant, command == LibraryDemo.terminalDemoCommand {
+                        reply += Self.duOutput
+                    } else if scriptsAssistant, command == "df -h" {
+                        reply += Self.dfOutput
+                    } else if !command.isEmpty {
                         reply += "\(command.split(separator: " ").first ?? ""): demo shell, nothing runs here\r\n"
                     }
                     reply += Self.prompt
@@ -269,6 +310,58 @@ extension LibraryDemo {
         }
 
         func cancelPanels() {}
+    }
+}
+// MARK: - Terminal assistant (`-LibraryDemo ssh-assistant`)
+
+extension LibraryDemo {
+    @MainActor
+    static func terminalAssistantEngine() -> any TerminalAssistantEngine {
+        TerminalDemoEngine()
+    }
+
+    /// Claude-shaped scripted turns, no request: an explanation and one proposed command, then a
+    /// final answer once the command's output came back.
+    @MainActor
+    final class TerminalDemoEngine: TerminalAssistantEngine {
+        let provider = AssistantProvider.claude
+        let isReady = true
+        let notReadyReason: AssistantFailure? = nil
+        private(set) var hasConversation = false
+        var canResend: Bool { hasConversation }
+        private var turns = 0
+
+        func begin(prompt: String, snapshot: TerminalSnapshot?) {
+            hasConversation = true
+        }
+
+        func nextTurn() async throws(AssistantEngineError) -> TerminalTurn {
+            do {
+                try await Task.sleep(for: .milliseconds(900))
+            } catch {
+                throw .cancelled
+            }
+            turns += 1
+            if turns == 1 {
+                return TerminalTurn(blocks: [
+                    .progress("Reading the df output on the screen."),
+                    .answer("The root filesystem (/dev/root) is 95% full: 27 G used of 29 G. Logs are a usual suspect on a Raspberry Pi, so let's see what /var/log holds."),
+                    .action(TerminalTurnAction(id: "demo-du", action: .runCommand(LibraryDemo.terminalDemoCommand),
+                                               reason: "List the size of each log folder (read-only).")),
+                ], stop: .actions, usage: TokenUsage(inputTokens: 1840, outputTokens: 160, cacheCreationInputTokens: 2300))
+            }
+            return TerminalTurn(blocks: [
+                .answer("/var/log/journal takes 2.1 G. `sudo journalctl --vacuum-size=200M` would free most of it; I can propose it if you want. (Demo: scripted answer, no request was sent.)"),
+            ], stop: .done, usage: TokenUsage(inputTokens: 120, outputTokens: 60, cacheReadInputTokens: 4140))
+        }
+
+        func deliver(_ outcomes: [TerminalActionOutcome]) {}
+        func deferOutcomes(_ outcomes: [TerminalActionOutcome]) {}
+
+        func reset() {
+            hasConversation = false
+            turns = 0
+        }
     }
 }
 #endif

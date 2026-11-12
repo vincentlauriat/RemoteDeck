@@ -192,6 +192,17 @@ Design: `docs/superpowers/specs/2026-11-11-apple-foundation-models-design.md` (a
 
 **T8 status.** T8.1 built and tested on fakes (the hosted tests and every demo mode never touch `SystemLanguageModel`); T8.2 and T8.3 open.
 
+## Step 9 — Terminal assistant (post-1.0)
+
+Design: `docs/superpowers/specs/2026-11-12-ssh-assistant-design.md`; plan: `docs/superpowers/plans/2026-11-12-ssh-assistant.md` (tasks 1–10).
+
+| Task | Owner or agent | Inputs | Deliverable | Done criterion | Depends on |
+|---|---|---|---|---|---|
+| T9.1 Terminal assistant | executor | Design, plan | ClaudeKit custom tools (screen request frozen by a golden test), `TerminalSnapshot`, validation, password detection, `AssistantDecisionGate`, `OutputSettler`, the port on `TerminalSessionModel`, `TerminalAssistantModel`, `TerminalClaudeEngine`, `TerminalAppleEngine` (macOS 26), `TerminalAssistantPanelView`, `-LibraryDemo ssh-assistant` | Hosted and package suites green; the existing assistant tests unmodified | T7.x, T8.1 |
+| T9.2 Live check | Vincent | Signed Debug build, a Raspberry Pi or Linux server | Claude and Apple on a real shell: `df`/`du`, a `sudo` password wait, a pager left with `q`, a long command confirmed | Keep or adjust the settling times and the prompt | T9.1 |
+
+**T9 status.** T9.1 built and tested on fakes; T9.2 open.
+
 ## Traceability
 
 | Feature | Priority | Screens (AppFlow) | Entities (BackendSchema, or "—" if none stored) | Tasks |
@@ -205,6 +216,7 @@ Design: `docs/superpowers/specs/2026-11-11-apple-foundation-models-design.md` (a
 | iCloud Sync | P1 | Settings Window, Onboarding Sheet | Machine, MachineGroup, KeychainCredential, AppSettings | T4.3 |
 | Claude Assistant | P1 | Claude Assistant Panel, Settings Window | AssistantAction, KeychainCredential, SessionRecord, AppSettings | T4.4 |
 | Apple on-device assistant | P2, post-1.0 | Claude Assistant Panel, Settings Window | AssistantAction, AppSettings | T8.1, T8.2, T8.3 |
+| Terminal Assistant | P2, post-1.0 | Session Window (terminal tab), Terminal Assistant Panel, Settings Window | AssistantAction (`command`, `keys`), SessionRecord, AppSettings | T9.1, T9.2 |
 | Status Notifications | P1 | Library Window, Settings Window | Machine, AppSettings | T4.5 |
 | Session History | P1 | Session History View, Menu Bar Extra | SessionRecord | T4.6 |
 | SSH Machines & Terminal | P1, post-1.0 | Library Window, Machine Editor (SSH), Session Window (terminal tab), Host Key Sheet, Passphrase Sheet, File Transfer Sheet, SSH Config Import Sheet, Settings Window, Menu Bar Extra | Machine (V3: `sshAuthMethod`, `sshKeyFileName`, `portForwardsData`), PortForward, KeychainCredential (`sshKey.`, `sshPassphrase.`, `sshLocalPassphrase.`), SessionRecord (`hostKeyRejected`), AppSettings (`terminalOptionAsMeta`, `terminalFontSize`, `terminalFontFamily`, `terminalTheme`, `terminalCustomTheme`, `sshFolderBookmark`, `trustedHostKeys`) | T7.1 … T7.14 |

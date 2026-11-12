@@ -36,6 +36,8 @@ public enum SessionOutcome: String, CaseIterable, Sendable {
 public enum AssistantActionKind: String, CaseIterable, Sendable {
     case click, doubleClick, type, key, scroll, screenshot
     case tripleClick, rightClick, middleClick, drag, mouseMove, holdKey, wait, zoom, cursorPosition
+    /// Terminal assistant (SSH): one line typed then Return, or named keys.
+    case command, keys
 }
 
 /// AssistantAction.decision. `automatic`: a read-only action (screenshot, zoom, cursor position,

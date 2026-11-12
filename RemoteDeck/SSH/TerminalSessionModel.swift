@@ -309,6 +309,14 @@ final class TerminalSessionModel {
     @ObservationIgnored private(set) var suspension: Task<Void, Never>?
     @ObservationIgnored private var reconnectToken = 0
     @ObservationIgnored private var pathLossTimer: Task<Void, Never>?
+    /// Terminal assistant: the user's own input is dropped while the assistant sends.
+    @ObservationIgnored var assistantIsSending = false
+    /// The output settling's clock (tests: a fake).
+    @ObservationIgnored var assistantClock: any ReachabilityClock = ContinuousReachabilityClock()
+    @ObservationIgnored private var settler: OutputSettler?
+    /// The tab's Terminal Assistant (`SessionManager.makeTerminalAssistant`); ends before every
+    /// teardown, starts over on a new shell.
+    var terminalAssistant: TerminalAssistantModel?
 
     private enum ShellInput: Sendable {
         case data(Data)
@@ -370,6 +378,7 @@ final class TerminalSessionModel {
         self.surface = surface
         surface.onInput = { [weak self] data in self?.send(data) }
         surface.onResize = { [weak self] columns, rows in self?.resize(columns: columns, rows: rows) }
+        surface.onCommandEnd = { [weak self] code in self?.settler?.commandEnded(exitCode: code) }
         if !pendingOutput.isEmpty {
             surface.feed(pendingOutput)
             pendingOutput = Data()
@@ -380,6 +389,7 @@ final class TerminalSessionModel {
     private func deliver(_ data: Data) {
         if let surface {
             surface.feed(data)
+            settler?.outputArrived()
             return
         }
         pendingOutput.append(data)
@@ -390,7 +400,7 @@ final class TerminalSessionModel {
 
     /// Typed keys, pastes, mouse reports: written in order while the shell is up, dropped otherwise.
     private func send(_ data: Data) {
-        guard phase == .connected, !data.isEmpty else { return }
+        guard phase == .connected, !assistantIsSending, !data.isEmpty else { return }
         input?.yield(.data(data))
     }
 
@@ -631,7 +641,10 @@ final class TerminalSessionModel {
         record?.connectMillis = Int(((clock.uptime() - startUptime) * 1000).rounded())
         fetchMachine()?.lastConnectedAt = clock.now()
         save()
-        if hadShell { surface?.showSeparator(separatorText()) }
+        if hadShell {
+            surface?.showSeparator(separatorText())
+            terminalAssistant?.shellReconnected()
+        }
         hadShell = true
         coalescer = TerminalOutputCoalescer()
         let (stream, continuation) = AsyncStream.makeStream(of: ShellInput.self)
@@ -931,6 +944,7 @@ final class TerminalSessionModel {
         let wasConnecting = phase == .connecting
         let wasRunning = wasConnecting || phase == .connected
         generation += 1
+        terminalAssistant?.sessionEnded()
         cancelPendingReconnect()
         cancelPathLoss()
         dismissPrompts()
@@ -1019,6 +1033,8 @@ final class TerminalSessionModel {
     /// channel) and then the connection. A forward still starting is stopped by its own task, which
     /// finds the attempt gone.
     private func beginTearDown() -> (@MainActor () async -> Void, TerminalOutputCoalescer?) {
+        terminalAssistant?.sessionEnded()
+        settler?.sessionEnded()
         let task = self.task
         let opening = self.opening
         let writer = self.writer
@@ -1188,6 +1204,57 @@ final class TerminalSessionModel {
     /// History is best effort: a failed save never breaks the session.
     private func save() {
         try? context.save()
+    }
+}
+
+// MARK: - Terminal assistant port
+
+extension TerminalSessionModel: TerminalAssistantPort {
+    var assistantCanAct: Bool { phase == .connected && input != nil }
+
+    /// Waits (bounded) until the surface parsed every byte fed, then reads it.
+    func assistantSnapshot() async -> TerminalSnapshot? {
+        guard let surface else { return nil }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while surface.pendingBytes > 0, ContinuousClock.now < deadline, !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return self.surface?.snapshot()
+    }
+
+    func assistantType(_ command: String) {
+        guard assistantCanAct else { return }
+        input?.yield(.data(Data((command + "\r").utf8)))
+    }
+
+    func assistantSendKeys(_ keys: [TerminalNamedKey]) {
+        guard assistantCanAct, !keys.isEmpty else { return }
+        let bytes = keys.reduce(into: Data()) { $0 += surface?.encode($1) ?? $1.bytes() }
+        input?.yield(.data(bytes))
+    }
+
+    func assistantWaitForOutput(cap: Duration) async -> OutputWait {
+        guard assistantCanAct else { return .sessionEnded }
+        let settler = self.settler ?? OutputSettler(clock: assistantClock)
+        self.settler = settler
+        return await settler.wait(cap: cap) { [weak self] in self?.surface?.snapshot() }
+    }
+
+    func assistantRecord(kind: AssistantActionKind, payload: String, decision: AssistantDecision) -> AssistantAction? {
+        guard let record else { return nil }
+        let action = AssistantAction(session: record, createdAt: clock.now(), kind: kind, payload: payload,
+                                     decision: decision)
+        context.insert(action)
+        save()
+        return action
+    }
+
+    func assistantSave() {
+        save()
+    }
+
+    func assistantAddTokens(_ count: Int) {
+        record?.assistantTokens += count
     }
 }
 

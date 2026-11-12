@@ -37,8 +37,14 @@ enum AssistantCopy {
         case .deviceNotEligible?: "apple_status_device_not_eligible"
         case .appleIntelligenceOff?: "apple_status_intelligence_off"
         case .modelNotReady?: "apple_status_model_not_ready"
-        case .requiresNewerOS?: "apple_status_requires_newer_os"
+        case .requiresNewerOS(let major)?: major <= 26 ? "apple_status_requires_macos_26" : "apple_status_requires_newer_os"
         }
+    }
+
+    /// Settings › Assistant with Apple chosen: "Screens: …" and "Terminals: …".
+    @MainActor static func appleStatusLines(_ status: AppleModelStatus, _ t: (String) -> String) -> [String] {
+        [t("apple_status_screens").replacingOccurrences(of: "%@", with: t(appleStatusKey(status.unavailability))),
+         t("apple_status_terminals").replacingOccurrences(of: "%@", with: t(appleStatusKey(status.terminalUnavailability)))]
     }
 
     static func point(_ location: PointerLocation) -> String { "(\(location.x), \(location.y))" }

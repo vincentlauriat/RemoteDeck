@@ -26,6 +26,10 @@ public final class VTTerminal {
     /// refused.
     public var onClipboardWrite: ((String) -> Bool)?
 
+    /// A command ended, as the remote shell reported with OSC 133 `D` (shell integration marks it
+    /// already emits; nothing is installed on the remote): its exit code when given.
+    public var onCommandEnd: ((Int?) -> Void)?
+
     public private(set) var columns: Int
     public private(set) var rows: Int
 
@@ -45,6 +49,7 @@ public final class VTTerminal {
         var formatter: GhosttyFormatter?
         var onReply: ([UInt8]) -> Void = { _ in }
         var onClipboardWrite: (String) -> Bool = { _ in false }
+        var onCommandEnd: (Int?) -> Void = { _ in }
 
         deinit {
             ghostty_formatter_free(formatter)
@@ -119,6 +124,13 @@ public final class VTTerminal {
         }
         ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, unsafeBitCast(clipboardWrite, to: UnsafeRawPointer.self))
         h.onClipboardWrite = { [weak self] text in self?.onClipboardWrite?(text) ?? false }
+        let semanticPrompt: GhosttyTerminalSemanticPromptFn = { _, userdata, event in
+            guard let userdata, let event, event.pointee.kind == GHOSTTY_SEMANTIC_PROMPT_COMMAND_END else { return }
+            let handles = Unmanaged<Handles>.fromOpaque(userdata).takeUnretainedValue()
+            handles.onCommandEnd(event.pointee.has_exit_code ? Int(event.pointee.exit_code) : nil)
+        }
+        ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_SEMANTIC_PROMPT, unsafeBitCast(semanticPrompt, to: UnsafeRawPointer.self))
+        h.onCommandEnd = { [weak self] code in self?.onCommandEnd?(code) }
 
         // Copy text the way Ghostty copies it: wrapped lines joined, trailing blanks trimmed.
         var yes = true
@@ -337,6 +349,66 @@ public final class VTTerminal {
     /// The whole screen as plain text (scrollback included), for tests and accessibility.
     public func screenText() -> String {
         format() ?? ""
+    }
+
+    // MARK: Text by rows (terminal assistant)
+
+    /// The cursor in the active area (not the viewport), whether or not it is visible.
+    public var activeCursor: (x: Int, y: Int) {
+        var x: UInt16 = 0
+        var y: UInt16 = 0
+        ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_CURSOR_X, &x)
+        ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_CURSOR_Y, &y)
+        return (Int(x), Int(y))
+    }
+
+    /// Rows of scrollback above the active area (none on the alternate screen).
+    public var scrollbackRowCount: Int {
+        var count = 0
+        ghostty_terminal_get(term, GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS, &count)
+        return count
+    }
+
+    /// The active area's rows as plain text, one string per row (wrapped rows are not joined, wide
+    /// characters appear once), trailing blanks trimmed; always `rows` strings. Independent of where
+    /// the viewport is scrolled.
+    public func activeRowTexts() -> [String] {
+        var lines = rowTexts(tag: GHOSTTY_POINT_TAG_ACTIVE, from: 0, to: rows - 1)
+        if lines.count < rows { lines += Array(repeating: "", count: rows - lines.count) }
+        return Array(lines.prefix(rows))
+    }
+
+    /// The newest `count` scrollback rows (oldest first), one string per row as `activeRowTexts`.
+    public func scrollbackRowTexts(last count: Int) -> [String] {
+        let history = scrollbackRowCount
+        guard count > 0, history > 0 else { return [] }
+        return rowTexts(tag: GHOSTTY_POINT_TAG_HISTORY, from: max(0, history - count), to: history - 1)
+    }
+
+    private func rowTexts(tag: GhosttyPointTag, from first: Int, to last: Int) -> [String] {
+        guard last >= first else { return [] }
+        func ref(x: Int, y: Int) -> GhosttyGridRef? {
+            var point = GhosttyPoint()
+            point.tag = tag
+            point.value.coordinate = GhosttyPointCoordinate(x: UInt16(clamping: x), y: UInt32(clamping: y))
+            var ref = GhosttyGridRef()
+            guard ghostty_terminal_grid_ref(term, point, &ref) == GHOSTTY_SUCCESS else { return nil }
+            return ref
+        }
+        guard let start = ref(x: 0, y: first), let end = ref(x: columns - 1, y: last) else { return [] }
+        var selection = GhosttySelection(start: start, end: end, rectangle: false)
+        var no = false
+        var yes = true
+        ghostty_formatter_set(handles.formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &no)
+        ghostty_formatter_set(handles.formatter, GHOSTTY_FORMATTER_OPT_SELECTION, &selection)
+        defer {
+            ghostty_formatter_set(handles.formatter, GHOSTTY_FORMATTER_OPT_SELECTION, nil)
+            ghostty_formatter_set(handles.formatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &yes)
+        }
+        guard let text = format() else { return [] }
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map {
+            String($0.reversed().drop(while: { $0 == " " }).reversed())
+        }
     }
 
     private func format() -> String? {

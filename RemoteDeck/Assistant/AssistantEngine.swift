@@ -23,8 +23,21 @@ enum AppleModelUnavailability: Equatable, Sendable {
     case appleIntelligenceOff
     /// Still downloading or preparing.
     case modelNotReady
-    /// macOS 15–26: FoundationModels' vision input needs macOS 27.
-    case requiresNewerOS
+    /// The Mac runs an older macOS than the use needs (`AppleModelUse.minimumMacOS`): screens need
+    /// FoundationModels' vision input (macOS 27), terminals the text model (macOS 26).
+    case requiresNewerOS(major: Int)
+}
+
+/// What the Apple model is asked to read: a screenshot (screen sessions) or text (terminal tabs).
+enum AppleModelUse: Sendable {
+    case screens, terminals
+
+    var minimumMacOS: Int {
+        switch self {
+        case .screens: 27
+        case .terminals: 26
+        }
+    }
 }
 
 /// One proposed or read-only computer action of a turn, before it runs.

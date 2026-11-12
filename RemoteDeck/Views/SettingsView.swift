@@ -95,17 +95,19 @@ struct SettingsView: View {
                     }
                     LabeledContent(settings.t("settings_model"), value: settings.claudeModel)
                 } else {
-                    Label(settings.t(AssistantCopy.appleStatusKey(appleStatus.unavailability)),
-                          systemImage: appleStatus.isAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle")
-                        .font(.callout)
-                        .foregroundStyle(appleStatus.isAvailable ? Color.green : .orange)
+                    let lines = AssistantCopy.appleStatusLines(appleStatus) { settings.t($0) }
+                    ForEach(Array(zip(lines, [appleStatus.isAvailable, appleStatus.isTerminalAvailable])), id: \.0) { line, ready in
+                        Label(line, systemImage: ready ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                            .font(.callout)
+                            .foregroundStyle(ready ? Color.green : .orange)
+                    }
                 }
                 Text(settings.t(settings.assistantProvider == .claude ? "settings_assistant_claude_help"
                                                                         : "settings_assistant_apple_help"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !appleStatus.isSupportedOS {
-                    Text(settings.t("apple_status_requires_newer_os"))
+                    Text(settings.t("apple_status_requires_macos_26"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

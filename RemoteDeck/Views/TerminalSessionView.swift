@@ -20,6 +20,8 @@ struct TerminalSessionView: View {
     @State private var editorRequest: EditorRequest?
     /// Files hover over the terminal and would be taken (Task 12).
     @State private var isDropTargeted = false
+    /// Terminal Assistant Panel shown (toolbar sparkles, ⌘K).
+    @State private var showsAssistant = false
 
     private var appearance: TerminalAppearance {
         TerminalAppearance(theme: settings.terminalTheme(isDark: colorScheme == .dark),
@@ -80,11 +82,24 @@ struct TerminalSessionView: View {
                     Label(settings.t("terminal_appearance"), systemImage: "textformat")
                 }
                 .help(settings.t("terminal_appearance_help"))
+                if terminal.terminalAssistant != nil, terminal.phase == .connected || showsAssistant {
+                    Toggle(isOn: $showsAssistant) {
+                        Label(settings.t("assistant_toggle"), systemImage: "sparkles")
+                    }
+                    .keyboardShortcut("k", modifiers: .command)
+                    .help(settings.t("assistant_toggle_help"))
+                }
                 Button { dismissWindow() } label: {
                     Label(settings.t("session_disconnect"), systemImage: "xmark.circle")
                 }
                 .help(settings.t("session_disconnect"))
             }
+        }
+        .inspector(isPresented: $showsAssistant) {
+            Group {
+                if let assistant = terminal.terminalAssistant { TerminalAssistantPanelView(model: assistant) }
+            }
+            .inspectorColumnWidth(320)
         }
         .navigationTitle(terminal.target.name)
         .focusedSceneValue(\.terminalFileActions, TerminalFileActions(
@@ -93,8 +108,25 @@ struct TerminalSessionView: View {
             download: { [terminal] in terminal.beginDownload() }
         ))
         .onAppear(perform: attachSurface)
+        .onAppear {
+            #if DEBUG
+            if LibraryDemo.scriptsTerminalAssistant { showsAssistant = true }
+            #endif
+        }
         .onChange(of: appearance) { _, new in surface?.apply(new) }
-        .onChange(of: terminal.phase) { _, phase in focusIfConnected(phase) }
+        .onChange(of: terminal.phase) { _, phase in
+            focusIfConnected(phase)
+            #if DEBUG
+            // `ssh-assistant`: the demo question, once the shell is up.
+            if LibraryDemo.scriptsTerminalAssistant, phase == .connected, let assistant = terminal.terminalAssistant,
+               assistant.entries.isEmpty {
+                Task {
+                    try? await Task.sleep(for: .seconds(1))
+                    assistant.ask(LibraryDemo.terminalDemoQuestion)
+                }
+            }
+            #endif
+        }
         .sheet(item: $editorRequest) { request in
             MachineEditorView(model: request.model) { _ in terminal.connect() }
         }
