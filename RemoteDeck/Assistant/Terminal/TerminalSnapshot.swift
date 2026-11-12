@@ -48,6 +48,15 @@ struct TerminalSnapshot: Equatable, Sendable {
         return cursorColumn >= line.count
     }
 
+    /// Best effort without OSC 133: the cursor is at the end of its row and the row ends with a
+    /// usual prompt character (`$`, `#`, `%`, `>`; trailing spaces are trimmed). Otherwise text may
+    /// already be typed there, and the confirm row says so (the app never clears it).
+    var commandLineLooksEmpty: Bool {
+        guard let line = promptLine, cursorIsAtLineEnd else { return false }
+        guard let last = line.last else { return true }
+        return "$#%>".contains(last)
+    }
+
     /// The newest scrollback rows within both bounds (whole rows only).
     func bounded(maxLines: Int = TerminalSnapshot.maxScrollbackLines,
                  maxCharacters: Int = TerminalSnapshot.maxScrollbackCharacters) -> TerminalSnapshot {
