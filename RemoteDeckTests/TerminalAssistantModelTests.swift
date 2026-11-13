@@ -122,11 +122,13 @@ func actionTurn(_ id: String, _ action: TerminalAction) -> TerminalTurn {
 @Suite(.timeLimit(.minutes(1)))
 struct TerminalAssistantModelTests {
     private func make(_ turns: [TerminalTurn], port: FakeTerminalAssistantPort = FakeTerminalAssistantPort(),
-                      promptPoll: Duration = TerminalAssistantModel.passwordPromptPoll)
+                      promptPoll: Duration = TerminalAssistantModel.passwordPromptPoll,
+                      promptGoneHold: Duration = TerminalAssistantModel.passwordPromptGoneHold)
         -> (TerminalAssistantModel, ScriptedTerminalEngine, FakeTerminalAssistantPort) {
         let engine = ScriptedTerminalEngine(turns)
         let model = TerminalAssistantModel(port: port, provider: { .claude }, makeEngine: { _ in engine },
-                                           gate: AssistantDecisionGate(armDelay: .zero), promptPoll: promptPoll)
+                                           gate: AssistantDecisionGate(armDelay: .zero), promptPoll: promptPoll,
+                                           promptGoneHold: promptGoneHold)
         return (model, engine, port)
     }
 
@@ -306,7 +308,7 @@ struct TerminalAssistantModelTests {
     /// A sudo command that leaves the password prompt on screen, the model then answering.
     private func waitingOnSudo() async -> (TerminalAssistantModel, ScriptedTerminalEngine, FakeTerminalAssistantPort) {
         let (model, engine, port) = make([commandTurn("t1", "sudo apt update"), answerTurn("updated")],
-                                         promptPoll: .milliseconds(10))
+                                         promptPoll: .milliseconds(10), promptGoneHold: .milliseconds(150))
         port.waitHandler = { _ in port.snapshot.map { PasswordPromptDetector.isShowing(in: $0) } == true ? .passwordPrompt : .settled }
         port.onType = { _ in port.snapshot = Self.sudoPrompt }
         ask(model)
@@ -329,21 +331,28 @@ struct TerminalAssistantModelTests {
 
     @Test func aWrongPasswordKeepsWaiting() async {
         let (model, engine, port) = await waitingOnSudo()
-        // The prompt goes, then "Sorry, try again." and the prompt is back once the output settles.
+        // Return pressed: the prompt goes and the output is quiet (PAM's pause), then "Sorry, try
+        // again." and the prompt is back before the hold ends.
         port.snapshot = TerminalSnapshot(screen: ["$ sudo apt update", "[sudo] password for pi:", ""],
                                          cursorRow: 2, cursorColumn: 0)
-        port.waitHandler = { _ in
-            port.snapshot = TerminalSnapshot(screen: ["[sudo] password for pi:", "Sorry, try again.", "[sudo] password for pi:"],
-                                             cursorRow: 2, cursorColumn: 23)
-            return .passwordPrompt
-        }
-        try? await Task.sleep(for: .milliseconds(100))
+        try? await Task.sleep(for: .milliseconds(60))
+        port.snapshot = TerminalSnapshot(screen: ["[sudo] password for pi:", "Sorry, try again.", "[sudo] password for pi:"],
+                                         cursorRow: 2, cursorColumn: 23)
+        try? await Task.sleep(for: .milliseconds(300))
         #expect(model.phase == .waitingForUser(.password))
         #expect(engine.calls == 1)
-        port.waitHandler = { _ in .settled }
         port.snapshot = Self.afterSudo
         #expect(await waitUntil { model.phase == .finished })
         #expect(engine.calls == 2)
+    }
+
+    @Test func sessionEndedEndsThePasswordWatch() async {
+        let (model, engine, port) = await waitingOnSudo()
+        model.sessionEnded()
+        port.snapshot = Self.afterSudo
+        try? await Task.sleep(for: .milliseconds(300))
+        #expect(model.phase == .failed(.disconnected))
+        #expect(engine.calls == 1)
     }
 
     @Test func stopEndsThePasswordWatch() async {
@@ -351,7 +360,7 @@ struct TerminalAssistantModelTests {
         model.stop()
         #expect(await waitUntil { model.phase == .stopped })
         port.snapshot = Self.afterSudo
-        try? await Task.sleep(for: .milliseconds(80))
+        try? await Task.sleep(for: .milliseconds(300))
         #expect(model.phase == .stopped)
         #expect(engine.calls == 1)
     }
