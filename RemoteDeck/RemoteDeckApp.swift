@@ -182,21 +182,23 @@ struct RemoteDeckApp: App {
             }
         }, path: sessionPath, workspaceCenter: powerCenter, publicConsents: publicConsents,
                                       ssh: ssh, makeSSHConnection: makeSSHConnection, sshTester: sshTester,
-                                      makeTerminalAssistant: { [claudeClient, makeAppleTerminalEngine, forcedProvider] terminal in
+                                      makeTerminalAssistant: { [claudeClient, makeAppleTerminalEngine, forcedProvider, pasteboard] terminal in
             #if DEBUG
             // `-LibraryDemo ssh-assistant`: a scripted engine, never a request or the Apple model.
             if LibraryDemo.scriptsTerminalAssistant {
                 return TerminalAssistantModel(port: terminal, provider: { .claude },
-                                              makeEngine: { _ in LibraryDemo.terminalAssistantEngine() })
+                                              makeEngine: { _ in LibraryDemo.terminalAssistantEngine() },
+                                              pasteboard: pasteboard)
             }
             #endif
             // Terminal tabs (SSH): the same provider setting, read between conversations.
-            return TerminalAssistantModel(port: terminal, provider: { forcedProvider ?? settings.assistantProvider }) { provider in
+            return TerminalAssistantModel(port: terminal, provider: { forcedProvider ?? settings.assistantProvider },
+                                          makeEngine: { provider in
                 switch provider {
                 case .claude: TerminalClaudeEngine(client: claudeClient, apiKey: { settings.anthropicAPIKey })
                 case .appleOnDevice, .applePrivateCloud: makeAppleTerminalEngine()
                 }
-            }
+            }, pasteboard: pasteboard)
         })
         _sessions = State(initialValue: sessions)
 
@@ -304,6 +306,7 @@ struct RemoteDeckApp: App {
             LibraryCommands(settings: settings)
             SessionTabCommands(settings: settings, sessions: sessions)
             FileTransferCommands(settings: settings)
+            TerminalAssistantCommands(settings: settings)
             HelpCommands(settings: settings)
         }
 

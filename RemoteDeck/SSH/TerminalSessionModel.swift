@@ -318,6 +318,14 @@ final class TerminalSessionModel {
     /// teardown, starts over on a new shell.
     var terminalAssistant: TerminalAssistantModel?
 
+    /// "Ask Assistant About Selection": the terminal's selection goes into the assistant's prompt,
+    /// unsent. False when there is no assistant or no selection.
+    @discardableResult
+    func askAssistantAboutSelection() -> Bool {
+        guard let terminalAssistant else { return false }
+        return terminalAssistant.attachSelection(surface?.selectionText)
+    }
+
     private enum ShellInput: Sendable {
         case data(Data)
         case resize(columns: Int, rows: Int)

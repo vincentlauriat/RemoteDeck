@@ -53,8 +53,17 @@ protocol TerminalSurface: AnyObject {
     var pendingBytes: Int { get }
     /// The tab as text (`TerminalSnapshot`).
     func snapshot() -> TerminalSnapshot?
+    /// The selected text, nil when nothing is selected.
+    var selectionText: String? { get }
     /// The bytes of a named key for the terminal's current modes.
     func encode(_ key: TerminalNamedKey) -> Data
+}
+
+/// The context menu's item titles.
+struct TerminalMenuTitles {
+    var copy = "Copy"
+    var paste = "Paste"
+    var askAssistant = "Ask Assistant About Selection"
 }
 
 /// The engine adapter (TRD › Architecture › SSH › Terminal engine): libghostty-vt (`VTTerminal`)
@@ -101,6 +110,12 @@ final class GhosttyTerminalSurface: TerminalSurface {
     var onDropTargeted: (Bool) -> Void = { _ in }
     var onDropFiles: ([URL]) -> Void = { _ in }
     var onCommandEnd: (Int?) -> Void = { _ in }
+    /// The selection appeared or went (the toolbar and menu items that act on it follow).
+    var onSelectionChange: (_ hasSelection: Bool) -> Void = { _ in }
+    /// Context menu › "Ask Assistant About Selection": nil when the tab has no assistant (the item is
+    /// disabled). The titles are localized by the SwiftUI view.
+    var onAskAssistantAboutSelection: (() -> Void)?
+    var menuTitles = TerminalMenuTitles()
 
     /// One display frame.
     static let frameInterval = 1.0 / 60
@@ -130,6 +145,7 @@ final class GhosttyTerminalSurface: TerminalSurface {
     private(set) var framesRun = 0
     /// Row layouts rebuilt since creation (tests: a cursor move rebuilds two rows, not the screen).
     private(set) var rowsBuilt = 0
+    private var lastHasSelection = false
     private var frameScheduled = false
     private var needsFullRefresh = true
     private var lastCursor: VTCursor?
@@ -269,6 +285,11 @@ final class GhosttyTerminalSurface: TerminalSurface {
     /// Takes the engine's changes into the row cache and invalidates the rows that changed.
     func refresh() {
         let dirty = terminal.update()
+        let hasSelection = terminal.hasSelection
+        if hasSelection != lastHasSelection {
+            lastHasSelection = hasSelection
+            onSelectionChange(hasSelection)
+        }
         let cursor = terminal.cursor
         let focused = terminalView.isFocused
         let cursorMoved = cursor != lastCursor || focused != lastFocused

@@ -264,6 +264,41 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
         return true
     }
 
+    @objc func askAssistantAboutSelection(_ sender: Any?) {
+        guard hasSelectedText else { return }
+        surface?.onAskAssistantAboutSelection?()
+    }
+
+    private var hasSelectedText: Bool {
+        guard let text = surface?.selectionText else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Copy needs a selection; the assistant item also needs a tab with an assistant (see the extension).
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(copy(_:)): hasSelectedText
+        case #selector(askAssistantAboutSelection(_:)): hasSelectedText && surface?.onAskAssistantAboutSelection != nil
+        default: true
+        }
+    }
+
+    /// Right click (when the program does not track the mouse): Copy, Paste, Ask Assistant About
+    /// Selection.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let surface else { return nil }
+        let titles = surface.menuTitles
+        let menu = NSMenu()
+        menu.autoenablesItems = true
+        for (title, action) in [(titles.copy, #selector(copy(_:))), (titles.paste, #selector(paste(_:)))] {
+            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        }
+        menu.addItem(.separator())
+        menu.addItem(withTitle: titles.askAssistant, action: #selector(askAssistantAboutSelection(_:)),
+                     keyEquivalent: "").target = self
+        return menu
+    }
+
     @objc func paste(_ sender: Any?) {
         guard let text = readPasteboard(), !text.isEmpty else { return }
         surface?.paste(text)
@@ -432,3 +467,5 @@ final class TerminalView: NSView, @preconcurrency NSTextInputClient {
                        mods: TerminalKeyTranslator.vtMods(event.modifierFlags))
     }
 }
+
+extension TerminalView: NSMenuItemValidation {}

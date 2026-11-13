@@ -72,7 +72,11 @@ final class TerminalAssistantModel {
         var content: Content
     }
 
-    static let maxPromptLength = 2000
+    /// The typed part of a prompt, plus room for one quoted terminal selection (`attachSelection`) and
+    /// its fences, so a capped selection never makes the prompt unsendable.
+    static let maxPromptLength = 2000 + maxSelectionLength + 200
+    /// The most characters of a terminal selection put into the prompt.
+    static let maxSelectionLength = 8000
 
     private(set) var phase: Phase = .idle
     private(set) var entries: [Entry] = []
@@ -87,6 +91,9 @@ final class TerminalAssistantModel {
     var stepsWithoutAction: Int { gate.stepsWithoutAction }
 
     @ObservationIgnored weak var port: (any TerminalAssistantPort)?
+    /// Where Copy writes (`SystemPasteboard` in the app, `InMemoryPasteboard` in tests and the demo);
+    /// nil: no Copy.
+    @ObservationIgnored private let pasteboard: (any ClipboardPasteboard)?
     private let gate: AssistantDecisionGate
     @ObservationIgnored private let providerChoice: @MainActor () -> AssistantProvider
     @ObservationIgnored private let makeEngine: @MainActor (AssistantProvider) -> any TerminalAssistantEngine
@@ -111,8 +118,9 @@ final class TerminalAssistantModel {
     init(port: (any TerminalAssistantPort)?, provider: @escaping @MainActor () -> AssistantProvider,
          makeEngine: @escaping @MainActor (AssistantProvider) -> any TerminalAssistantEngine,
          gate: AssistantDecisionGate = AssistantDecisionGate(), promptPoll: Duration = passwordPromptPoll,
-         promptGoneHold: Duration = passwordPromptGoneHold) {
+         promptGoneHold: Duration = passwordPromptGoneHold, pasteboard: (any ClipboardPasteboard)? = nil) {
         self.port = port
+        self.pasteboard = pasteboard
         self.promptPoll = promptPoll
         self.promptGoneHold = promptGoneHold
         providerChoice = provider
@@ -138,6 +146,48 @@ final class TerminalAssistantModel {
         guard chosen != engine.provider else { return }
         engine = makeEngine(chosen)
         if case .failed = phase { phase = .idle }
+    }
+
+    // MARK: Copy and paste
+
+    var canCopy: Bool { pasteboard != nil }
+
+    /// Puts `text` on the pasteboard, as is. False when there is no pasteboard or nothing to copy.
+    @discardableResult
+    func copy(_ text: String) -> Bool {
+        guard let pasteboard, !text.isEmpty else { return false }
+        pasteboard.write(text)
+        return true
+    }
+
+    /// Copies the exact command of a `run_command` row (never a key or wait row).
+    @discardableResult
+    func copyCommand(id: String) -> Bool {
+        guard case .runCommand(let command)? = item(id)?.action else { return false }
+        return copy(command)
+    }
+
+    /// Adds the terminal's selection to the prompt as a fenced block after any text already there,
+    /// capped at `maxSelectionLength` characters (the prompt says so). Nothing is sent. False when
+    /// the selection is empty.
+    @discardableResult
+    func attachSelection(_ selection: String?) -> Bool {
+        guard let selection, !selection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let truncated = selection.count > Self.maxSelectionLength
+        let text = truncated ? String(selection.prefix(Self.maxSelectionLength)) : selection
+        // A fence longer than any run of backticks in the text, so the block cannot be closed early.
+        var longest = 0, run = 0
+        for character in text {
+            run = character == "`" ? run + 1 : 0
+            longest = max(longest, run)
+        }
+        let fence = String(repeating: "`", count: max(3, longest + 1))
+        var block = "\(fence)\n\(text)\n\(fence)\n"
+        if truncated { block += "[Selection truncated to the first \(Self.maxSelectionLength) characters.]\n" }
+        var existing = prompt
+        while existing.last?.isNewline == true { existing.removeLast() }
+        prompt = existing.isEmpty ? block : existing + "\n\n" + block
+        return true
     }
 
     func item(_ id: String) -> ActionItem? {
