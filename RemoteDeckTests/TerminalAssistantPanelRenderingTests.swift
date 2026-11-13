@@ -111,7 +111,7 @@ struct TerminalAssistantPanelRenderingTests {
         #expect(await waitUntil { model.confirmArmed })
         model.confirm(id: "t1")
         #expect(await waitUntil { model.phase == .waitingForUser(.password) })
-        #expect(try english().t("assistant_terminal_password_wait") == "Type your password in the terminal, then click Continue.")
+        #expect(try english().t("assistant_terminal_password_wait") == "Type your password in the terminal: the assistant resumes on its own once you press Return. Continue resumes it now.")
         try render(model, name: "password")
         try render(model, name: "password", language: .fr, dark: true)
         model.stop()

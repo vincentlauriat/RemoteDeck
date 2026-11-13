@@ -414,7 +414,7 @@ enum Strings {
             // Terminal Assistant (SSH terminal tabs)
             "assistant_terminal_type_return": "Taper puis Retour",
             "assistant_terminal_line_not_empty": "La ligne de commande n'est pas vide",
-            "assistant_terminal_password_wait": "Tape ton mot de passe dans le terminal, puis clique sur Continuer.",
+            "assistant_terminal_password_wait": "Tapez votre mot de passe dans le terminal : l'assistant reprend de lui-même une fois la saisie validée. Continuer le relance tout de suite.",
             "assistant_terminal_new_shell": "Nouveau shell — commence une nouvelle conversation.",
             "assistant_terminal_keys": "Appuyer sur %@",
             "assistant_terminal_wait": "Attendre la sortie (jusqu'à %d s)",
@@ -984,7 +984,7 @@ enum Strings {
             // Terminal Assistant (SSH terminal tabs)
             "assistant_terminal_type_return": "Type and press Return",
             "assistant_terminal_line_not_empty": "The command line isn't empty",
-            "assistant_terminal_password_wait": "Type your password in the terminal, then click Continue.",
+            "assistant_terminal_password_wait": "Type your password in the terminal: the assistant resumes on its own once you press Return. Continue resumes it now.",
             "assistant_terminal_new_shell": "New shell — start a new conversation.",
             "assistant_terminal_keys": "Press %@",
             "assistant_terminal_wait": "Wait for the output (up to %d s)",
