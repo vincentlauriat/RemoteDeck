@@ -250,10 +250,22 @@ struct LocalForwardLoopbackTests {
 
     @Test func givenPortIsTheBoundPort() async throws {
         let rig = try await Rig.start()
-        let free = try await holdPort("127.0.0.1")
-        try await free.channel.close()
-        let forward = try await rig.forward(localPort: free.port)
-        #expect(forward.localPort == free.port)
+        // A port cannot be reserved between the probe and the forward: another test or process may
+        // take it (on 127.0.0.1 or [::1]) in that gap, and the forward then rightly refuses with
+        // portInUse. Pick a new port in that case; any other error still fails the test.
+        var bound: (asked: UInt16, forward: UInt16)?
+        for _ in 0..<5 where bound == nil {
+            let free = try await holdPort("127.0.0.1")
+            try await free.channel.close()
+            do {
+                let forward = try await rig.forward(localPort: free.port)
+                bound = (free.port, forward.localPort)
+            } catch SSHError.portInUse(let port) where port == free.port {
+                continue
+            }
+        }
+        #expect(bound != nil)
+        #expect(bound?.forward == bound?.asked)
         await rig.stop()
     }
 
