@@ -22,6 +22,8 @@ struct TerminalSessionView: View {
     @State private var isDropTargeted = false
     /// Terminal Assistant Panel shown (toolbar sparkles, ⌘K).
     @State private var showsAssistant = false
+    /// The terminal has selected text (follows `GhosttyTerminalSurface.onSelectionChange`).
+    @State private var hasSelection = false
 
     private var appearance: TerminalAppearance {
         TerminalAppearance(theme: settings.terminalTheme(isDark: colorScheme == .dark),
@@ -102,6 +104,10 @@ struct TerminalSessionView: View {
             .inspectorColumnWidth(320)
         }
         .navigationTitle(terminal.target.name)
+        .focusedSceneValue(\.terminalAssistantActions, TerminalAssistantActions(
+            canAskAboutSelection: terminal.terminalAssistant != nil && terminal.phase == .connected && hasSelection,
+            askAboutSelection: askAboutSelection
+        ))
         .focusedSceneValue(\.terminalFileActions, TerminalFileActions(
             canTransfer: terminal.canTransferFiles,
             upload: { [terminal] in Task { await terminal.chooseFilesToUpload() } },
@@ -203,6 +209,14 @@ struct TerminalSessionView: View {
         engine.accessibilityLabel = settings.t("terminal_accessibility_label")
         engine.onFontSizeStep = { [settings] step in settings.stepTerminalFontSize(step) }
         engine.onSelectTab = { index in _ = SessionTabs.selectTab(at: index) }
+        let selected = $hasSelection
+        engine.onSelectionChange = { selected.wrappedValue = $0 }
+        engine.onAskAssistantAboutSelection = { [terminal] in
+            guard terminal.terminalAssistant != nil else { return }
+            askAboutSelection()
+        }
+        engine.menuTitles = TerminalMenuTitles(copy: settings.t("menu_copy"), paste: settings.t("menu_paste"),
+                                               askAssistant: settings.t("assistant_ask_selection"))
         let targeted = $isDropTargeted
         engine.acceptsFileDrop = { [terminal] in terminal.canTransferFiles }
         engine.onDropTargeted = { targeted.wrappedValue = $0 }
@@ -212,6 +226,13 @@ struct TerminalSessionView: View {
         if terminal.surface !== engine { terminal.attach(engine) }
         surface = engine
         focusIfConnected(terminal.phase)
+    }
+
+    /// Context menu and Edit menu › Ask Assistant About Selection: opens the panel and quotes the
+    /// selection in its prompt. Nothing is sent.
+    private func askAboutSelection() {
+        guard terminal.askAssistantAboutSelection() else { return }
+        showsAssistant = true
     }
 
     /// The terminal takes the keyboard once the shell is up (AppFlow: "Terminal shown and focused").
@@ -360,4 +381,38 @@ private struct TerminalSurfaceRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView { surface.view }
     func updateNSView(_ view: NSView, context: Context) {}
+}
+
+// MARK: - Menu
+
+/// What Edit › Ask Assistant About Selection acts on: the focused terminal tab.
+struct TerminalAssistantActions {
+    let canAskAboutSelection: Bool
+    let askAboutSelection: () -> Void
+}
+
+private struct TerminalAssistantActionsKey: FocusedValueKey {
+    typealias Value = TerminalAssistantActions
+}
+
+extension FocusedValues {
+    var terminalAssistantActions: TerminalAssistantActions? {
+        get { self[TerminalAssistantActionsKey.self] }
+        set { self[TerminalAssistantActionsKey.self] = newValue }
+    }
+}
+
+/// Edit › Ask Assistant About Selection: enabled in a connected terminal tab with an assistant and
+/// selected text. No shortcut.
+struct TerminalAssistantCommands: Commands {
+    let settings: AppSettings
+    @FocusedValue(\.terminalAssistantActions) private var actions
+
+    var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Button(settings.t("assistant_ask_selection")) { actions?.askAboutSelection() }
+                .disabled(actions?.canAskAboutSelection != true)
+        }
+    }
 }

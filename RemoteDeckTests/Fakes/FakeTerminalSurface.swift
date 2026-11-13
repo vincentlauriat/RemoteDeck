@@ -19,6 +19,8 @@ final class FakeTerminalSurface: TerminalSurface {
     /// What `snapshot()` returns (terminal assistant).
     var snapshotValue: TerminalSnapshot? = TerminalSnapshot(screen: ["pi@raspberrypi:~ $"], cursorRow: 0, cursorColumn: 19)
     var pendingBytes = 0
+    /// What `selectionText` returns (the terminal's selected text).
+    var selectionValue: String?
     /// DECCKM as the engine would report it.
     var cursorKeysApplication = false
 
@@ -35,6 +37,7 @@ final class FakeTerminalSurface: TerminalSurface {
 
     func type(_ text: String) { onInput(Data(text.utf8)) }
 
+    var selectionText: String? { selectionValue }
     func snapshot() -> TerminalSnapshot? { snapshotValue }
     func encode(_ key: TerminalNamedKey) -> Data { key.bytes(cursorKeysApplication: cursorKeysApplication) }
 }

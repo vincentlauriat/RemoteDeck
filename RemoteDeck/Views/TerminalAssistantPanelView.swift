@@ -39,6 +39,8 @@ struct TerminalAssistantPanelView: View {
     @Environment(\.openSettings) private var openSettings
     @Bindable var model: TerminalAssistantModel
     @FocusState private var promptFocused: Bool
+    /// The row whose Copy was just used.
+    @State private var copiedID: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -143,8 +145,11 @@ struct TerminalAssistantPanelView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
         case .answer(let text):
-            Text(text)
-                .textSelection(.enabled)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(text)
+                    .textSelection(.enabled)
+                if model.canCopy { copyButton(id: "answer-\(entry.id)") { model.copy(text) } }
+            }
         case .action(let item):
             actionRow(item)
         }
@@ -177,6 +182,7 @@ struct TerminalAssistantPanelView: View {
                     .padding(6)
                     .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.06)))
                     .accessibilityLabel(command)
+                if model.canCopy { copyButton(id: item.id) { model.copyCommand(id: item.id) } }
                 if TerminalCommandValidator.looksDestructive(command) {
                     Label(settings.t("assistant_terminal_destructive"), systemImage: "exclamationmark.triangle.fill")
                         .font(.caption.weight(.semibold))
@@ -209,6 +215,24 @@ struct TerminalAssistantPanelView: View {
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 6)
             .fill(item.status == .awaiting ? Color.purple.opacity(0.12) : Color.secondary.opacity(0.08)))
+    }
+
+    /// Copy (a command or an answer, as is); the label reads "Copied" for a moment.
+    private func copyButton(id: String, copy: @escaping () -> Bool) -> some View {
+        Button {
+            guard copy() else { return }
+            copiedID = id
+            Task {
+                try? await Task.sleep(for: .seconds(1.5))
+                if copiedID == id { copiedID = nil }
+            }
+        } label: {
+            Label(settings.t(copiedID == id ? "assistant_copied" : "assistant_copy"),
+                  systemImage: copiedID == id ? "checkmark" : "doc.on.doc")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .help(settings.t("assistant_copy_help"))
     }
 
     private static var currentEventIsKeyRepeat: Bool {
@@ -319,7 +343,7 @@ struct TerminalAssistantPanelView: View {
                 if !model.sessionConnected {
                     Text(settings.t("assistant_not_connected")).font(.caption).foregroundStyle(.secondary)
                 } else if model.trimmedPrompt.count > TerminalAssistantModel.maxPromptLength {
-                    Text(settings.t("assistant_prompt_too_long")).font(.caption).foregroundStyle(.red)
+                    Text(settings.t("assistant_terminal_prompt_too_long")).font(.caption).foregroundStyle(.red)
                 }
                 Spacer()
                 if model.phase.isBusy {
