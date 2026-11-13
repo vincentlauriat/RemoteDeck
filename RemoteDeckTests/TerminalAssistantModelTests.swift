@@ -121,11 +121,12 @@ func actionTurn(_ id: String, _ action: TerminalAction) -> TerminalTurn {
 @MainActor
 @Suite(.timeLimit(.minutes(1)))
 struct TerminalAssistantModelTests {
-    private func make(_ turns: [TerminalTurn], port: FakeTerminalAssistantPort = FakeTerminalAssistantPort())
+    private func make(_ turns: [TerminalTurn], port: FakeTerminalAssistantPort = FakeTerminalAssistantPort(),
+                      promptPoll: Duration = TerminalAssistantModel.passwordPromptPoll)
         -> (TerminalAssistantModel, ScriptedTerminalEngine, FakeTerminalAssistantPort) {
         let engine = ScriptedTerminalEngine(turns)
         let model = TerminalAssistantModel(port: port, provider: { .claude }, makeEngine: { _ in engine },
-                                           gate: AssistantDecisionGate(armDelay: .zero))
+                                           gate: AssistantDecisionGate(armDelay: .zero), promptPoll: promptPoll)
         return (model, engine, port)
     }
 
@@ -295,6 +296,64 @@ struct TerminalAssistantModelTests {
         let outcome = engine.delivered.first?.first
         #expect(outcome?.snapshot == port.snapshot)   // the fresh one, after the user typed
         #expect(outcome?.text.contains("password") == true)
+    }
+
+    private static let sudoPrompt = TerminalSnapshot(screen: ["$ sudo apt update", "[sudo] password for pi:"],
+                                                     cursorRow: 1, cursorColumn: 23)
+    private static let afterSudo = TerminalSnapshot(screen: ["$ sudo apt update", "Reading package lists... Done", "$"],
+                                                    cursorRow: 2, cursorColumn: 2)
+
+    /// A sudo command that leaves the password prompt on screen, the model then answering.
+    private func waitingOnSudo() async -> (TerminalAssistantModel, ScriptedTerminalEngine, FakeTerminalAssistantPort) {
+        let (model, engine, port) = make([commandTurn("t1", "sudo apt update"), answerTurn("updated")],
+                                         promptPoll: .milliseconds(10))
+        port.waitHandler = { _ in port.snapshot.map { PasswordPromptDetector.isShowing(in: $0) } == true ? .passwordPrompt : .settled }
+        port.onType = { _ in port.snapshot = Self.sudoPrompt }
+        ask(model)
+        await confirmWhenArmed(model, "t1")
+        #expect(await waitUntil { model.phase == .waitingForUser(.password) })
+        return (model, engine, port)
+    }
+
+    @Test func resumesOnItsOwnWhenThePasswordPromptGoes() async {
+        let (model, engine, port) = await waitingOnSudo()
+        try? await Task.sleep(for: .milliseconds(60))
+        #expect(engine.calls == 1)   // the prompt is still up: nothing yet
+        port.snapshot = Self.afterSudo
+        #expect(await waitUntil { model.phase == .finished })
+        #expect(engine.calls == 2)
+        let outcome = engine.delivered.first?.first
+        #expect(outcome?.snapshot == Self.afterSudo)
+        #expect(outcome?.text == TerminalAssistantModel.passwordDoneText)
+    }
+
+    @Test func aWrongPasswordKeepsWaiting() async {
+        let (model, engine, port) = await waitingOnSudo()
+        // The prompt goes, then "Sorry, try again." and the prompt is back once the output settles.
+        port.snapshot = TerminalSnapshot(screen: ["$ sudo apt update", "[sudo] password for pi:", ""],
+                                         cursorRow: 2, cursorColumn: 0)
+        port.waitHandler = { _ in
+            port.snapshot = TerminalSnapshot(screen: ["[sudo] password for pi:", "Sorry, try again.", "[sudo] password for pi:"],
+                                             cursorRow: 2, cursorColumn: 23)
+            return .passwordPrompt
+        }
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(model.phase == .waitingForUser(.password))
+        #expect(engine.calls == 1)
+        port.waitHandler = { _ in .settled }
+        port.snapshot = Self.afterSudo
+        #expect(await waitUntil { model.phase == .finished })
+        #expect(engine.calls == 2)
+    }
+
+    @Test func stopEndsThePasswordWatch() async {
+        let (model, engine, port) = await waitingOnSudo()
+        model.stop()
+        #expect(await waitUntil { model.phase == .stopped })
+        port.snapshot = Self.afterSudo
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(model.phase == .stopped)
+        #expect(engine.calls == 1)
     }
 
     @Test func runCommandOnAPasswordPromptIsRefused() async {

@@ -148,7 +148,7 @@ The sparkles toggle (⌘K) in a connected terminal tab's toolbar opens the panel
 - **Type and press Return:** the prompt line it lands on (dimmed), the full command verbatim (monospaced, wrapped, selectable, never shortened), a "Destructive" badge for obviously destructive patterns, "The command line isn't empty" when text already follows the prompt, the reason; Confirm (⌘Return, armed after 400 ms), Skip.
 - **Press keys** ("Ctrl-C, q") and **Wait for the output** (automatic).
 - A refused proposal (line break, control character, full-screen program, password prompt) shows as a failed row; the model gets the reason.
-- **Password prompt** while the output settles: "Type your password in the terminal, then click Continue." with Continue and Stop; the terminal keeps the keyboard.
+- **Password prompt** while the output settles: "Type your password in the terminal: the assistant resumes on its own once you press Return. Continue resumes it now." with Continue and Stop; the terminal keeps the keyboard. The panel reads the terminal every 0.5 s: once the prompt is gone and the output has settled, the turn goes on by itself; a prompt back (a wrong password) keeps the wait.
 - Stop (⌘.) at any time; after 8 turns without a confirmed action, Continue or Stop.
 - After a reconnect: "New shell — start a new conversation."
 - Blocked states as the Claude Assistant Panel (no API key, Apple model unavailable).

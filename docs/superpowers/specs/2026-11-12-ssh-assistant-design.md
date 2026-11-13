@@ -191,7 +191,7 @@ panel may show a neutral warning badge (my call) for obviously destructive patte
   with the cursor at the line end. Checked on every snapshot, **including during output settling**:
   settling ends at once with `password prompt showing`.
 - Then the model gets that result, and the phase becomes `.waitingForUser(.password)`: the panel says
-  "Type your password in the terminal, then click Continue" (fr/en). The terminal keeps the keyboard;
+  "Type your password in the terminal: the assistant resumes on its own once you press Return. Continue resumes it now." (fr/en; automatic resume added 2026-11-13). The terminal keeps the keyboard;
   nothing is held back; no request is in flight.
 - Continue (or the prompt disappearing from the screen for 1 s after the user typed) resumes with a
   fresh snapshot sent as the pending tool result's follow-up; the 8-turn counter is not advanced by

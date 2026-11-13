@@ -97,11 +97,18 @@ final class TerminalAssistantModel {
     @ObservationIgnored private var nextEntryID = 0
     /// The turn's results while a password prompt waits for the user.
     @ObservationIgnored private var heldOutcomes: [TerminalActionOutcome]?
+    /// Watches the terminal while a password prompt waits for the user (`watchPasswordPrompt`).
+    @ObservationIgnored private var promptWatch: Task<Void, Never>?
+    @ObservationIgnored private let promptPoll: Duration
+
+    /// How often the terminal is read while the user types a password.
+    static let passwordPromptPoll: Duration = .milliseconds(500)
 
     init(port: (any TerminalAssistantPort)?, provider: @escaping @MainActor () -> AssistantProvider,
          makeEngine: @escaping @MainActor (AssistantProvider) -> any TerminalAssistantEngine,
-         gate: AssistantDecisionGate = AssistantDecisionGate()) {
+         gate: AssistantDecisionGate = AssistantDecisionGate(), promptPoll: Duration = passwordPromptPoll) {
         self.port = port
+        self.promptPoll = promptPoll
         providerChoice = provider
         self.makeEngine = makeEngine
         self.gate = gate
@@ -178,6 +185,7 @@ final class TerminalAssistantModel {
     func continueAfterUser() {
         guard phase == .waitingForUser(.password), let held = heldOutcomes else { return }
         heldOutcomes = nil
+        endPasswordWatch()
         start { [weak self] in
             guard let self else { return }
             let snapshot = await self.port?.assistantSnapshot()?.bounded()
@@ -206,6 +214,7 @@ final class TerminalAssistantModel {
         if phase.isBusy { interrupt(as: .failed(.disconnected)) }
         engine.reset()
         heldOutcomes = nil
+        endPasswordWatch()
         isNewShell = true
         if !phase.isBusy { phase = .idle }
     }
@@ -228,7 +237,41 @@ final class TerminalAssistantModel {
         gate.skip(id: id)
     }
 
+    /// While the user types a password: once the prompt is gone (Return pressed) and the output has
+    /// settled, the turn goes on as Continue would. A prompt back after settling (a wrong password,
+    /// another sudo) keeps the wait. Continue, Stop, the session ending or a reconnect end the watch.
+    private func watchPasswordPrompt() {
+        promptWatch?.cancel()
+        let poll = promptPoll
+        promptWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: poll)
+                guard !Task.isCancelled, let self, self.phase == .waitingForUser(.password),
+                      let port = self.port, port.assistantCanAct else { return }
+                guard let snapshot = await port.assistantSnapshot(), !Task.isCancelled,
+                      !PasswordPromptDetector.isShowing(in: snapshot) else { continue }
+                let wait = await port.assistantWaitForOutput(cap: OutputSettler.actionCap)
+                guard !Task.isCancelled, self.phase == .waitingForUser(.password) else { return }
+                switch wait {
+                case .sessionEnded: return
+                case .passwordPrompt: continue
+                default:
+                    if let after = await port.assistantSnapshot(), PasswordPromptDetector.isShowing(in: after) { continue }
+                    guard !Task.isCancelled, self.phase == .waitingForUser(.password) else { return }
+                    self.continueAfterUser()
+                    return
+                }
+            }
+        }
+    }
+
+    private func endPasswordWatch() {
+        promptWatch?.cancel()
+        promptWatch = nil
+    }
+
     private func interrupt(as final: Phase) {
+        endPasswordWatch()
         if let held = heldOutcomes {
             heldOutcomes = nil
             engine.deferOutcomes(held.map { TerminalActionOutcome(id: $0.id, text: $0.text, snapshot: nil, isError: $0.isError) })
@@ -310,6 +353,7 @@ final class TerminalAssistantModel {
                 if passwordWait {
                     heldOutcomes = results
                     setPhase(.waitingForUser(.password))
+                    watchPasswordPrompt()
                     return
                 }
                 if gate.shouldPause {
@@ -467,7 +511,7 @@ final class TerminalAssistantModel {
     }
 
     static let passwordWaitText = "A password prompt is showing; the user is typing it."
-    static let passwordDoneText = "OK. A password prompt showed; the user typed the password in the terminal and clicked Continue."
+    static let passwordDoneText = "OK. A password prompt showed; the user typed the password in the terminal."
 
     private func settled(_ wait: OutputWait, id: String, snapshot: TerminalSnapshot?) -> Step {
         switch wait {
