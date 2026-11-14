@@ -301,6 +301,9 @@ struct RemoteDeckApp: App {
         // At every launch, even when state restoration has no window to bring back (after a
         // killed run, or when only session windows were open: those are never restored).
         .defaultLaunchBehavior(.presented)
+        // Window › Library (⌘0) opens it: no second, automatic entry in the Window menu. Before
+        // `.commands`, so only the scene's own menu item goes, not the commands added below.
+        .commandsRemoved()
         .commands {
             UpdateCommands(settings: settings, updater: updater)
             LibraryCommands(settings: settings)
@@ -343,6 +346,8 @@ struct RemoteDeckApp: App {
         .defaultSize(width: 1000, height: 600)
         // `-LibraryDemo history` opens it from the Library Window.
         .defaultLaunchBehavior(.suppressed)
+        // Window › Session History (⌘Y) and the Library toolbar open it; no duplicate entry.
+        .commandsRemoved()
 
         // Help and What's New (AppFlow › Help and What's New): never opened nor restored at launch,
         // so nothing is fetched until the user asks.
@@ -354,6 +359,8 @@ struct RemoteDeckApp: App {
         .defaultSize(width: 760, height: 720)
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(.suppressed)
+        // Help › RemoteDeck Help opens it: not listed again in the Window menu.
+        .commandsRemoved()
         Window(settings.t("whats_new_window_title"), id: HelpWindow.whatsNewID) {
             HelpWindowView(model: whatsNew)
                 .environment(settings)
@@ -362,6 +369,7 @@ struct RemoteDeckApp: App {
         .defaultSize(width: 760, height: 620)
         .restorationBehavior(.disabled)
         .defaultLaunchBehavior(.suppressed)
+        .commandsRemoved()
 
         // Menu Bar Extra (T4.6): favorites and recent machines, Open Library, Session History, Quit.
         MenuBarExtra(settings.t("app_name"), systemImage: "display.2", isInserted: $showsMenuBarExtra) {

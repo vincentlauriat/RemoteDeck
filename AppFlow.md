@@ -13,7 +13,7 @@
 | Screen | Purpose | Data needed |
 |---|---|---|
 | Onboarding Sheet | Explain the app, ask for local network and notification permissions, offer to enable iCloud Sync | AppSettings |
-| Library Window | Sidebar with Favorites (pinned; a favorite is listed there only, so each machine has one row), groups (by sort order, then name; empty groups shown unless searching) and ungrouped Machines; search; toolbar (add, discover, connect) | Machine, MachineGroup |
+| Library Window | Sidebar with Favorites (pinned; a favorite is listed there only, so each machine has one row), groups (by sort order, then name; empty groups shown unless searching) and ungrouped Machines; search; toolbar (add, discover, Session History, connect) | Machine, MachineGroup |
 | Machine Editor | Create or edit a machine: name, kind (Mac ARD / VNC / Anthropic VM / SSH, post-1.0: its own fields and "Import from ~/.ssh/config" are in Machine Editor › SSH machines below), host, port, user, password, group (or "New Group…"), watch, favorite, scaling, shared clipboard (new machines default to AppSettings `defaultSharedClipboard`, except an Anthropic VM, off by default; the default follows the kind until the toggle is touched, T5.3). A host typed as a public IP address shows an orange note under the field: "Public address: the connection will travel unencrypted over the Internet. Prefer a VPN or the local network." | Machine, MachineGroup, KeychainCredential, AppSettings |
 | Discovery Panel | Sheet listing the hosts found on the LAN through Bonjour (`_rfb._tcp` and `_net-assistant._udp`, merged per host; this Mac is left out), with "Add" per row | Live Bonjour results, Machine (for "Already added") |
 | Session Window | Remote framebuffer with tabs, toolbar (scaling, clipboard, Ctrl-Alt-Del equivalents, Claude, disconnect); an SSH machine's tab shows a terminal instead of a framebuffer (post-1.0, Session Window › Terminal tab) | Machine, KeychainCredential, SessionRecord |
@@ -224,7 +224,7 @@ With **Apple (on device)** chosen in Settings › Assistant, the same panel and 
 
 | Action | Trigger | Validation | Loading | Success | Error | Next |
 |---|---|---|---|---|---|---|
-| Open | Menu Window › Session History (⌘Y), or "Session History…" in the Menu Bar Extra | — | — | Table sorted by date, newest first | — | — |
+| Open | Menu Window › Session History (⌘Y), the Library Window toolbar's Session History button (`clock.arrow.circlepath`), or "Session History…" in the Menu Bar Extra | — | — | Table sorted by date, newest first | — | — |
 | Sort | Click a column header | — | — | Rows reordered (no first frame sorts after every connect time; in progress after every duration, unknown last) | — | — |
 | Filter / search | Toolbar pickers "All machines" / "All outcomes", search field (machine name, case- and accent-insensitive) | — | — | Rows filtered live; the summary is not filtered | "No results" | — |
 | Reconnect | Double-click a row, or Reconnect in its context menu | Machine still exists and has a host and port | — | The Connect path (a new tab, or the machine's open tab brought forward) | "Machine deleted" alert; a machine without a valid address: "Cannot connect" alert | Session Window |

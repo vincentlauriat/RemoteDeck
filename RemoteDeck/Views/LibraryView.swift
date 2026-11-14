@@ -231,6 +231,10 @@ struct LibraryView: View {
                 Label(settings.t("discover"), systemImage: "antenna.radiowaves.left.and.right")
             }
             .help(settings.t("discover"))
+            Button { openWindow(id: HistoryWindow.id) } label: {
+                Label(settings.t("menu_session_history"), systemImage: "clock.arrow.circlepath")
+            }
+            .help(settings.t("history_toolbar_help"))
             Button { connect(machine(model.selection)) } label: {
                 Label(settings.t("connect"), systemImage: "play.fill")
             }
