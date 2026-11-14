@@ -35,14 +35,14 @@ It is a native SwiftUI + AppKit app with its own RFB/VNC protocol library (Apple
 | 🖥️ **Screen Session** | View and control a remote Mac (ARD, Apple Diffie-Hellman auth) or a VNC desktop; Raw, CopyRect, ZRLE and Tight decoding, Metal rendering |
 | 📡 **Bonjour Discovery** | Find Macs with Screen Sharing or Remote Management on the LAN without typing an address |
 | 🤖 **Anthropic VM Connect** | Open a Claude computer use environment (VNC endpoint) like any other machine |
-| 💻 **SSH machines** *(next release)* | A terminal tab on a Linux server, Raspberry Pi or cloud VM: password or key (from `~/.ssh`, granted once, or imported into the Keychain), host keys checked against `known_hosts` and trusted once per Mac, a native terminal (libghostty-vt parsing, CoreText drawing) whose font, theme and every colour are set in Settings › Terminal, saved local port forwards started with the session, file upload (drop or `⌘U`) and download over SFTP, import from `~/.ssh/config` |
+| 💻 **SSH machines** | A terminal tab on a Linux server, Raspberry Pi or cloud VM: password or key (from `~/.ssh`, granted once, or imported into the Keychain), host keys checked against `known_hosts` and trusted once per Mac, a native terminal (libghostty-vt parsing, CoreText drawing) whose font, theme and every colour are set in Settings › Terminal, saved local port forwards started with the session, file upload (drop or `⌘U`) and download over SFTP, import from `~/.ssh/config` |
 | 🗃️ **Session Tabs** | Several sessions as tabs of one window, `⌘1`…`⌘9` |
 | ⌨️ **Keyboard capture** | Key combos go to the remote; `⌃⌥⌘R` releases them; ⌘Tab, ⌘Space and other system shortcuts too, with Accessibility access |
 | 📋 **Shared Clipboard** | Text both ways, Extended Clipboard (UTF-8) when the server supports it; off for a session over the Internet until you turn it on |
 | ☁️ **iCloud Sync** | The same Machine Library on all your Macs; passwords through iCloud Keychain |
 | ✨ **Claude Assistant** | Ask Claude about the remote screen or give it a task, with your own API key; every action waits for your Confirm |
 | 🍏 **Apple on-device assistant** | The same panel on Apple's on-device model (Settings › Assistant; macOS 27 for screens, macOS 26 for terminal tabs): no key, nothing leaves the Mac; it clicks only on text visible on the screen, each action confirmed |
-| 🐚 **Terminal Assistant** *(next release)* | The assistant in an SSH terminal tab (`⌘K`): Claude or Apple on device reads the terminal as text, explains it and proposes one command at a time, typed only after your Confirm; it waits for you on a password prompt; Copy on each command, and "Ask Assistant About Selection" quotes selected terminal text into the prompt (never sent on its own) |
+| 🐚 **Terminal Assistant** | The assistant in an SSH terminal tab (`⌘K`): Claude or Apple on device reads the terminal as text, explains it and proposes one command at a time, typed only after your Confirm; it waits for you on a password prompt; Copy on each command, and "Ask Assistant About Selection" quotes selected terminal text into the prompt (never sent on its own) |
 | 🔔 **Status Notifications** | A notification when a watched machine goes offline or comes back |
 | 📊 **Session History** | Local log of sessions with a 30-day summary and CSV export; a Menu Bar Extra for quick connect |
 | 🔁 **Session resilience** | One automatic reconnect after a drop, a clean stop before sleep and a reconnect after wake |
@@ -187,7 +187,9 @@ Releases (maintainer): bump `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` in
 - [x] **Step 4 — secondary features (P1)** — clipboard, tabs, iCloud Sync, Claude Assistant, notifications, history (live two-Mac sync check pending)
 - [ ] **Step 5 — quality** — resilience, security review and parser fuzzing done; accessibility pass (T5.2) and 4K performance (T5.4) pending
 - [ ] **Step 6 — go-live** — v1.0.0 released (signed, notarized DMG, Sparkle updates), CloudKit Production schema deployed, landing page live; clean-Mac test run pending
-- [ ] **Step 7 — SSH machines** — terminal tabs, port forwards and SFTP file transfer built and tested on fakes and a loopback server; live checks on real machines pending
+- [x] **Step 7 — SSH machines** — terminal tabs, port forwards and SFTP file transfer, released in v1.1.0 (CloudKit Production schema deployed)
+- [x] **Step 8 — Apple on-device assistant** — released in v1.1.0; Private Cloud Compute waits for Apple's entitlement
+- [ ] **Step 9 — Terminal Assistant** — released in v1.1.0 (with copy and paste); a live check against the real Claude and Apple models pending
 - [ ] **Screen-session File Transfer** (P2)
 
 ## Contributing

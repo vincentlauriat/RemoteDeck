@@ -6,6 +6,15 @@
     <description>RemoteDeck release feed. Scripts/release.sh adds one item per release, newest first.</description>
     <language>en</language>
     <item>
+      <title>v1.1.0</title>
+      <pubDate>Sat, 14 Nov 2026 11:33:15 GMT</pubDate>
+      <sparkle:version>3</sparkle:version>
+      <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/vincentlauriat/RemoteDeck/releases/tag/v1.1.0</sparkle:fullReleaseNotesLink>
+      <enclosure url="https://github.com/vincentlauriat/RemoteDeck/releases/download/v1.1.0/RemoteDeck-1.1.0.dmg" type="application/octet-stream" sparkle:edSignature="oRAmu6uLjYTGMHtEE851R6N5qUWA9V+cyZe8cx3UzQIyFwEyDRjtD8WdhFXLppuik2663awBjUvM+jFmmi7+Bw==" length="14230951" />
+    </item>
+    <item>
       <title>v1.0.0</title>
       <pubDate>Sun, 01 Nov 2026 07:58:34 GMT</pubDate>
       <sparkle:version>2</sparkle:version>
