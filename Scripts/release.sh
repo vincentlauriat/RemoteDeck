@@ -77,6 +77,20 @@
 # uses the team's Developer ID Application identity), NOTARY_PROFILE
 set -euo pipefail
 
+# Notary credentials: an App Store Connect API key (.p8) when NOTARY_KEY_ID, NOTARY_ISSUER_ID and
+# NOTARY_KEY_PATH are set or read from ~/.config/notarytool/api-key.env (it survives a keychain
+# reset); otherwise the keychain profile given as first argument. Usage: notary_run <profile> <args>
+notary_run() {
+  _np="$1"; shift
+  _nf="${NOTARY_ENV_FILE:-$HOME/.config/notarytool/api-key.env}"
+  if [ -z "${NOTARY_KEY_ID:-}" ] && [ -f "$_nf" ]; then . "$_nf"; fi
+  if [ -n "${NOTARY_KEY_ID:-}" ]; then
+    xcrun notarytool "$@" --key "${NOTARY_KEY_PATH/#\~/$HOME}" --key-id "$NOTARY_KEY_ID" --issuer "${NOTARY_ISSUER_ID:-}"
+  else
+    xcrun notarytool "$@" --keychain-profile "$_np"
+  fi
+}
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
@@ -491,7 +505,7 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 # ── 7. Notarize: only "Accepted" for this DMG counts ───────────────────────────────────────────
-if ! xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+if ! notary_run "$NOTARY_PROFILE" history >/dev/null 2>&1; then
   cat >&2 <<EOF
 ✗ Notary profile "$NOTARY_PROFILE" not found.
   Create it once (interactive):
@@ -503,7 +517,7 @@ EOF
 fi
 echo "▶︎ notarize (this takes a few minutes)"
 # `submit --wait` exits 0 even when Apple returns "Invalid": read the status.
-NOTARY_JSON="$(xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json)" || true
+NOTARY_JSON="$(notary_run "$NOTARY_PROFILE" submit "$DMG" --wait --output-format json)" || true
 # Any parse problem yields empty fields, so it reaches the "not accepted" path below.
 NOTARY_FIELDS="$(printf '%s' "$NOTARY_JSON" | python3 -I -c '
 import sys, json
@@ -526,7 +540,7 @@ echo "  notarization $NOTARY_ID: $NOTARY_STATUS"
 if [ "$NOTARY_STATUS" != "Accepted" ]; then
   echo "✗ notarization not accepted (status: ${NOTARY_STATUS:-unknown})" >&2
   if [ -n "$NOTARY_ID" ]; then
-    xcrun notarytool log "$NOTARY_ID" --keychain-profile "$NOTARY_PROFILE" >&2 || true
+    notary_run "$NOTARY_PROFILE" log "$NOTARY_ID" >&2 || true
   fi
   exit 1
 fi
