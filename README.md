@@ -17,9 +17,9 @@ Macs over Apple Remote Desktop / Screen Sharing, VNC desktops, Anthropic compute
 
 ![The desktop of Anthropic's computer use reference container, a real frame decoded by RemoteDeck's RFBKit (rfb-probe)](docs/assets/computer-use.png)
 
-*A real frame from Anthropic's computer use reference container, decoded by RFBKit. Below: a Session Window with three tabs in the Debug demo mode (synthetic test pattern), then an SSH terminal tab with the Terminal Assistant proposing a command (demo mode: a scripted shell and a scripted assistant).*
+*A real frame from Anthropic's computer use reference container, decoded by RFBKit. Below: a Screen Session on a remote Mac (the remote desktop is an illustration drawn for this page; the window around it is a real capture), then an SSH terminal tab with the Terminal Assistant proposing a command (demo mode: a scripted shell and a scripted assistant).*
 
-![A Session Window with three tabs on demo machines, showing the synthetic test pattern of the -LibraryDemo session mode](docs/assets/session.png)
+![A Screen Session window titled Mac mini showing a remote Mac desktop with a file browser window, a CPU load window and a dock; the desktop is an illustration](docs/assets/mac-session.png)
 
 ![An SSH terminal tab on a demo Raspberry Pi showing df -h, with the Terminal Assistant panel explaining the full disk and proposing du -sh /var/log/* behind Confirm and Skip](docs/assets/terminal-assistant.png)
 
