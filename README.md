@@ -4,7 +4,7 @@
 
 **A native macOS client for every remote screen you use.**
 
-Macs over Apple Remote Desktop / Screen Sharing, VNC desktops, Anthropic computer use environments and SSH terminals, from one window, with saved credentials, tabs, and an optional Claude Assistant that acts on the remote screen one confirmed action at a time.
+Macs over Apple Remote Desktop / Screen Sharing, VNC desktops, Anthropic computer use environments and SSH terminals, from one window, with saved credentials, tabs, and an optional assistant (Claude, or Apple's on-device model) that acts on the remote screen or in the terminal one confirmed action at a time.
 
 [![Platform](https://img.shields.io/badge/platform-macOS%2015%2B-blue.svg)](https://www.apple.com/macos)
 [![Release](https://img.shields.io/github/v/release/vincentlauriat/RemoteDeck?color=brightgreen)](https://github.com/vincentlauriat/RemoteDeck/releases/latest)
@@ -17,13 +17,15 @@ Macs over Apple Remote Desktop / Screen Sharing, VNC desktops, Anthropic compute
 
 ![The desktop of Anthropic's computer use reference container, a real frame decoded by RemoteDeck's RFBKit (rfb-probe)](docs/assets/computer-use.png)
 
-*A real frame from Anthropic's computer use reference container, decoded by RFBKit. Below: a Session Window with three tabs in the Debug demo mode (synthetic test pattern).*
+*A real frame from Anthropic's computer use reference container, decoded by RFBKit. Below: a Session Window with three tabs in the Debug demo mode (synthetic test pattern), then an SSH terminal tab with the Terminal Assistant proposing a command (demo mode: a scripted shell and a scripted assistant).*
 
 ![A Session Window with three tabs on demo machines, showing the synthetic test pattern of the -LibraryDemo session mode](docs/assets/session.png)
 
+![An SSH terminal tab on a demo Raspberry Pi showing df -h, with the Terminal Assistant panel explaining the full disk and proposing du -sh /var/log/* behind Confirm and Skip](docs/assets/terminal-assistant.png)
+
 ## Why
 
-Reaching a remote Mac usually means juggling Apple Remote Desktop (heavy, built for fleet management) and the built-in Screen Sharing app (no machine library, no tabs), and Anthropic computer use desktops need yet another VNC client or a browser page. RemoteDeck is one fast, keyboard-friendly app for all of them: a Machine Library with credentials in the Keychain, sessions in tabs, Bonjour discovery on the LAN, and nothing of ARD's fleet management.
+Reaching a remote Mac usually means juggling Apple Remote Desktop (heavy, built for fleet management) and the built-in Screen Sharing app (no machine library, no tabs), Anthropic computer use desktops need yet another VNC client or a browser page, and Linux servers live in a separate terminal app. RemoteDeck is one fast, keyboard-friendly app for all of them: a Machine Library with credentials in the Keychain, screen and terminal sessions in tabs, Bonjour discovery on the LAN, and nothing of ARD's fleet management.
 
 It is a native SwiftUI + AppKit app with its own RFB/VNC protocol library (Apple Diffie-Hellman authentication, Raw, CopyRect, ZRLE and Tight decoding) and a Metal-backed framebuffer, sandboxed and notarized.
 
@@ -50,7 +52,7 @@ It is a native SwiftUI + AppKit app with its own RFB/VNC protocol library (Apple
 | 📖 **In-app Help & What's New** | Help (`⌘?`) and *What's New…* read this README and the release notes live from GitHub and render them natively (no web view) |
 | 🚀 **Updates** | Sparkle 2, EdDSA-signed, from this repository's GitHub Releases |
 
-![The Machine Library window on the sample library of the -LibraryDemo list mode](docs/assets/library.png)
+![The Machine Library window on the demo sample library: Macs, a NAS, an SSH machine (Raspberry) and a computer use environment](docs/assets/library.png)
 
 ## Install
 
