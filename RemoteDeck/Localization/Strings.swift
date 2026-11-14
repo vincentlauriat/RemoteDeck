@@ -516,6 +516,7 @@ enum Strings {
 
             // Session History (T4.6)
             "menu_session_history": "Historique des sessions",
+            "history_toolbar_help": "Historique des sessions (⌘Y)",
             "menu_check_for_updates": "Rechercher les mises à jour…",
 
             // Help and What's New (AppFlow › Help and What's New)
@@ -1093,6 +1094,7 @@ enum Strings {
 
             // Session History (T4.6)
             "menu_session_history": "Session History",
+            "history_toolbar_help": "Session History (⌘Y)",
             "menu_check_for_updates": "Check for Updates…",
 
             // Help and What's New (AppFlow › Help and What's New)

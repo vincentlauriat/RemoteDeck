@@ -46,7 +46,7 @@ It is a native SwiftUI + AppKit app with its own RFB/VNC protocol library (Apple
 | 🍏 **Apple on-device assistant** | The same panel on Apple's on-device model (Settings › Assistant; macOS 27 for screens, macOS 26 for terminal tabs): no key, nothing leaves the Mac; it clicks only on text visible on the screen, each action confirmed |
 | 🐚 **Terminal Assistant** | The assistant in an SSH terminal tab (`⌘K`): Claude or Apple on device reads the terminal as text, explains it and proposes one command at a time, typed only after your Confirm; it waits for you on a password prompt; Copy on each command, and "Ask Assistant About Selection" quotes selected terminal text into the prompt (never sent on its own) |
 | 🔔 **Status Notifications** | A notification when a watched machine goes offline or comes back |
-| 📊 **Session History** | Local log of sessions with a 30-day summary and CSV export; a Menu Bar Extra for quick connect |
+| 📊 **Session History** | Local log of sessions with a 30-day summary and CSV export: the clock button in the Library toolbar, Window › Session History (`⌘Y`) or the Menu Bar Extra, which also offers quick connect |
 | 🔁 **Session resilience** | One automatic reconnect after a drop, a clean stop before sleep and a reconnect after wake |
 | 🔒 **Safe by default** | App Sandbox, Hardened Runtime, a warning before any unencrypted connection over the Internet, Apple authentication required for Macs with a user name |
 | 📖 **In-app Help & What's New** | Help (`⌘?`) and *What's New…* read this README and the release notes live from GitHub and render them natively (no web view) |
