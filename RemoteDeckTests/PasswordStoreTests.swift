@@ -171,16 +171,32 @@ extension LiveKeychainFallbackTests {
         #expect(try current.read(.anthropicAPIKey) == "sk-ant-legacy")
 
         #expect(try current.migrateLegacyItem(.anthropicAPIKey))
-        #expect(try legacy.read(.anthropicAPIKey) == nil)
+        // `legacy` (no key in its queries) also sees the data-protection copy since macOS 27.3:
+        // look in the file keychain only.
+        #expect(try itemAttributes(service: service, account: .anthropicAPIKey,
+                                   synchronizable: false, fileKeychainOnly: true) == nil)
         #expect(try current.read(.anthropicAPIKey) == "sk-ant-legacy")
         let attributes = try #require(try itemAttributes(service: service, account: .anthropicAPIKey,
                                                      synchronizable: false, dataProtection: true))
         #expect(attributes[kSecAttrAccessible as String] as? String
             == kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String)
         #expect(try current.migrateLegacyItem(.anthropicAPIKey) == false)   // nothing left to move
+        #expect(try current.read(.anthropicAPIKey) == "sk-ant-legacy")    // the launch migration keeps it
 
         try current.delete(.anthropicAPIKey)
         #expect(try current.read(.anthropicAPIKey) == nil)
+    }
+
+    /// A local save in the data-protection keychain removes only the file-keychain copy, never the
+    /// item it just wrote (macOS 27.3: a query without `kSecUseDataProtectionKeychain` matches both).
+    @Test(.enabled(if: KeychainStore.processHasKeychainAccessGroup))
+    func localSaveKeepsTheDataProtectionItem() throws {
+        let current = KeychainStore(service: service, usesDataProtectionKeychain: true)
+        defer { try? current.delete(.anthropicAPIKey) }
+        try current.save("sk-ant-new", for: .anthropicAPIKey)
+        #expect(try current.read(.anthropicAPIKey) == "sk-ant-new")
+        #expect(try itemAttributes(service: service, account: .anthropicAPIKey,
+                                   synchronizable: false, dataProtection: true) != nil)
     }
 
     /// A local machine password of an unentitled build (file keychain) migrates to iCloud Keychain.
@@ -202,7 +218,7 @@ extension LiveKeychainFallbackTests {
     }
 
     func itemAttributes(service: String, account: KeychainAccount, synchronizable: Bool,
-                        dataProtection: Bool = false) throws -> [String: Any]? {
+                        dataProtection: Bool = false, fileKeychainOnly: Bool = false) throws -> [String: Any]? {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -212,6 +228,7 @@ extension LiveKeychainFallbackTests {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         if dataProtection { query[kSecUseDataProtectionKeychain as String] = true }
+        if fileKeychainOnly { query[kSecUseDataProtectionKeychain as String] = false }
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }

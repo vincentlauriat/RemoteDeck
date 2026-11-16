@@ -218,7 +218,7 @@ struct KeychainStoreTests {
         #expect(store.deleteQuery(for: account)[kSecUseDataProtectionKeychain as String] as? Bool == true)
         // The copy an older build left in the file keychain: same identity, without the flag.
         let legacy = store.legacyQuery(for: account, synchronizable: false)
-        #expect(legacy[kSecUseDataProtectionKeychain as String] == nil)
+        #expect(legacy[kSecUseDataProtectionKeychain as String] as? Bool == false)
         #expect(legacy[kSecAttrAccount as String] as? String == account.name)
         #expect(legacy[kSecAttrSynchronizable as String] as? Bool == false)
     }
@@ -237,7 +237,7 @@ struct KeychainStoreTests {
         let store = KeychainStore(usesDataProtectionKeychain: true)
         let quiet = store.legacyReadQuery(for: .anthropicAPIKey, allowsInteraction: false)
         #expect((quiet[kSecUseAuthenticationContext as String] as? LAContext)?.interactionNotAllowed == true)
-        #expect(quiet[kSecUseDataProtectionKeychain as String] == nil)
+        #expect(quiet[kSecUseDataProtectionKeychain as String] as? Bool == false)
         #expect(quiet[kSecReturnData as String] as? Bool == true)
         #expect(store.legacyReadQuery(for: .anthropicAPIKey, allowsInteraction: true)[kSecUseAuthenticationContext as String] == nil)
     }

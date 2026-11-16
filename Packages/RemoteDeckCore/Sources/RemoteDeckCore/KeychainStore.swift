@@ -161,7 +161,7 @@ public struct KeychainStore: Sendable {
         try delete(query: deleteQuery(for: account))
         if usesDataProtectionKeychain {
             var legacy = deleteQuery(for: account)
-            legacy[kSecUseDataProtectionKeychain as String] = nil
+            legacy[kSecUseDataProtectionKeychain as String] = false
             try delete(query: legacy)
         }
     }
@@ -181,16 +181,18 @@ public struct KeychainStore: Sendable {
         usesDataProtectionKeychain && !synchronizable
     }
 
-    /// The same local item in the legacy file-based keychain.
+    /// The same local item in the legacy file-based keychain. `kSecUseDataProtectionKeychain` is set
+    /// to false, never removed: since macOS 27.3 a query without it matches data-protection items too,
+    /// so the delete that follows a local save or a migration removed the item just written.
     func legacyQuery(for account: KeychainAccount, synchronizable: Bool) -> [String: Any] {
         var legacy = query(for: account, synchronizable: synchronizable)
-        legacy[kSecUseDataProtectionKeychain as String] = nil
+        legacy[kSecUseDataProtectionKeychain as String] = false
         return legacy
     }
 
     func legacyReadQuery(for account: KeychainAccount, allowsInteraction: Bool) -> [String: Any] {
         var lookup = readQuery(for: account, synchronizable: false, allowsInteraction: allowsInteraction)
-        lookup[kSecUseDataProtectionKeychain as String] = nil
+        lookup[kSecUseDataProtectionKeychain as String] = false
         return lookup
     }
 
@@ -241,7 +243,8 @@ public struct KeychainStore: Sendable {
             kSecReturnAttributes as String: true,
             kSecMatchLimit as String: kSecMatchLimitAll,
         ]
-        if dataProtection { lookup[kSecUseDataProtectionKeychain as String] = true }
+        // A data-protection store names the keychain either way (see `legacyQuery`).
+        if usesDataProtectionKeychain { lookup[kSecUseDataProtectionKeychain as String] = dataProtection }
         return lookup
     }
 
