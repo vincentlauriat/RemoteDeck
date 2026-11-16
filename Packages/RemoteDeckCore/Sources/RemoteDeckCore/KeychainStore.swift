@@ -160,9 +160,9 @@ public struct KeychainStore: Sendable {
     public func delete(_ account: KeychainAccount) throws(KeychainError) {
         try delete(query: deleteQuery(for: account))
         if usesDataProtectionKeychain {
-            var legacy = deleteQuery(for: account)
-            legacy[kSecUseDataProtectionKeychain as String] = false
-            try delete(query: legacy)
+            // The file keychain holds local items only (synchronizable ones always live in the
+            // data-protection keychain).
+            try delete(query: legacyQuery(for: account, synchronizable: false))
         }
     }
 
